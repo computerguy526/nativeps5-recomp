@@ -717,6 +717,61 @@ static const char *sig_name(int s) {
 // is the single source of truth for host<->guest: guest = guest_org + (host - host_lo), which is
 // host - bias in base mode and host itself in identity mode. Everything used here is published
 // with atomics by nps5_mem.c; nothing locks or allocates.
+static void diag_atexit(void);
+static void diag_atexit_fwd(void) { diag_atexit(); }
+static _Atomic int g_alarm_fired;
+static _Atomic int g_nested_fin;
+
+// The time bound of everything after a crash (the reporting thread may be stuck in a lock that the crashed thread held:
+// stdio, malloc, dyld). The default SIGALRM action killed the process with no summary; this handler finalises the
+// bundle once (summary + manifest, the crash report on disk gets a note) and ends the process with exit 1.
+static void crash_alarm_handler(int sig) {
+  (void)sig;
+  static const char m1[] = "nps5: the crash report did not finish in time; finalising the run bundle\n";
+  static const char m2[] = "nps5: the crash handler is stuck; exiting\n";
+  if (atomic_exchange(&g_alarm_fired, 1) || atomic_load(&g_crash_finalized)) {
+    (void)!write(2, m2, sizeof m2 - 1);
+    _exit(1);
+  }
+  (void)!write(2, m1, sizeof m1 - 1);
+  if (g_crash_fd >= 0) {
+    static const char n[] = "report_timeout: the crash report did not finish in time (a lock held by the crashed thread?); the run bundle was finalised by the alarm\n";
+    (void)!write(g_crash_fd, n, sizeof n - 1);
+  }
+  alarm(5); // the handler stays installed: a finalisation that hangs ends here
+  diag_atexit_fwd();
+  atomic_store(&g_crash_finalized, 1);
+  _exit(1);
+}
+static void crash_alarm(unsigned secs) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = crash_alarm_handler;
+  sa.sa_flags = SA_ONSTACK | SA_NODEFER;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGALRM, &sa, NULL);
+  alarm(secs);
+}
+
+// A second failure (a library abort(), an assert, a fault) on the thread that is writing the crash report: the
+// legacy stderr report, the symbolisation or a library teardown failed. Not a reason to lose the report: note it in
+// crash.txt, finalise the bundle once (summary + manifest) and end the process with exit 1.
+static void nested_failure(int sig) {
+  static const char m[] = "nps5: a second failure on the thread writing the crash report; finishing the report\n";
+  (void)!write(2, m, sizeof m - 1);
+  if (g_crash_fd >= 0) {
+    Sw w = {.fd = g_crash_fd};
+    sw_str(&w, "secondary_signal: "); sw_dec(&w, sig); sw_str(&w, " ("); sw_str(&w, sig_name(sig)); sw_str(&w, ")\n");
+    sw_str(&w, "secondary_note: a failure inside the crash handling itself (stderr report, symbolisation or teardown); everything above was written before it\n");
+    sw_flush(&w);
+  }
+  if (atomic_exchange(&g_nested_fin, 1)) _exit(1); // failed again while finishing
+  crash_alarm(5);
+  diag_atexit_fwd();
+  atomic_store(&g_crash_finalized, 1);
+  _exit(1);
+}
+
 static void classify_fault(Sw *w, uint64_t fa, uint64_t sp, GuestContext *ctx) {
   (void)ctx;
   sw_kx(w, "fault_addr", fa);
@@ -1060,8 +1115,6 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
   }
 }
 
-static void diag_atexit(void);
-static void diag_atexit_fwd(void) { diag_atexit(); }
 
 __attribute__((weak)) _Thread_local int g_nps5_in_crash_handler; // nps5_mem.h; weak in both files so each links alone
 
@@ -1069,8 +1122,7 @@ __attribute__((weak)) _Thread_local int g_nps5_in_crash_handler; // nps5_mem.h; 
 // bundle's summary and manifest NOW, before any library teardown runs, so they exist whatever exit() runs into.
 // Idempotent (the atexit call that follows is then a no-op); the alarm bounds everything that comes after.
 void nps5_diag_crash_finalize(void) {
-  signal(SIGALRM, SIG_DFL);
-  alarm(5);
+  crash_alarm(5);
   diag_atexit_fwd();
   atomic_store(&g_crash_finalized, 1);
 }
@@ -1133,13 +1185,23 @@ static bool livelock_tripped(uint64_t at) {
   return t_ll_count > atomic_load_explicit(&g_livelock_limit, memory_order_relaxed);
 }
 
+static _Thread_local int t_handler_depth; // handlers run with SA_NODEFER: a fault inside a handler re-enters it
+static void crash_handler_body(int sig, siginfo_t *si, void *uctx);
 static void crash_handler(int sig, siginfo_t *si, void *uctx) {
+  if (t_handler_depth >= 6) { static const char m[] = "nps5: crash handler recursion too deep, aborting\n"; (void)!write(2, m, sizeof m - 1); _exit(1); }
+  t_handler_depth++;
+  crash_handler_body(sig, si, uctx);
+  t_handler_depth--;
+}
+static void crash_handler_body(int sig, siginfo_t *si, void *uctx) {
   // Not a crash: a shadow stack push into its guard page (flat call model). Compacted, retried.
   if ((sig == SIGSEGV || sig == SIGBUS) && si && recomp_shadow_handle_fault(uctx, (uint64_t)(uintptr_t)si->si_addr)) return;
   // Not a crash: a host library called a guest function pointer (nps5_hostcall.c). Bridged.
   if ((sig == SIGSEGV || sig == SIGBUS) && si && si->si_code > 0 && g_nps5_hostcall_fault_hook &&
       g_nps5_hostcall_fault_hook(uctx, (uint64_t)(uintptr_t)si->si_addr)) return;
-  if ((sig == SIGSEGV || sig == SIGBUS) && si->si_code > 0) { // a memory fault, not a signal sent to the process
+  // t_handler_depth > 1: a fault in a resolver or hook below this frame; the resolvers are not asked again (a faulting
+  // resolver would recurse), the fault is reported as a crash.
+  if ((sig == SIGSEGV || sig == SIGBUS) && si->si_code > 0 && t_handler_depth <= 1) { // a memory fault, not a signal sent to the process
     const int n = atomic_load_explicit(&g_nresolvers, memory_order_acquire);
     const uint64_t at = (uint64_t)(uintptr_t)si->si_addr;
     const int saved_errno = errno; // the interrupted code may be between a system call and its errno check
@@ -1181,16 +1243,14 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
       (void)!write(2, m, sizeof m - 1);
       _exit(1);
     }
-    // A fault inside the handler on the reporting thread itself: give up quickly.
-    static const char m[] = "nps5: recursive crash, aborting\n";
-    (void)!write(2, m, sizeof m - 1);
-    _exit(128 + sig);
+    // A failure on the reporting thread itself while it is reporting (abort() from a library, a fault in the legacy
+    // report): finish what is on disk (note + summary + manifest) and exit 1; never a bare "recursive crash".
+    nested_failure(sig);
   }
   atomic_store(&g_crash_owner, (uintptr_t)pthread_self());
   // A real crash from here on, and this thread reports it: bound the time to death before anything that can block
   // (dladdr and the report take dyld/stdio locks that the crashed thread may hold).
-  signal(SIGALRM, SIG_DFL);
-  alarm(2);
+  crash_alarm(2);
   atomic_fetch_add(&g_faults, 1);
   crash_report(sig, si, uctx);
   // Symbolise with dladdr in a second pass; it is not async-signal-safe, so the report above is
@@ -1210,8 +1270,7 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
   if (sig == SIGABRT) {
     // abort() does not run atexit handlers and the handler we chain to may re-raise: finalise the
     // bundle now (best effort; not async-signal-safe, so an alarm bounds it).
-    alarm(2);
-    signal(SIGALRM, SIG_DFL);
+    crash_alarm(2);
     diag_atexit_fwd();
   }
   // Chain to the handler installed before us (the legacy stderr report); for abort restore default.
@@ -1221,8 +1280,7 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
     if (g_prev[i].sa_handler != SIG_DFL && g_prev[i].sa_handler != SIG_IGN && g_prev[i].sa_handler) { g_prev[i].sa_handler(sig); return; }
   }
   // No earlier handler: finalise the bundle (best effort; not async-signal-safe) and die by the signal.
-  alarm(2);
-  signal(SIGALRM, SIG_DFL);
+  crash_alarm(2);
   diag_atexit_fwd();
   signal(sig, SIG_DFL);
   raise(sig);
@@ -1273,7 +1331,7 @@ void nps5_diag_install_crash_handlers(void) {
     struct sigaction cur;
     if (sigaction(k_sigs[i], NULL, &cur) == 0 && (cur.sa_flags & SA_SIGINFO) && cur.sa_sigaction == crash_handler) continue;
     struct sigaction sa = {0};
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
     sa.sa_sigaction = crash_handler;
     sigemptyset(&sa.sa_mask);
     sigaction(k_sigs[i], &sa, &g_prev[i]);

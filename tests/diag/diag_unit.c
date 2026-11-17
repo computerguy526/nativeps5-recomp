@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <execinfo.h>
 #include <sys/stat.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -163,6 +164,19 @@ static void legacy_twoslow(int sig, siginfo_t *si, void *u) {
 }
 static void legacy_rec(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; abort(); } // same thread again
 static void legacy_recfin(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; nps5_diag_crash_finalize(); abort(); } // abort in teardown
+static void legacy_recsegv(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; __asm__ volatile("mov x2, #0\n ldr x1, [x2]\n" : : : "x1", "x2", "memory"); } // a fault inside the legacy report
+// stands for recomp_runtime.c's report for a host thread with no guest context: stdio + backtrace, finalise, exit(1)
+static void legacy_noctx(int sig, siginfo_t *si, void *u) {
+  (void)u;
+  fprintf(stderr, "\nFATAL: Signal %d at host address %p (no guest context)\n", sig, si->si_addr);
+  void *cs[32];
+  int n = backtrace(cs, 32);
+  backtrace_symbols_fd(cs, n, 2);
+  fflush(stderr);
+  nps5_diag_crash_finalize();
+  exit(1);
+}
+static void legacy_hang(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; for (;;) pause(); } // the report blocks on a lock held by the crashed thread
 static void chain_before_diag(void (*fn)(int, siginfo_t *, void *)) {
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
@@ -172,6 +186,7 @@ static void chain_before_diag(void (*fn)(int, siginfo_t *, void *)) {
   sigaction(SIGBUS, &sa, NULL);
   nps5_diag_install_crash_handlers(); // ours in front again, fn = the handler it chains to
 }
+static void *abort_thread(void *a) { (void)a; crash_null(); return NULL; } // no nps5_diag_thread_init, no guest context
 static void __attribute__((noreturn)) crash_null(void) {
   __asm__ volatile("mov x2, #0\n ldr x1, [x2]\n" : : : "x1", "x2", "memory");
   _exit(4);
@@ -223,6 +238,10 @@ int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "twoslow")) { pthread_t t; pthread_create(&t, NULL, second_fault_thread, NULL); chain_before_diag(legacy_twoslow); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "rec")) { chain_before_diag(legacy_rec); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "recfin")) { chain_before_diag(legacy_recfin); crash_null(); }
+  if (argc > 1 && !strcmp(argv[1], "recsegv")) { chain_before_diag(legacy_recsegv); crash_null(); }
+  if (argc > 1 && !strcmp(argv[1], "recthr")) { chain_before_diag(legacy_rec); pthread_t t; pthread_create(&t, NULL, abort_thread, NULL); pthread_join(t, NULL); _exit(5); }
+  if (argc > 1 && !strcmp(argv[1], "noctx")) { chain_before_diag(legacy_noctx); pthread_t t; pthread_create(&t, NULL, abort_thread, NULL); pthread_join(t, NULL); _exit(5); }
+  if (argc > 1 && !strcmp(argv[1], "hang")) { chain_before_diag(legacy_hang); pthread_t t; pthread_create(&t, NULL, abort_thread, NULL); pthread_join(t, NULL); _exit(5); }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
   test_redact();
   test_thread_init();
@@ -278,11 +297,37 @@ int main(int argc, char **argv) {
     CHECK(system(cmd) == 0);
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", d6); system(cmd);
   }
-  // a fault on the reporting thread itself is still cut short (exit 128 + SIGABRT), with the report on disk
-  snprintf(d5, sizeof d5, "%s.rec", base); mkdir(d5, 0755);
-  st = run_self("rec", d5);
-  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 128 + SIGABRT);
-  CHECK(file_has(d5, "nps5 crash report v1"));
+  // a failure on the reporting thread itself (a library abort(), a fault in the legacy report): the report is complete
+  // (secondary signal noted, summary + manifest written) and the exit code is 1, never "recursive crash" / 128+SIGABRT
+  const char *recm[3] = {"rec", "recsegv", "recthr"};
+  for (int i = 0; i < 3; i++) {
+    snprintf(d5, sizeof d5, "%s.%s", base, recm[i]); mkdir(d5, 0755);
+    st = run_self(recm[i], d5);
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 1);
+    CHECK(file_has(d5, "nps5 crash report v1"));
+    CHECK(file_has(d5, "^secondary_signal: "));
+    snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt && grep -q '\"result\": \"crash\"' '%s'/*/manifest.json", d5, d5);
+    CHECK(system(cmd) == 0);
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
+  }
+  // a SIGSEGV on a host thread without guest context (no guest ctx, no thread init) through a stdio+backtrace report: one
+  // complete report, exit 1, nothing secondary
+  snprintf(d5, sizeof d5, "%s.noctx", base); mkdir(d5, 0755);
+  st = run_self("noctx", d5);
+  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 1);
+  CHECK(file_has(d5, "^signal: 11 (SIGSEGV)") || file_has(d5, "^signal: 10 (SIGBUS)"));
+  CHECK(file_has(d5, "^reason: memory fault in runtime/HLE code"));
+  CHECK(!file_has(d5, "^secondary_signal: "));
+  snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt && grep -q '\"result\": \"crash\"' '%s'/*/manifest.json", d5, d5);
+  CHECK(system(cmd) == 0);
+  snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
+  // the report blocks for good (a lock held by the crashed thread): the alarm finalises the bundle, exit 1
+  snprintf(d5, sizeof d5, "%s.hang", base); mkdir(d5, 0755);
+  st = run_self("hang", d5);
+  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 1);
+  CHECK(file_has(d5, "^report_timeout: "));
+  snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt", d5);
+  CHECK(system(cmd) == 0);
   snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
   // the same after the bundle was finalised (abort from library teardown inside exit()): a plain exit 1, bundle complete
   snprintf(d5, sizeof d5, "%s.recfin", base); mkdir(d5, 0755);
