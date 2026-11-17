@@ -2,3 +2,6 @@ GOFLAGS=-mod=vendor go build -o bin/ps4-recomp ./cmd/ps4-recomp
 GOFLAGS=-mod=vendor go build -o bin/nps5 ./cmd/nps5
 GOFLAGS=-mod=vendor go test ./pkg/diag/ ./pkg/elfloader/ ./pkg/disasm/ ./pkg/cli/ ./pkg/thunkgen/
 for f in tools/*.sh; do bash -n "$f" || exit 1; done
+bash tools/kernelfs_unit.sh
+bash tools/diag_unit.sh
+bash tools/hlesys_unit.sh
