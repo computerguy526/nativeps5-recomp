@@ -18,6 +18,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <math.h>
+#include "nps5_framerate_logic.h"
 #include <stdatomic.h>
 #include <time.h>
 #include <stdint.h>
@@ -383,7 +384,31 @@ static struct {
   uint64_t addr, last_ns, last_log_ns;
   double ema, cur, lo, hi;
   uint32_t frames, tries, rewrites;
+  Nps5Fr l;
+  int no_freeze_av, no_freeze_load;
+  unsigned long long last_bytes; uint64_t bytes_ns, load_until_ns; int last_phase;
 } g_fr;
+
+// Freeze sources (see nps5_framerate_logic.h). Weak refs: the video shim and the VFS counters live in other modules.
+extern int nps5_avplayer_playing_count(void) __attribute__((weak_import));
+extern _Atomic int nps5_vfs_phase __attribute__((weak_import));
+extern _Atomic unsigned long long nps5_vfs_bytes_read __attribute__((weak_import));
+// Loading = the VFS read more than 6 MB within the last second, or a new levels/<name> phase appeared in the last 3 s;
+// stays on 2 s after the last such sign (loading card up / first content frames still settling).
+static int nps5_framerate_frozen(uint64_t now) {
+  if (!g_fr.no_freeze_av && nps5_avplayer_playing_count && nps5_avplayer_playing_count() > 0) return 1;
+  if (g_fr.no_freeze_load) return 0;
+  if (&nps5_vfs_bytes_read && &nps5_vfs_phase) {
+    const int ph = atomic_load_explicit(&nps5_vfs_phase, memory_order_relaxed);
+    if (ph != g_fr.last_phase) { g_fr.last_phase = ph; g_fr.load_until_ns = now + 5000000000ull; }
+    if (now - g_fr.bytes_ns >= 1000000000ull) {
+      const unsigned long long by = atomic_load_explicit(&nps5_vfs_bytes_read, memory_order_relaxed);
+      if (g_fr.bytes_ns && by - g_fr.last_bytes > 6ull * 1024 * 1024) g_fr.load_until_ns = now + 2000000000ull;
+      g_fr.last_bytes = by; g_fr.bytes_ns = now;
+    }
+  }
+  return now < g_fr.load_until_ns;
+}
 
 #include "nps5_framerate_cfg.h"
 static void nps5_framerate_init(void) {
@@ -393,6 +418,16 @@ static void nps5_framerate_init(void) {
   g_fr.state = g_fr.addr ? 1 : -1;
   if (!nps5_framerate_clamp(getenv("NPS5_FRAMERATE_MIN"), getenv("NPS5_FRAMERATE_MAX"), &g_fr.lo, &g_fr.hi))
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN/MAX not within 1 <= min <= max <= 240: using 20..60\n");
+  nps5_fr_defaults(&g_fr.l, g_fr.lo, g_fr.hi);
+  // NPS5_FRAMERATE_LEGACY=1 old behaviour; _NO_FREEZE_AV / _NO_FREEZE_LOAD=1 keep one freeze off; _EMA (0.02), _HYST_PCT (5),
+  // _HYST_MS (1000), _WARM (60 frames) tune the smoothing.
+  if (getenv("NPS5_FRAMERATE_LEGACY") && atoi(getenv("NPS5_FRAMERATE_LEGACY")) > 0) g_fr.l.legacy = 1;
+  g_fr.no_freeze_av = getenv("NPS5_FRAMERATE_NO_FREEZE_AV") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_AV")) > 0;
+  g_fr.no_freeze_load = getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD")) > 0;
+  if (getenv("NPS5_FRAMERATE_EMA") && atof(getenv("NPS5_FRAMERATE_EMA")) > 0) g_fr.l.ema_alpha = atof(getenv("NPS5_FRAMERATE_EMA"));
+  if (getenv("NPS5_FRAMERATE_HYST_PCT")) g_fr.l.hyst_frac = atof(getenv("NPS5_FRAMERATE_HYST_PCT")) / 100.0;
+  if (getenv("NPS5_FRAMERATE_HYST_MS")) g_fr.l.hyst_ns = (uint64_t)(atof(getenv("NPS5_FRAMERATE_HYST_MS")) * 1e6);
+  if (getenv("NPS5_FRAMERATE_WARM")) g_fr.l.warm_frames = (uint32_t)atoi(getenv("NPS5_FRAMERATE_WARM"));
 }
 
 static void nps5_framerate_tick(GuestContext *ctx) {
@@ -412,25 +447,20 @@ static void nps5_framerate_tick(GuestContext *ctx) {
               (unsigned long long)us);
       return;
     }
-    g_fr.cur = 60.0; g_fr.ema = 60.0;
+    g_fr.cur = 60.0; g_fr.ema = 60.0; g_fr.l.cur = 60.0; g_fr.l.ema = 60.0; g_fr.l.last_ns = now;
     fprintf(stderr, "[framerate] block 0x%llx verified before: f64 %g, f32 %.9g, u64 %llu; real-time speed on, clamp %.0f..%.0f fps\n", (unsigned long long)g_fr.addr, d,
             (double)f, (unsigned long long)us, g_fr.lo, g_fr.hi);
     g_fr.last_ns = now; g_fr.last_log_ns = now;
     g_fr.frames = 1;
     return;
   }
-  double dt = (double)(now - g_fr.last_ns) * 1e-9;
-  g_fr.last_ns = now;
   g_fr.frames++;
-  if (dt <= 0) return;
-  double inst = 1.0 / dt;
-  if (inst < g_fr.lo) inst = g_fr.lo;
-  if (inst > g_fr.hi) inst = g_fr.hi;
-  g_fr.ema += (inst - g_fr.ema) * (g_fr.frames < 60 ? 0.2 : 0.05);
-  double want = g_fr.ema;
-  if (want >= g_fr.hi * 0.94) want = g_fr.hi; // near the limit: run exactly at it
-  if (want < g_fr.lo) want = g_fr.lo;
-  if (fabs(want - g_fr.cur) >= 0.75 || (want == g_fr.hi && g_fr.cur != g_fr.hi)) {
+  const int frozen = nps5_framerate_frozen(now);
+  double want = 0, inst = 1.0 / (((double)(now - g_fr.last_ns) * 1e-9) + 1e-9);
+  const int rw = nps5_fr_step(&g_fr.l, now, frozen, &want);
+  g_fr.last_ns = now;
+  g_fr.ema = g_fr.l.ema;
+  if (rw) {
     double d = want; float f = (float)(1.0 / want); uint64_t us = (uint64_t)(1e6 / want);
     memcpy(b, &d, 8); memcpy(b + 8, &f, 4); memcpy(b + 16, &us, 8);
     g_fr.cur = want; g_fr.rewrites++;

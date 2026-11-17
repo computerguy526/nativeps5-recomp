@@ -3,6 +3,11 @@
 #include "ps4_vfs.h"
 #include "ps4_threading.h"
 #include "recomp_runtime.h"
+#include <mutex>
+#include <set>
+class AvPlayer;
+static std::mutex g_live_mu;
+static std::set<AvPlayer *> g_live_players;
 extern "C" int nps5_guest_is_ps5(void); // kernel/memory/ps4_direct_mem.c
 
 extern "C" {
@@ -353,6 +358,7 @@ public:
             }
         }
         m_state.store(AvState::Initial);
+        { std::lock_guard<std::mutex> lk(g_live_mu); g_live_players.insert(this); }
         m_controller_stop.store(false);
         m_controller_thread = std::thread([this]() {
             controller_worker();
@@ -360,6 +366,7 @@ public:
     }
 
     ~AvPlayer() {
+        { std::lock_guard<std::mutex> lk(g_live_mu); g_live_players.erase(this); }
         stop_playback_internal(m_main_ctx, false);
         m_controller_stop.store(true);
         m_event_queue.notify_all();
@@ -617,6 +624,8 @@ public:
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_start_time - m_total_pause_duration).count();
         return elapsed > 0 ? (uint64_t)elapsed : 0;
     }
+
+    bool is_playing() { return m_state.load() == AvState::Play && is_active(); }
 
     bool is_active() {
         AvState st = m_state.load();
@@ -1144,6 +1153,14 @@ private:
 // ==========================================
 // Host Shims
 // ==========================================
+
+// Number of players currently playing (state Play, not drained): the [framerate] real-time-speed block freezes while > 0.
+extern "C" int nps5_avplayer_playing_count(void) {
+    std::lock_guard<std::mutex> lk(g_live_mu);
+    int n = 0;
+    for (AvPlayer *p : g_live_players) n += p->is_playing() ? 1 : 0;
+    return n;
+}
 
 void shim_sceAvPlayerInit(GuestContext *ctx) {
     if (!ctx->rdi) {
