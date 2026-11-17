@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report issues in the main nativeps5 repository
+    url: https://github.com/computerguy526/nativeps5/issues/new/choose
+    about: Bugs, game bring-up and performance reports for every component are filed there
