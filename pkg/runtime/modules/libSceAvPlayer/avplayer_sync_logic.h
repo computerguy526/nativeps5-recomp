@@ -12,10 +12,18 @@
 // or -1 = nothing due, keep holding (the guest keeps showing its last picture).
 // The old rule delivered ONE frame per poll, up to 40 ms EARLY and never skipped, so a decode stall was
 // followed by a fast-forward burst at the poll rate (60 Hz for 30 fps video) = judder.
+// Discontinuity: the queue never runs more than a few frames ahead of the clock (the decoder waits for a free buffer),
+// so a FRONT frame more than NPS5_AVSYNC_JUMP_MS ahead is not "early": the clock was restarted under it (a looping
+// clip restarts the clock at 0 while frames of the old pass are still queued) or the stream's timestamps start at an
+// offset. Holding it would freeze the picture until the clock reaches it (one clip length per loop); it is handed
+// out, one per poll, like the old rule did.
+#define NPS5_AVSYNC_JUMP_MS 1000u
 static inline int nps5_avsync_pick(const uint64_t *ts, size_t n, uint64_t now_ms, uint64_t tol_ms) {
+    const uint64_t due = now_ms + tol_ms < now_ms ? UINT64_MAX : now_ms + tol_ms; // a huge tolerance does not wrap
+    if (n && ts[0] > due && ts[0] - due > NPS5_AVSYNC_JUMP_MS) return 0;
     int pick = -1;
     for (size_t i = 0; i < n; ++i) {
-        if (ts[i] <= now_ms + tol_ms) pick = (int)i; else break;
+        if (ts[i] <= due) pick = (int)i; else break;
     }
     return pick;
 }

@@ -11,6 +11,15 @@ int main() {
     { uint64_t t[] = {100, 133, 166}; CHECK(nps5_avsync_pick(t, 3, 160, 8) == 2); }    // 100/133/166 all due: skip to the last
     { uint64_t t[] = {100, 133, 166}; CHECK(nps5_avsync_pick(t, 3, 140, 8) == 1); }    // first is stale
     CHECK(nps5_avsync_pick(nullptr, 0, 1000, 8) == -1);
+    // a looping clip: the clock restarts at 0 while frames of the old pass (late timestamps) are still queued. They must
+    // not be held until the clock reaches their timestamps again (a freeze of one clip length per loop): a front frame
+    // more than NPS5_AVSYNC_JUMP_MS ahead is a discontinuity and is handed out, one per poll.
+    { uint64_t t[] = {9933, 9966, 0, 33}; CHECK(nps5_avsync_pick(t, 4, 5, 8) == 0); }
+    { uint64_t t[] = {9966, 0, 33}; CHECK(nps5_avsync_pick(t, 3, 21, 8) == 0); }
+    { uint64_t t[] = {0, 33}; CHECK(nps5_avsync_pick(t, 2, 38, 8) == 1); }               // then the normal rule again
+    { uint64_t t[] = {5000}; CHECK(nps5_avsync_pick(t, 1, 0, 8) == 0); }                 // a stream that starts at an offset
+    { uint64_t t[] = {900}; CHECK(nps5_avsync_pick(t, 1, 0, 8) == -1); }                 // an ordinary early frame is held
+    { uint64_t t[] = {100}; CHECK(nps5_avsync_pick(t, 1, 50, ~0ull) == 0); }             // a huge tolerance does not wrap
     // 30 fps clip polled at 60 Hz with a 250 ms stall: old rule = fast forward (1 frame/poll), new rule = one jump, then 30 fps cadence
     std::vector<uint64_t> q; for (int i = 0; i < 30; ++i) q.push_back((uint64_t)(i * 33.333));
     uint64_t now = 0; int dropped = 0; std::vector<uint64_t> shown_at;
