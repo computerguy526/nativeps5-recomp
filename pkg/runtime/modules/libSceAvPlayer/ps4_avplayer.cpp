@@ -3,6 +3,7 @@
 #include "ps4_vfs.h"
 #include "ps4_threading.h"
 #include "recomp_runtime.h"
+#include "avplayer_sync_logic.h"
 #include <mutex>
 #include <set>
 class AvPlayer;
@@ -26,6 +27,7 @@ extern "C" {
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -123,6 +125,32 @@ static bool avplayer_verbose() {
     return on;
 }
 
+// Frame delivery (see avplayer_sync_logic.h). NPS5_AVPLAYER_SYNC_LEGACY=1 restores the old rule (one frame per
+// poll, up to 40 ms early, no skipping, a fetched buffer recycled at the next fetch). NPS5_AVPLAYER_SYNC_TOL_MS
+// (default 8 = half a 60 Hz poll) is how early a frame may be shown; NPS5_AVPLAYER_HOLD (default 2, capped to
+// half the buffers minus one) is how many fetched frames stay untouched by the decoder (the guest copies a frame by DMA
+// AFTER sceAvPlayerGetVideoData returned; recycling the buffer at the next fetch let the decoder overwrite it
+// under the copy = flicker; Jetsku/KytyPS5 PR 106). NPS5_AVPLAYER_VTRACE=1 logs every frame + a summary.
+static bool avsync_legacy() {
+    static const bool on = [] { const char *t = getenv("NPS5_AVPLAYER_SYNC_LEGACY"); return t && t[0] && t[0] != '0'; }();
+    return on;
+}
+static bool avplayer_vtrace() {
+    static const bool on = [] { const char *t = getenv("NPS5_AVPLAYER_VTRACE"); return t && t[0] && t[0] != '0'; }();
+    return on;
+}
+static uint64_t avsync_tol_ms() {
+    static const uint64_t v = [] { const char *t = getenv("NPS5_AVPLAYER_SYNC_TOL_MS"); return t && t[0] ? (uint64_t)strtoul(t, nullptr, 0) : 8ull; }();
+    return v;
+}
+static size_t avsync_hold_frames() {
+    static const size_t v = [] { const char *t = getenv("NPS5_AVPLAYER_HOLD"); return t && t[0] ? (size_t)strtoul(t, nullptr, 0) : 2ul; }();
+    return v;
+}
+static uint64_t mono_ns() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // Largest NV12 frame buffer a stream may need; bigger (or empty) dimensions fail the open.
 static const uint64_t kMaxVideoFrameBytes = 256ull << 20;
 static uint64_t nv12_frame_bytes(uint32_t width, uint32_t height) {
@@ -206,6 +234,7 @@ struct GuestBuffer {
     uint64_t size = 0;
     bool is_texture = false;
     bool vm_allocated = false;
+    uint64_t fetch_ns = 0; // when the guest last fetched this buffer (0 = never); NPS5_AVPLAYER_VTRACE
 
     GuestBuffer() = default;
     GuestBuffer(uint64_t gaddr, uint8_t *hptr, uint64_t sz, bool tex, bool vm)
@@ -216,7 +245,7 @@ struct GuestBuffer {
 
     GuestBuffer(GuestBuffer &&o) noexcept
         : guest_addr(o.guest_addr), host_ptr(o.host_ptr), size(o.size),
-          is_texture(o.is_texture), vm_allocated(o.vm_allocated) {
+          is_texture(o.is_texture), vm_allocated(o.vm_allocated), fetch_ns(o.fetch_ns) {
         o.guest_addr = 0;
         o.host_ptr = nullptr;
         o.size = 0;
@@ -229,6 +258,7 @@ struct GuestBuffer {
             size = o.size;
             is_texture = o.is_texture;
             vm_allocated = o.vm_allocated;
+            fetch_ns = o.fetch_ns;
             o.guest_addr = 0;
             o.host_ptr = nullptr;
             o.size = 0;
@@ -242,7 +272,7 @@ class SafeQueue {
 public:
     void push(T &&item) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_queue.push(std::move(item));
+        m_queue.push_back(std::move(item));
         m_cv.notify_one();
     }
 
@@ -250,7 +280,7 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_queue.empty()) return std::nullopt;
         T val = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
         return val;
     }
 
@@ -258,7 +288,7 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_queue.empty()) return false;
         out = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
         return true;
     }
 
@@ -268,7 +298,21 @@ public:
         if (m_queue.empty()) return false;
         if (!pred(m_queue.front())) return false;
         out = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
+        return true;
+    }
+
+    // Deliver the last element whose timestamp is due, move the earlier (stale) ones to `dropped`; false = none due.
+    template <typename TsFn>
+    bool pop_due_latest(TsFn ts_of, uint64_t now_ms, uint64_t tol_ms, T &out, std::vector<T> &dropped) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::vector<uint64_t> ts; ts.reserve(m_queue.size());
+        for (const T &e : m_queue) ts.push_back(ts_of(e));
+        int k = nps5_avsync_pick(ts.data(), ts.size(), now_ms, tol_ms);
+        if (k < 0) return false;
+        for (int i = 0; i < k; ++i) { dropped.push_back(std::move(m_queue.front())); m_queue.pop_front(); }
+        out = std::move(m_queue.front());
+        m_queue.pop_front();
         return true;
     }
 
@@ -279,7 +323,7 @@ public:
         }
         if (m_queue.empty() || stop_flag.load()) return false;
         out = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
         return true;
     }
 
@@ -290,7 +334,7 @@ public:
         }
         if (m_queue.empty()) return false;
         out = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
         return true;
     }
 
@@ -301,7 +345,7 @@ public:
 
     void clear() {
         std::lock_guard<std::mutex> lock(m_mutex);
-        while (!m_queue.empty()) m_queue.pop();
+        while (!m_queue.empty()) m_queue.pop_front();
         m_cv.notify_all();
     }
 
@@ -312,7 +356,7 @@ public:
 private:
     std::mutex m_mutex;
     std::condition_variable m_cv;
-    std::queue<T> m_queue;
+    std::deque<T> m_queue;
 };
 
 struct DecodedVideoFrame {
@@ -639,27 +683,95 @@ public:
                 m_video_packets.size() > 0 || m_audio_packets.size() > 0);
     }
 
+    // Give a fetched buffer back to the decoder. Not before the guest is done with it: the guest copies a frame by
+    // DMA after GetVideoData returned, so the last avsync_hold_frames() fetched buffers stay out of the pool.
+    void release_fetched_buffer(GuestBuffer &&buf) {
+        m_held_video_bufs.push_back(std::move(buf));
+        const size_t cap = avsync_legacy() ? 0 : std::min(avsync_hold_frames(), (size_t)(std::max(2, m_init_data.num_output_video_framebuffers) / 2 - 1));
+        while (m_held_video_bufs.size() > cap) {
+            m_free_video_buffers.push(std::move(m_held_video_bufs.front()));
+            m_held_video_bufs.pop_front();
+        }
+    }
+
+    void log_video_summary() {
+        std::lock_guard<std::mutex> lk(m_stats_mutex);
+        if (!avplayer_vtrace() || m_vstats.polls == 0) return;
+        const Nps5AvSyncStats &s = m_vstats;
+        AVPLAYER_LOG("[avvid] SUMMARY mode=%s polls=%llu delivered=%llu dropped=%llu empty_polls=%llu held_early=%llu | deliver_interval_ms mean %.2f sd %.2f min %.1f max %.1f | poll_interval_ms mean %.2f sd %.2f max %.1f | lateness_ms mean %.2f sd %.2f min %.1f max %.1f | decode_lead_ms mean %.1f min %.1f | min_reuse_age_ms %.1f reuse<50ms %llu",
+                     avsync_legacy() ? "legacy" : "pts", (unsigned long long)s.polls, (unsigned long long)s.delivered, (unsigned long long)s.dropped,
+                     (unsigned long long)s.empty_polls, (unsigned long long)s.held_early,
+                     s.deliver_interval_ms.mean, s.deliver_interval_ms.stddev(), s.deliver_interval_ms.mn, s.deliver_interval_ms.mx,
+                     s.poll_interval_ms.mean, s.poll_interval_ms.stddev(), s.poll_interval_ms.mx,
+                     s.lateness_ms.mean, s.lateness_ms.stddev(), s.lateness_ms.mn, s.lateness_ms.mx,
+                     s.decode_lead_ms.mean, s.decode_lead_ms.mn, s.min_reuse_age_ms < 1e299 ? s.min_reuse_age_ms : -1.0,
+                     (unsigned long long)s.reuse_under_50ms);
+        m_vstats = Nps5AvSyncStats{};
+        m_last_poll_ns = m_last_deliver_ns = 0;
+    }
+
     bool get_video_data_ex(AvPlayerFrameInfoEx *info) {
         if (!info || !is_active() || m_is_paused.load()) return false;
 
-        uint64_t now_ms = current_time();
+        const uint64_t now_ms = current_time();
+        const uint64_t t_ns = mono_ns();
+        if (avplayer_vtrace()) {
+            std::lock_guard<std::mutex> lk(m_stats_mutex);
+            m_vstats.polls++;
+            if (m_last_poll_ns) m_vstats.poll_interval_ms.add((double)(t_ns - m_last_poll_ns) / 1e6);
+            m_last_poll_ns = t_ns;
+        }
         DecodedVideoFrame frame;
-        bool ok = m_ready_video_frames.pop_if([now_ms, this](const DecodedVideoFrame &f) {
-            if (m_sync_mode == AVPLAYER_AV_SYNC_MODE_DEFAULT) {
-                return f.info.timestamp <= now_ms + 40;
-            }
-            return true;
-        }, frame);
+        std::vector<DecodedVideoFrame> stale;
+        bool ok;
+        if (avsync_legacy()) {
+            ok = m_ready_video_frames.pop_if([now_ms, this](const DecodedVideoFrame &f) {
+                if (m_sync_mode == AVPLAYER_AV_SYNC_MODE_DEFAULT) {
+                    return f.info.timestamp <= now_ms + 40;
+                }
+                return true;
+            }, frame);
+        } else if (m_sync_mode == AVPLAYER_AV_SYNC_MODE_DEFAULT) {
+            ok = m_ready_video_frames.pop_due_latest([](const DecodedVideoFrame &f) { return f.info.timestamp; }, now_ms, avsync_tol_ms(), frame, stale);
+        } else {
+            ok = m_ready_video_frames.pop_if([](const DecodedVideoFrame &) { return true; }, frame);
+        }
 
-        if (!ok) return false;
+        for (auto &f : stale) {
+            if (avplayer_vtrace()) AVPLAYER_LOG("[avvid] drop pts=%llu clock=%llu", (unsigned long long)f.info.timestamp, (unsigned long long)now_ms);
+            f.buffer.fetch_ns = 0;
+            m_free_video_buffers.push(std::move(f.buffer));
+        }
+
+        if (!ok) {
+            if (avplayer_vtrace()) {
+                std::lock_guard<std::mutex> lk(m_stats_mutex);
+                m_vstats.empty_polls++;
+                if (m_ready_video_frames.size() > 0) m_vstats.held_early++;
+            }
+            return false;
+        }
 
         if (m_curr_video_buf.has_value()) {
-            m_free_video_buffers.push(std::move(*m_curr_video_buf));
+            release_fetched_buffer(std::move(*m_curr_video_buf));
             m_curr_video_buf.reset();
         }
 
         *info = frame.info;
+        frame.buffer.fetch_ns = t_ns;
         m_curr_video_buf = std::move(frame.buffer);
+        if (avplayer_vtrace()) {
+            std::lock_guard<std::mutex> lk(m_stats_mutex);
+            m_vstats.delivered++;
+            m_vstats.dropped += stale.size();
+            if (m_last_deliver_ns) m_vstats.deliver_interval_ms.add((double)(t_ns - m_last_deliver_ns) / 1e6);
+            m_last_deliver_ns = t_ns;
+            const double late = (double)now_ms - (double)frame.info.timestamp;
+            m_vstats.lateness_ms.add(late);
+            AVPLAYER_LOG("[avvid] fetch t_ms=%.2f pts=%llu clock=%llu late_ms=%.0f buf=0x%llx dropped=%zu ready=%zu",
+                         (double)t_ns / 1e6, (unsigned long long)frame.info.timestamp, (unsigned long long)now_ms, late,
+                         (unsigned long long)frame.info.p_data, stale.size(), m_ready_video_frames.size());
+        }
         return true;
     }
 
@@ -784,6 +896,8 @@ private:
             free_buffer(ctx, frame->buffer);
         }
 
+        log_video_summary();
+        while (!m_held_video_bufs.empty()) { free_buffer(ctx, m_held_video_bufs.front()); m_held_video_bufs.pop_front(); }
         if (m_curr_video_buf.has_value()) {
             free_buffer(ctx, *m_curr_video_buf);
             m_curr_video_buf.reset();
@@ -882,6 +996,13 @@ private:
 
                 GuestBuffer buf;
                 if (!m_free_video_buffers.wait_pop(m_workers_stop, buf)) break;
+                if (avplayer_vtrace() && buf.fetch_ns) {
+                    const double age = (double)(mono_ns() - buf.fetch_ns) / 1e6;
+                    std::lock_guard<std::mutex> lk(m_stats_mutex);
+                    if (age < m_vstats.min_reuse_age_ms) m_vstats.min_reuse_age_ms = age;
+                    if (age < 50.0) m_vstats.reuse_under_50ms++;
+                }
+                buf.fetch_ns = 0;
 
                 uint32_t width = align_up((uint32_t)raw_frame->width, 16);
                 uint32_t pitch = video_pitch((uint32_t)raw_frame->width);
@@ -940,6 +1061,11 @@ private:
                 frame.info.details.video.luma_bit_depth = 8;
                 frame.info.details.video.chroma_bit_depth = 8;
 
+                if (avplayer_vtrace()) {
+                    const double lead = (double)ts - (double)current_time();
+                    { std::lock_guard<std::mutex> lk(m_stats_mutex); m_vstats.decode_lead_ms.add(lead); }
+                    AVPLAYER_LOG("[avvid] decoded t_ms=%.2f pts=%llu lead_ms=%.0f", (double)mono_ns() / 1e6, (unsigned long long)ts, lead);
+                }
                 m_ready_video_frames.push(std::move(frame));
                 av_frame_unref(raw_frame);
             }
@@ -1124,6 +1250,10 @@ private:
     SafeQueue<DecodedAudioFrame> m_ready_audio_frames;
 
     std::optional<GuestBuffer> m_curr_video_buf;
+    std::deque<GuestBuffer> m_held_video_bufs; // fetched, not yet given back to the decoder (guest DMA copy window)
+    std::mutex m_stats_mutex;
+    Nps5AvSyncStats m_vstats;
+    uint64_t m_last_poll_ns = 0, m_last_deliver_ns = 0;
     std::optional<GuestBuffer> m_curr_audio_buf;
 
     std::chrono::steady_clock::time_point m_start_time;
