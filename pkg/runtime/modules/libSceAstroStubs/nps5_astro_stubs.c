@@ -9,7 +9,7 @@
 // Not implemented (stubbed): libSceJson C++ object API (inert: see "JSON" below),
 // AudioPropagation geometry (valid handles, no audio paths, silent renders),
 // VoiceChat, PngEnc encode, Share capture, ContentExport, Http2 send/read, AudioIn HQ open,
-// PlayerInvitationDialog, Font glyph generation.
+// PlayerInvitationDialog.
 #include "recomp_runtime.h"
 #include "nps5_thunk.h"
 #include "nps5_diag.h"
@@ -189,16 +189,9 @@ void shim_scePngEncEncode(GuestContext *ctx) {
   RET32(ctx, E_PNG_FATAL);
 }
 
-// ---------------------------------------------------------------- libSceFont glyph API (not implemented)
-// The system font path (open, layout, render into a surface) lives in libSceFont; the per-glyph
-// generate/delete API is not provided. Reported as "invalid parameter" (0x80460002) so a caller
-// that probes falls back to the surface renderer.
-#define E_FONT_PARAM 0x80460002
-FIXED(sceFontGenerateCharGlyph, E_FONT_PARAM)
-FIXED(sceFontGetRenderCharGlyphMetrics, E_FONT_PARAM)
-FIXED(sceFontGetVerticalLayout, E_FONT_PARAM)
-FIXED(sceFontGlyphDefineAttribute, E_FONT_PARAM)
-FIXED(sceFontDeleteGlyph, 0)
+// ---------------------------------------------------------------- libSceFont glyph API
+// sceFontGenerateCharGlyph / GetRenderCharGlyphMetrics / GetVerticalLayout / GlyphDefineAttribute / DeleteGlyph
+// are implemented in libSceFont/ps4_font.c (skiptext: the error stubs made the game drop every character).
 
 // ---------------------------------------------------------------- libSceVoiceChat (signed out, no mic)
 FIXED(sceVoiceChatInitialize, 0)

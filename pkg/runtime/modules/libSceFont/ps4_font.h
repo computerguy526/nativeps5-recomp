@@ -339,6 +339,11 @@ typedef struct OrbisFontHorizontalLayout {
 
 void shim_sceFontRenderCharGlyphImageHorizontal(GuestContext *ctx);
 void shim_sceFontRenderCharGlyphImage(GuestContext *ctx);
+void shim_sceFontGetRenderCharGlyphMetrics(GuestContext *ctx);
+void shim_sceFontGetVerticalLayout(GuestContext *ctx);
+void shim_sceFontGenerateCharGlyph(GuestContext *ctx);
+void shim_sceFontDeleteGlyph(GuestContext *ctx);
+void shim_sceFontGlyphDefineAttribute(GuestContext *ctx);
 void shim_sceFontOpenFontFile(GuestContext *ctx);
 void shim_sceFontOpenFontMemory(GuestContext *ctx);
 void shim_sceFontOpenFontInstance(GuestContext *ctx);

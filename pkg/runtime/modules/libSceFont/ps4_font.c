@@ -1924,3 +1924,266 @@ void shim_sceFontRenderSurfaceSetScissor(GuestContext *ctx) {
     surf->sc_y1 = y1;
     SHIM_RETURN();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Glyph API used by Astro Bot (PPSA21564): sceFontGetRenderCharGlyphMetrics, sceFontGenerateCharGlyph,
+// sceFontGlyphDefineAttribute, sceFontDeleteGlyph, sceFontGetVerticalLayout. These were stubs returning an
+// error (libSceAstroStubs). The game's text layout (guest 0x12d9d90) measures every character with
+// sceFontGetRenderCharGlyphMetrics, retries with '_' on an error, and DROPS the character when both fail,
+// so with the stub every string laid out empty and no UI text was drawn at all (skiptext).
+// Layouts and argument checks follow AnyPS5 core/libs/prx/libSceFont (Render.cpp/Layout.cpp).
+#define FONT_ERROR_INVALID_GLYPH     ((int32_t)0x80460006)
+#define FONT_ERROR_NO_SUPPORT_GLYPH  ((int32_t)0x80460042)
+#define FONT_GLYPH_MAGIC             0x0F03
+#define FONT_GENERATE_DETAIL_ID      0x0FD3
+#define FONT_GLYPH_SLOT              0x40
+#define FONT_GLYPH_SLOTS             1024
+
+typedef struct GuestFontGlyph {      // FontGlyphOpaque (guest memory, the game holds a pointer to it)
+    uint16_t magic;
+    uint16_t flags;
+    uint8_t glyph_form;
+    uint8_t metrics_form;
+    uint16_t em_size;
+    uint16_t baseline;
+    uint16_t height_px;
+    uint16_t origin_x;
+    uint16_t origin_y;
+    float scale_x;
+    float base_scale;
+    uint64_t memory;
+    uint32_t codepoint;              // host bookkeeping (inside the 0x40 slot, past the public part)
+    uint32_t pad;
+    uint64_t owner_font;
+} GuestFontGlyph;
+_Static_assert(sizeof(GuestFontGlyph) <= FONT_GLYPH_SLOT, "glyph slot");
+
+static uint64_t g_glyph_pool_guest;
+static uint8_t g_glyph_used[FONT_GLYPH_SLOTS];
+static uint32_t g_glyph_next;
+
+static uint16_t font_clamp_u16(float v) {
+    if (!(v > 0.0f)) return 0;
+    if (v > 65535.0f) return 65535;
+    return (uint16_t)(v + 0.5f);
+}
+
+// Metrics of one character at the font's render scale (use_render=1) or its plain scale (0).
+// Caller holds g_font_mutex. Returns ORBIS_FONT_OK or an error; *m is zeroed on error.
+static int32_t font_char_metrics_locked(InternalFontHandle *h, uint32_t code, int use_render,
+                                        OrbisFontGlyphMetrics *m, float *used_w, float *used_h) {
+    memset(m, 0, sizeof(*m));
+    float pw = 16.0f, ph = 16.0f;
+    font_compute_pixel_scale(h, use_render, &pw, &ph);
+    if (used_w) *used_w = pw;
+    if (used_h) *used_h = ph;
+    if (!h->ft_face) {
+        // no face: same fallback box the render path reports
+        m->width = pw; m->height = ph;
+        m->Horizontal.bearingY = ph; m->Horizontal.advance = pw;
+        m->Vertical.bearingX = -pw * 0.5f; m->Vertical.advance = ph;
+        return ORBIS_FONT_OK;
+    }
+    font_apply_ft_size(h, use_render);
+    FT_UInt gi = FT_Get_Char_Index(h->ft_face, code);
+    if (gi == 0) return FONT_ERROR_NO_SUPPORT_GLYPH;
+    FT_Set_Transform(h->ft_face, NULL, NULL);
+    // FT_LOAD_DEFAULT like font_render_glyph_common, so measured and drawn advances agree
+    if (FT_Load_Glyph(h->ft_face, gi, FT_LOAD_DEFAULT) != 0 || !h->ft_face->glyph) return FONT_ERROR_NO_SUPPORT_GLYPH;
+    const FT_Glyph_Metrics *gm = &h->ft_face->glyph->metrics;
+    m->width = (float)gm->width / 64.0f;
+    m->height = (float)gm->height / 64.0f;
+    m->Horizontal.bearingX = (float)gm->horiBearingX / 64.0f;
+    m->Horizontal.bearingY = (float)gm->horiBearingY / 64.0f;
+    m->Horizontal.advance = (float)gm->horiAdvance / 64.0f;
+    if (FT_HAS_VERTICAL(h->ft_face)) {
+        m->Vertical.bearingX = (float)gm->vertBearingX / 64.0f;
+        m->Vertical.bearingY = (float)gm->vertBearingY / 64.0f;
+        m->Vertical.advance = (float)gm->vertAdvance / 64.0f;
+    } else {
+        m->Vertical.bearingX = (float)(gm->horiBearingX - gm->horiAdvance / 2) / 64.0f;
+        m->Vertical.bearingY = (float)(gm->vertAdvance - gm->height) / 2.0f / 64.0f;
+        m->Vertical.advance = (float)gm->vertAdvance / 64.0f;
+    }
+    return ORBIS_FONT_OK;
+}
+
+// int sceFontGetRenderCharGlyphMetrics(SceFontHandle font, uint32_t code, SceFontGlyphMetrics *metrics)
+void shim_sceFontGetRenderCharGlyphMetrics(GuestContext *ctx) {
+    uint64_t fontGuest = ctx->rdi;
+    uint32_t code = (uint32_t)ctx->rsi;
+    uint64_t metricsGuest = ctx->rdx;
+    if (!RECOMP_MEM_OK(ctx)) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_FONT_HANDLE; SHIM_RETURN(); }
+    OrbisFontGlyphMetrics *out = metricsGuest ? (OrbisFontGlyphMetrics *)(ctx->mem_base + metricsGuest) : NULL;
+    pthread_mutex_lock(&g_font_mutex);
+    InternalFontHandle *h = get_font(fontGuest);
+    int32_t rc;
+    if (!h) rc = ORBIS_FONT_ERROR_INVALID_FONT_HANDLE;
+    else if (code == 0) rc = ORBIS_FONT_ERROR_NO_SUPPORT_CODE;
+    else if (!out) rc = ORBIS_FONT_ERROR_INVALID_PARAMETER;
+    else {
+        OrbisFontGlyphMetrics m;
+        rc = font_char_metrics_locked(h, code, 1, &m, NULL, NULL);
+        *out = m;
+    }
+    pthread_mutex_unlock(&g_font_mutex);
+    if (rc != ORBIS_FONT_OK && out) memset(out, 0, sizeof(*out));
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
+
+// int sceFontGetVerticalLayout(SceFontHandle font, SceFontVerticalLayout *layout)  {baselineOffsetX, columnAdvance, decorationSpan}
+void shim_sceFontGetVerticalLayout(GuestContext *ctx) {
+    uint64_t fontGuest = ctx->rdi;
+    uint64_t layoutGuest = ctx->rsi;
+    if (!RECOMP_MEM_OK(ctx)) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_FONT_HANDLE; SHIM_RETURN(); }
+    float *out = layoutGuest ? (float *)(ctx->mem_base + layoutGuest) : NULL;
+    pthread_mutex_lock(&g_font_mutex);
+    InternalFontHandle *h = get_font(fontGuest);
+    int32_t rc = ORBIS_FONT_OK;
+    float col = 16.0f, base_x = -8.0f;
+    if (!h) rc = ORBIS_FONT_ERROR_INVALID_FONT_HANDLE;
+    else if (!out) rc = ORBIS_FONT_ERROR_INVALID_PARAMETER;
+    else {
+        float pw = 16.0f, ph = 16.0f;
+        font_compute_pixel_scale(h, 0, &pw, &ph);
+        col = pw;
+        if (h->ft_face) {
+            font_apply_ft_size(h, 0);
+            if (h->ft_face->size && h->ft_face->size->metrics.max_advance > 0)
+                col = (float)h->ft_face->size->metrics.max_advance / 64.0f;
+        }
+        base_x = -col * 0.5f;
+    }
+    pthread_mutex_unlock(&g_font_mutex);
+    if (out) {
+        if (rc == ORBIS_FONT_OK) { out[0] = base_x; out[1] = col; out[2] = 0.0f; }
+        else { out[0] = out[1] = out[2] = 0.0f; }
+    }
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
+
+static GuestFontGlyph *font_glyph_slot(GuestContext *ctx, uint64_t g, int *index) {
+    if (!g || !g_glyph_pool_guest || g < g_glyph_pool_guest) return NULL;
+    uint64_t off = g - g_glyph_pool_guest;
+    if (off % FONT_GLYPH_SLOT || off / FONT_GLYPH_SLOT >= FONT_GLYPH_SLOTS) return NULL;
+    int i = (int)(off / FONT_GLYPH_SLOT);
+    if (!g_glyph_used[i]) return NULL;
+    GuestFontGlyph *gl = (GuestFontGlyph *)(ctx->mem_base + g);
+    if (gl->magic != FONT_GLYPH_MAGIC) return NULL;
+    if (index) *index = i;
+    return gl;
+}
+
+// int sceFontGenerateCharGlyph(SceFontHandle font, uint32_t code, const SceFontGenerateGlyphDetail *detail, SceFontGlyph *pGlyph)
+void shim_sceFontGenerateCharGlyph(GuestContext *ctx) {
+    uint64_t fontGuest = ctx->rdi;
+    uint32_t code = (uint32_t)ctx->rsi;
+    uint64_t detailGuest = ctx->rdx;
+    uint64_t outGuest = ctx->rcx;
+    if (!RECOMP_MEM_OK(ctx) || !outGuest) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_PARAMETER; SHIM_RETURN(); }
+    uint64_t *out = (uint64_t *)(ctx->mem_base + outGuest);
+    *out = 0;
+    uint16_t form_options = 0; uint8_t glyph_form = 0, metrics_form = 0; uint64_t mem = 0;
+    if (detailGuest) {
+        const uint8_t *d = ctx->mem_base + detailGuest;
+        uint16_t id; memcpy(&id, d, 2);
+        memcpy(&form_options, d + 4, 2);
+        glyph_form = d[6]; metrics_form = d[7];
+        memcpy(&mem, d + 8, 8);
+        if (id != FONT_GENERATE_DETAIL_ID || (form_options & ~0x11u) != 0 ||
+            (glyph_form == 0 && metrics_form != 0) || (glyph_form != 0 && metrics_form == 0) ||
+            glyph_form > 1 || metrics_form > 4) {
+            ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_PARAMETER;
+            SHIM_RETURN();
+        }
+    }
+    if (!fontGuest) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_FONT_HANDLE; SHIM_RETURN(); }
+    if (code == 0) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_NO_SUPPORT_CODE; SHIM_RETURN(); }
+
+    pthread_mutex_lock(&g_font_mutex);
+    int32_t rc = ORBIS_FONT_OK;
+    InternalFontHandle *h = get_font(fontGuest);
+    OrbisFontGlyphMetrics m;
+    float sw = 16.0f, sh = 16.0f;
+    if (!h) rc = ORBIS_FONT_ERROR_INVALID_FONT_HANDLE;
+    else rc = font_char_metrics_locked(h, code, 0, &m, &sw, &sh);
+    if (rc == ORBIS_FONT_OK && !g_glyph_pool_guest) {
+        g_glyph_pool_guest = recomp_vm_alloc_named(ctx, FONT_GLYPH_SLOT * FONT_GLYPH_SLOTS, PROT_READ | PROT_WRITE, 0, "font_glyphs");
+        if (!g_glyph_pool_guest) rc = ORBIS_FONT_ERROR_ALLOCATION_FAILED;
+    }
+    int slot = -1;
+    if (rc == ORBIS_FONT_OK) {
+        for (uint32_t k = 0; k < FONT_GLYPH_SLOTS; k++) {
+            uint32_t i = (g_glyph_next + k) % FONT_GLYPH_SLOTS;
+            if (!g_glyph_used[i]) { slot = (int)i; g_glyph_next = i + 1; break; }
+        }
+        if (slot < 0) rc = ORBIS_FONT_ERROR_ALLOCATION_FAILED;
+    }
+    if (rc == ORBIS_FONT_OK) {
+        g_glyph_used[slot] = 1;
+        uint64_t g = g_glyph_pool_guest + (uint64_t)slot * FONT_GLYPH_SLOT;
+        GuestFontGlyph *gl = (GuestFontGlyph *)(ctx->mem_base + g);
+        memset(gl, 0, FONT_GLYPH_SLOT);
+        gl->magic = FONT_GLYPH_MAGIC;
+        gl->flags = form_options;
+        gl->glyph_form = glyph_form;
+        gl->metrics_form = metrics_form;
+        gl->em_size = font_clamp_u16(sh);
+        gl->baseline = font_clamp_u16(m.Horizontal.bearingY);
+        gl->height_px = font_clamp_u16(m.height);
+        gl->origin_y = gl->baseline;
+        gl->scale_x = sw;
+        gl->base_scale = sh;
+        gl->memory = mem;
+        gl->codepoint = code;
+        gl->owner_font = fontGuest;
+        *out = g;
+    }
+    pthread_mutex_unlock(&g_font_mutex);
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
+
+// int sceFontDeleteGlyph(const SceFontMemory *memory, SceFontGlyph *pGlyph)
+void shim_sceFontDeleteGlyph(GuestContext *ctx) {
+    uint64_t pGuest = ctx->rsi;
+    if (!RECOMP_MEM_OK(ctx) || !pGuest) { ctx->rax = (uint64_t)(int64_t)ORBIS_FONT_ERROR_INVALID_PARAMETER; SHIM_RETURN(); }
+    uint64_t *p = (uint64_t *)(ctx->mem_base + pGuest);
+    pthread_mutex_lock(&g_font_mutex);
+    int i = -1;
+    GuestFontGlyph *gl = font_glyph_slot(ctx, *p, &i);
+    int32_t rc = FONT_ERROR_INVALID_GLYPH;
+    if (gl) {
+        gl->magic = 0;
+        g_glyph_used[i] = 0;
+        *p = 0;
+        rc = ORBIS_FONT_OK;
+    }
+    pthread_mutex_unlock(&g_font_mutex);
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
+
+// int sceFontGlyphDefineAttribute(SceFontGlyph glyph, int attribute, int *previousAttribute)  (0x10 / 0x11 = bit 1 of flags)
+void shim_sceFontGlyphDefineAttribute(GuestContext *ctx) {
+    uint64_t g = ctx->rdi;
+    int32_t attr = (int32_t)ctx->rsi;
+    uint64_t prevGuest = ctx->rdx;
+    if (!RECOMP_MEM_OK(ctx)) { ctx->rax = (uint64_t)(int64_t)FONT_ERROR_INVALID_GLYPH; SHIM_RETURN(); }
+    int32_t *prev = prevGuest ? (int32_t *)(ctx->mem_base + prevGuest) : NULL;
+    pthread_mutex_lock(&g_font_mutex);
+    GuestFontGlyph *gl = font_glyph_slot(ctx, g, NULL);
+    int32_t rc = ORBIS_FONT_OK;
+    if (!gl) { rc = FONT_ERROR_INVALID_GLYPH; if (prev) *prev = 0; }
+    else if (attr != 0x10 && attr != 0x11) { rc = ORBIS_FONT_ERROR_INVALID_PARAMETER; if (prev) *prev = 0; }
+    else {
+        int32_t was = (gl->flags & 2) ? 0x11 : 0x10;
+        gl->flags = (uint16_t)((gl->flags & ~2u) | ((uint32_t)(attr - 0x10) << 1));
+        if (prev) *prev = was;
+    }
+    pthread_mutex_unlock(&g_font_mutex);
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
