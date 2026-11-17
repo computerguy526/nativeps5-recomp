@@ -21,6 +21,8 @@ void ps4_pak_init(const char *app_root);
 
 // Lookup a relative subpath (e.g. "engine/content/internationalization/icudt64l/lang/en.res")
 // Returns true if found and fills out_entry.
+/* NPS5_PAK_LOCALE_FALLBACK=1: serve <name>.res for a missing <name>_<loc>.res (off by default, as on console). */
+bool ps4_pak_locale_fallback_enabled(void);
 bool ps4_pak_lookup(const char *subpath, ps4_pak_entry_t *out_entry);
 
 // Compute parent locale path for CLDR/ICU resource bundle (.res) inheritance (e.g. "en_US.res" -> "en.res")

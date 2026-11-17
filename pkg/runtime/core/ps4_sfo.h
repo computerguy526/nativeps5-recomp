@@ -39,6 +39,11 @@ bool ps4_sfo_get_int(const Ps4SfoContext *sfo, const char *key, int32_t *out_val
 // Query string parameter (returns true if found and copies null-terminated string)
 bool ps4_sfo_get_string(const Ps4SfoContext *sfo, const char *key, char *out_buf, size_t out_buf_sz);
 
+// Build an in-memory SFO from a PS5 sce_sys/param.json (titleId, contentId, contentVersion, masterVersion,
+// applicationCategoryType, userDefinedParam1..4, localizedParameters titleName). Free with ps4_sfo_free.
+bool ps4_sfo_from_param_json(Ps4SfoContext *sfo, const char *json, size_t json_len);
+
+// Find and load param.sfo (PS4); when there is none, sce_sys/param.json (PS5) converted by the above.
 // Find and load param.sfo from standard application paths
 bool ps4_sfo_find_and_load(Ps4SfoContext *sfo);
 

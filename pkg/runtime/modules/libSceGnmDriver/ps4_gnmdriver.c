@@ -9,6 +9,7 @@
 #include "ps4_videoout.h"
 #include "ps4_gnm_metal.h"
 #include "ps4_equeue.h"
+#include "ps4_gnm_membudget.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,7 +130,7 @@ static const uint32_t g_ctxInitSequence400[] = {
 };
 
 static inline void *recomp_guest_to_host(const GuestContext *ctx, uint64_t gaddr) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) return NULL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) return NULL;
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr < (uintptr_t)ctx->mem_base + ctx->mem_size) {
         return (void *)gaddr;
     }
@@ -168,7 +169,7 @@ void ps4_gnmdriver_init(GuestContext *ctx) {
         g_tessellation_ring_addr = recomp_vm_alloc_named_aligned(
             proc, GNM_TESSELLATION_RING_SIZE, 0x10000, PROT_READ | PROT_WRITE, 0, "gnm_tess_ring"
         );
-        printf("[ps4-gnm] Allocated tessellation factor ring buffer at guest VAddr 0x%llx (size: %u MB)\n",
+        PS4_LOGF(NPS5_S_GPU, NPS5_L_DEBUG, "ps4-gnm", "Allocated tessellation factor ring buffer at guest VAddr 0x%llx (size: %u MB)\n",
                (unsigned long long)g_tessellation_ring_addr, GNM_TESSELLATION_RING_SIZE / (1024 * 1024));
     }
     pthread_mutex_unlock(&g_gnm_mutex);
@@ -671,9 +672,10 @@ static void gnm_remember_ctx(GuestContext *ctx) {
 // Returns nonzero when the queue stopped at a WAIT_REG_MEM; the renderer then advances the
 // read pointer itself as the packets complete.
 static int gnm_process_ring_span(GuestContext *ctx, GnmComputeQueue *q, uint32_t from_dw, uint32_t size_dw) {
-    if (!ctx || !ctx->mem_base || size_dw == 0) return 0;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || size_dw == 0) return 0;
     uint64_t addr = q->ring_base_addr + (uint64_t)from_dw * 4u;
     if (addr == 0 || addr >= ctx->mem_size || (uint64_t)size_dw * 4u > ctx->mem_size - addr) return 0;
+    if (!ps4_gpumem_range_accessible(ctx->mem_base + addr, (uint64_t)size_dw * 4u, 0)) return 0; // m8: ring in a hole
     const uint32_t *words = (const uint32_t *)(ctx->mem_base + addr);
     return ps4_gnm_metal_process_compute_packets(ctx, words, size_dw, q->pipe_id, (uint32_t)(q - g_compute_queues), q->read_ptr, q->ring_size_dw, from_dw);
 }
@@ -702,7 +704,7 @@ void ps4_gnm_dingdong(GuestContext *ctx, uint32_t gnm_vqid, uint32_t next_offs_d
     if (next_offs_dw != offs) {
         if (!s_logged_first_dingdong) {
             s_logged_first_dingdong = true;
-            fprintf(stderr, "[ps4-gnm] first DingDong: vqid=%u pipe=%u queue=%u offs %u -> %u (ring %u dw)\n",
+            PS4_LOGF(NPS5_S_GPU, NPS5_L_WARN, "ps4-gnm", "first DingDong: vqid=%u pipe=%u queue=%u offs %u -> %u (ring %u dw)\n",
                     gnm_vqid, q->pipe_id, q->queue_id, offs, next_offs_dw, q->ring_size_dw);
         }
         if (next_offs_dw < offs && next_offs_dw != 0) {
@@ -774,7 +776,7 @@ int32_t sceGnmMapComputeQueue(uint32_t pipe_id, uint32_t queue_id, uint64_t ring
     pthread_mutex_unlock(&g_gnm_compute_mutex);
 
     int32_t vqid = slot + 1; // DingDong expects [1..64]
-    printf("[ps4-gnm] ASC pipe %u queue %u mapped to vqid %d (ring 0x%llx, %u dw)\n",
+    PS4_LOGF(NPS5_S_GPU, NPS5_L_DEBUG, "ps4-gnm", "ASC pipe %u queue %u mapped to vqid %d (ring 0x%llx, %u dw)\n",
            pipe_id, queue_id, vqid, (unsigned long long)ring_base_addr, ring_size_dw);
     return vqid;
 }
@@ -869,7 +871,7 @@ int32_t sceGnmAddEqEvent(uint64_t eq, uint64_t id, void *udata) {
     }
     if (slot < 0) {
         pthread_mutex_unlock(&g_gnm_eq_mutex);
-        fprintf(stderr, "[ps4-gnm] sceGnmAddEqEvent: registration table full\n");
+        PS4_LOGF(NPS5_S_GPU, NPS5_L_WARN, "ps4-gnm", "sceGnmAddEqEvent: registration table full\n");
         return (int32_t)0x8002000c; // ORBIS_KERNEL_ERROR_ENOMEM
     }
     g_eq_regs[slot].in_use = true;
@@ -878,7 +880,7 @@ int32_t sceGnmAddEqEvent(uint64_t eq, uint64_t id, void *udata) {
     g_eq_regs[slot].udata = (uint64_t)(uintptr_t)udata;
     pthread_mutex_unlock(&g_gnm_eq_mutex);
 
-    printf("[ps4-gnm] sceGnmAddEqEvent(eq=%d, id=0x%llx, udata=0x%llx)\n",
+    PS4_LOGF(NPS5_S_GPU, NPS5_L_DEBUG, "ps4-gnm", "sceGnmAddEqEvent(eq=%d, id=0x%llx, udata=0x%llx)\n",
            q, (unsigned long long)id, (unsigned long long)(uintptr_t)udata);
     return ORBIS_GNM_OK;
 }
@@ -1036,8 +1038,10 @@ static uint64_t g_submitted_frames = 0;
 
 static void *gnm_resolve_guest_or_host_ptr(GuestContext *ctx, uint64_t addr, size_t size_bytes) {
     if (addr == 0) return NULL;
-    if (ctx && ctx->mem_base) {
+    if (ctx && RECOMP_MEM_OK(ctx)) {
         if (addr < ctx->mem_size && size_bytes <= ctx->mem_size - addr) {
+            // m8: a guest address inside the window may sit in a decommitted hole (PROT_NONE): refuse it
+            if (size_bytes && !ps4_gpumem_range_accessible(ctx->mem_base + addr, size_bytes, 0)) return NULL;
             return (void *)(ctx->mem_base + addr);
         }
         uintptr_t base = (uintptr_t)ctx->mem_base;
@@ -1151,7 +1155,7 @@ static bool PatchFlipRequest(GuestContext *ctx, uint32_t *cmdb, uint32_t size_in
                     wd[2] = backup[2] & 0xfffffffcu;
                     wd[3] = backup[3];
                     wd[4] = backup[4];
-                    if (!ctx || !ctx->mem_base) {
+                    if (!ctx || !RECOMP_MEM_OK(ctx)) {
                         uint64_t label_addr = ((uint64_t)wd[2]) | ((uint64_t)wd[3] << 32);
                         uint32_t *label_ptr = (uint32_t *)gnm_resolve_guest_or_host_ptr(ctx, label_addr, sizeof(uint32_t));
                         if (label_ptr) __atomic_store_n(label_ptr, wd[4], __ATOMIC_RELEASE);
@@ -1167,7 +1171,7 @@ static bool PatchFlipRequest(GuestContext *ctx, uint32_t *cmdb, uint32_t size_in
                     eop[3] = (backup[3] & 0xffffu) | 0x22000000u;
                     eop[4] = backup[4];
                     eop[5] = 0u;
-                    if (!ctx || !ctx->mem_base) {
+                    if (!ctx || !RECOMP_MEM_OK(ctx)) {
                         uint64_t label_addr = ((uint64_t)eop[2]) | ((uint64_t)(backup[3] & 0xffffu) << 32);
                         uint32_t *label_ptr = (uint32_t *)gnm_resolve_guest_or_host_ptr(ctx, label_addr, sizeof(uint32_t));
                         if (label_ptr) __atomic_store_n(label_ptr, eop[4], __ATOMIC_RELEASE);
@@ -1184,7 +1188,7 @@ static bool PatchFlipRequest(GuestContext *ctx, uint32_t *cmdb, uint32_t size_in
                     eop[3] = 0x01000000u;
                     eop[4] = 0u;
                     eop[5] = 0u;
-                    if (!ctx || !ctx->mem_base) {
+                    if (!ctx || !RECOMP_MEM_OK(ctx)) {
                         fire_eop = true;
                     }
                 }
@@ -1551,7 +1555,7 @@ void shim_sceGnmRegisterResource(GuestContext *ctx) {
     const char *name = (const char *)recomp_guest_to_host(ctx, ctx->r8);
     int res_type = (int)ctx->r9;
     uint64_t user_data = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         user_data = *(uint64_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
     }
     ctx->rax = (uint64_t)(int64_t)sceGnmRegisterResource(res_handle, owner_handle, addr, size, name, res_type, user_data);
@@ -2357,7 +2361,7 @@ void shim_sceGnmDrawIndexOffset(GuestContext *ctx) {
 void shim_sceGnmDrawIndexIndirect(GuestContext *ctx) {
     uint32_t *cmdbuf = (uint32_t *)recomp_guest_to_host(ctx, ctx->rdi);
     uint32_t flags = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         flags = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
     }
     ctx->rax = (uint64_t)(int64_t)sceGnmDrawIndexIndirect(cmdbuf, (uint32_t)ctx->rsi, (uint32_t)ctx->rdx, (uint32_t)ctx->rcx, (uint32_t)ctx->r8, (uint32_t)ctx->r9, flags);
@@ -2367,7 +2371,7 @@ void shim_sceGnmDrawIndexIndirect(GuestContext *ctx) {
 void shim_sceGnmDrawIndirect(GuestContext *ctx) {
     uint32_t *cmdbuf = (uint32_t *)recomp_guest_to_host(ctx, ctx->rdi);
     uint32_t flags = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         flags = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
     }
     ctx->rax = (uint64_t)(int64_t)sceGnmDrawIndirect(cmdbuf, (uint32_t)ctx->rsi, (uint32_t)ctx->rdx, (uint32_t)ctx->rcx, (uint32_t)ctx->r8, (uint32_t)ctx->r9, flags);
@@ -2379,7 +2383,7 @@ void shim_sceGnmDrawIndexIndirectCountMulti(GuestContext *ctx) {
     uint32_t vertex_sgpr = 0;
     uint32_t instance_sgpr = 0;
     uint32_t flags = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         vertex_sgpr = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
         instance_sgpr = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 16);
         flags = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 24);
@@ -2398,7 +2402,7 @@ void shim_sceGnmDrawIndexIndirectMulti(GuestContext *ctx) {
     uint32_t *cmdbuf = (uint32_t *)recomp_guest_to_host(ctx, ctx->rdi);
     uint32_t instance_sgpr = 0;
     uint32_t flags = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         instance_sgpr = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
         flags = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 16);
     }
@@ -2605,7 +2609,7 @@ void shim_sceGnmSubmitAndFlipCommandBuffers(GuestContext *ctx) {
     uint32_t buf_idx = 0;
     uint32_t flip_mode = 0;
     int64_t flip_arg = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         buf_idx = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
         flip_mode = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 16);
         flip_arg = *(int64_t *)recomp_guest_to_host(ctx, ctx->rsp + 24);
@@ -2626,7 +2630,7 @@ void shim_sceGnmSubmitAndFlipCommandBuffersForWorkload(GuestContext *ctx) {
     uint32_t buf_idx = 0;
     uint32_t flip_mode = 0;
     int64_t flip_arg = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         vo_handle = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
         buf_idx = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 16);
         flip_mode = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 24);
@@ -2661,7 +2665,7 @@ void shim_sceGnmRequestFlipAndSubmitDoneForWorkload(GuestContext *ctx) {
     uint32_t buf_idx = (uint32_t)ctx->r8;
     uint32_t flip_mode = (uint32_t)ctx->r9;
     int64_t flip_arg = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         flip_arg = *(int64_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
     }
     ctx->rax = (uint64_t)(int64_t)sceGnmRequestFlipAndSubmitDoneForWorkload(ctx, workload, gpu_addr, gpu_addr_size_in_bytes, vo_handle, buf_idx, flip_mode, flip_arg);
@@ -2713,7 +2717,7 @@ void shim_sceGnmDrawIndirectMulti(GuestContext *ctx) {
     uint32_t *cmdbuf = (uint32_t *)recomp_guest_to_host(ctx, ctx->rdi);
     uint32_t instance_sgpr = 0;
     uint32_t flags = 0;
-    if (ctx->rsp && ctx->mem_base) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx)) {
         instance_sgpr = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 8);
         flags = *(uint32_t *)recomp_guest_to_host(ctx, ctx->rsp + 16);
     }

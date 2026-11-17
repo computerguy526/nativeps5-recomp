@@ -29,7 +29,7 @@ static int32_t _sceContentExportInit(GuestContext *ctx, uint64_t param_addr, uin
   if (g_content_export_initialized) {
     return ORBIS_CONTENT_EXPORT_ERROR_MULTIPLEINIT;
   }
-  if (!param_addr || !ctx || !ctx->mem_base) {
+  if (!param_addr || !ctx || !RECOMP_MEM_OK(ctx)) {
     return ORBIS_CONTENT_EXPORT_ERROR_INVALDPARAM;
   }
   OrbisContentExportInitParam *param =

@@ -75,6 +75,8 @@ uint64_t ps4_direct_mem_size_rule(uint32_t sdk, int neo, int has_flex, uint64_t 
 // PS4_DIRECT_MEM_SIZE=<n>[k|m|g] overrides the result; that is a debugging aid, not console
 // behaviour. Runs at process start, before the game allocates direct memory.
 void ps4_direct_mem_configure(GuestContext *ctx, uint64_t proc_param_addr);
+// Nonzero when the guest image is a PS5 one (known once ps4_direct_mem_configure ran).
+int nps5_guest_is_ps5(void);
 int ps4_direct_mem_init(void);
 void ps4_direct_mem_on_unmap(GuestContext *ctx, uint64_t addr, size_t size);
 void ps4_direct_mem_destroy(void);

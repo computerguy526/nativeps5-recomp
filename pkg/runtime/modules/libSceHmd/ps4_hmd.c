@@ -34,7 +34,7 @@ void shim_sceHmdClose(GuestContext *ctx) {
 }
 
 void shim_sceHmdGetDeviceInformation(GuestContext *ctx) {
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         OrbisHmdDeviceInformation *info = (OrbisHmdDeviceInformation *)(ctx->mem_base + ctx->rdi);
         memset(info, 0, sizeof(*info));
         info->status = ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
@@ -50,7 +50,7 @@ void shim_sceHmdGetDeviceInformationByHandle(GuestContext *ctx) {
 }
 
 void shim_sceHmdGetFieldOfView(GuestContext *ctx) {
-    if (ctx->rsi && ctx->mem_base) {
+    if (ctx->rsi && RECOMP_MEM_OK(ctx)) {
         OrbisHmdFieldOfView *fov = (OrbisHmdFieldOfView *)(ctx->mem_base + ctx->rsi);
         fov->left = -0.85f;
         fov->right = 0.85f;
@@ -62,7 +62,7 @@ void shim_sceHmdGetFieldOfView(GuestContext *ctx) {
 }
 
 void shim_sceHmdGet2DEyeOffset(GuestContext *ctx) {
-    if (ctx->rsi && ctx->rdx && ctx->mem_base) {
+    if (ctx->rsi && ctx->rdx && RECOMP_MEM_OK(ctx)) {
         OrbisHmdEyeOffset *left = (OrbisHmdEyeOffset *)(ctx->mem_base + ctx->rsi);
         OrbisHmdEyeOffset *right = (OrbisHmdEyeOffset *)(ctx->mem_base + ctx->rdx);
         left->offset_x = -0.0315f; left->offset_y = 0.0f; left->offset_z = 0.0f;
@@ -88,7 +88,7 @@ void shim_sceHmdReprojectionFinalize(GuestContext *ctx) {
 }
 
 void shim_sceHmdReprojectionQueryGarlicBuffSize(GuestContext *ctx) {
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         *(size_t *)(ctx->mem_base + ctx->rdi) = 0x200000;
     }
     ctx->rax = 0;
@@ -96,7 +96,7 @@ void shim_sceHmdReprojectionQueryGarlicBuffSize(GuestContext *ctx) {
 }
 
 void shim_sceHmdReprojectionQueryGarlicBuffAlign(GuestContext *ctx) {
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         *(size_t *)(ctx->mem_base + ctx->rdi) = 0x10000;
     }
     ctx->rax = 0;
@@ -104,7 +104,7 @@ void shim_sceHmdReprojectionQueryGarlicBuffAlign(GuestContext *ctx) {
 }
 
 void shim_sceHmdReprojectionQueryOnionBuffSize(GuestContext *ctx) {
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         *(size_t *)(ctx->mem_base + ctx->rdi) = 0x200000;
     }
     ctx->rax = 0;
@@ -112,7 +112,7 @@ void shim_sceHmdReprojectionQueryOnionBuffSize(GuestContext *ctx) {
 }
 
 void shim_sceHmdReprojectionQueryOnionBuffAlign(GuestContext *ctx) {
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         *(size_t *)(ctx->mem_base + ctx->rdi) = 0x10000;
     }
     ctx->rax = 0;

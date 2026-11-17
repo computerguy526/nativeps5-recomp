@@ -217,12 +217,12 @@ static inline uint32_t align_up_u32(uint32_t v, uint32_t a) { return (v + a - 1u
 static inline uint64_t align_up_u64(uint64_t v, uint64_t a) { return (v + a - 1ULL) & ~(a - 1ULL); }
 
 static inline bool grange_ok(const GuestContext *ctx, uint64_t addr, uint64_t size) {
-    if (!ctx || !ctx->mem_base || addr == 0) return false;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || addr == 0) return false;
     return addr < ctx->mem_size && size <= ctx->mem_size - addr;
 }
 
 static inline void *gptr(const GuestContext *ctx, uint64_t addr) {
-    if (!ctx || !ctx->mem_base || addr == 0 || addr >= ctx->mem_size) return NULL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || addr == 0 || addr >= ctx->mem_size) return NULL;
     return (void *)(ctx->mem_base + addr);
 }
 

@@ -1,3 +1,4 @@
+#include "nps5_sleep.h"
 #include "ps4_posix.h"
 #include "ps4_threading.h"
 #include <stdio.h>
@@ -11,6 +12,7 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <pthread.h>
+#include "nps5_kio.h"
 
 static inline void *guest_to_host(GuestContext *ctx, uint64_t addr) {
     return addr ? (void *)(ctx->mem_base + addr) : NULL;
@@ -75,7 +77,7 @@ void shim_accept(GuestContext *ctx) {
     int sockfd = (int)ctx->rdi;
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
-    int ret = accept(sockfd, addr, addrlen);
+    int ret = nps5_kaccept(sockfd, addr, addrlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -90,7 +92,7 @@ void shim_send(GuestContext *ctx) {
     const void *buf = guest_to_host(ctx, ctx->rsi);
     size_t len = (size_t)ctx->rdx;
     int flags = (int)ctx->rcx;
-    ssize_t ret = send(sockfd, buf, len, flags);
+    ssize_t ret = nps5_ksend(sockfd, buf, len, flags);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -105,7 +107,7 @@ void shim_recv(GuestContext *ctx) {
     void *buf = guest_to_host(ctx, ctx->rsi);
     size_t len = (size_t)ctx->rdx;
     int flags = (int)ctx->rcx;
-    ssize_t ret = recv(sockfd, buf, len, flags);
+    ssize_t ret = nps5_krecv(sockfd, buf, len, flags);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -122,7 +124,7 @@ void shim_sendto(GuestContext *ctx) {
     int flags = (int)ctx->rcx;
     const struct sockaddr *dest_addr = (const struct sockaddr *)guest_to_host(ctx, ctx->r8);
     socklen_t addrlen = (socklen_t)ctx->r9;
-    ssize_t ret = sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+    ssize_t ret = nps5_ksendto(sockfd, buf, len, flags, dest_addr, addrlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -139,7 +141,7 @@ void shim_recvfrom(GuestContext *ctx) {
     int flags = (int)ctx->rcx;
     struct sockaddr *src_addr = (struct sockaddr *)guest_to_host(ctx, ctx->r8);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->r9);
-    ssize_t ret = recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+    ssize_t ret = nps5_krecvfrom(sockfd, buf, len, flags, src_addr, addrlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -166,40 +168,60 @@ struct guest_iovec {
     uint64_t iov_len;
 };
 
-void shim_sendmsg(GuestContext *ctx) {
-    int sockfd = (int)ctx->rdi;
-    uint64_t msg_addr = ctx->rsi;
-    int flags = (int)ctx->rdx;
-    if (!msg_addr || !ctx->mem_base) {
-        set_guest_errno(ctx, EFAULT);
-        ctx->rax = (uint64_t)-1;
-        SHIM_RETURN();
-    }
-    const struct guest_msghdr *gmsg = (const struct guest_msghdr *)(ctx->mem_base + msg_addr);
-    struct msghdr hmsg;
-    memset(&hmsg, 0, sizeof(hmsg));
-    hmsg.msg_name = gmsg->msg_name ? (void *)(ctx->mem_base + gmsg->msg_name) : NULL;
-    hmsg.msg_namelen = gmsg->msg_namelen;
-    hmsg.msg_iovlen = gmsg->msg_iovlen;
-    hmsg.msg_control = gmsg->msg_control ? (void *)(ctx->mem_base + gmsg->msg_control) : NULL;
-    hmsg.msg_controllen = gmsg->msg_controllen;
-    hmsg.msg_flags = gmsg->msg_flags;
-
-    struct iovec stack_iov[16];
-    struct iovec *hiov = stack_iov;
-    if (gmsg->msg_iovlen > 16) {
-        hiov = (struct iovec *)malloc(sizeof(struct iovec) * gmsg->msg_iovlen);
-    }
+// m8: the guest's msghdr and iovec array are read with the non-faulting helpers: a pointer into an unmapped hole
+// is EFAULT, not a host SIGSEGV; the iovec count is bounded (a wild count was an unchecked malloc). The name,
+// control and iov_base pointers go to the kernel, which checks them itself.
+#define NPS5_MAX_MSG_IOV 1024
+static int load_guest_msg(GuestContext *ctx, uint64_t msg_addr, struct guest_msghdr *gmsg, struct msghdr *hmsg,
+                          struct iovec *stack_iov, struct iovec **hiov_out) {
+    *hiov_out = stack_iov;
+    if (!msg_addr || !RECOMP_MEM_OK(ctx) || !nps5_guest_safe_read(msg_addr, gmsg, sizeof *gmsg)) return EFAULT;
+    if (gmsg->msg_iovlen < 0 || gmsg->msg_iovlen > NPS5_MAX_MSG_IOV) return EMSGSIZE;
+    memset(hmsg, 0, sizeof(*hmsg));
+    hmsg->msg_name = gmsg->msg_name ? (void *)(ctx->mem_base + gmsg->msg_name) : NULL;
+    hmsg->msg_namelen = gmsg->msg_namelen;
+    hmsg->msg_iovlen = gmsg->msg_iovlen;
+    hmsg->msg_control = gmsg->msg_control ? (void *)(ctx->mem_base + gmsg->msg_control) : NULL;
+    hmsg->msg_controllen = gmsg->msg_controllen;
+    hmsg->msg_flags = gmsg->msg_flags;
     if (gmsg->msg_iov && gmsg->msg_iovlen > 0) {
-        const struct guest_iovec *giov = (const struct guest_iovec *)(ctx->mem_base + gmsg->msg_iov);
+        struct guest_iovec gstack[16], *giov = gstack;
+        if (gmsg->msg_iovlen > 16 && !(giov = (struct guest_iovec *)malloc(sizeof(*giov) * gmsg->msg_iovlen))) return ENOMEM;
+        if (!nps5_guest_safe_read(gmsg->msg_iov, giov, sizeof(*giov) * gmsg->msg_iovlen)) {
+            if (giov != gstack) free(giov);
+            return EFAULT;
+        }
+        struct iovec *hiov = stack_iov;
+        if (gmsg->msg_iovlen > 16 && !(hiov = (struct iovec *)malloc(sizeof(struct iovec) * gmsg->msg_iovlen))) {
+            if (giov != gstack) free(giov);
+            return ENOMEM;
+        }
         for (int i = 0; i < gmsg->msg_iovlen; i++) {
             hiov[i].iov_base = giov[i].iov_base ? (void *)(ctx->mem_base + giov[i].iov_base) : NULL;
             hiov[i].iov_len = (size_t)giov[i].iov_len;
         }
-        hmsg.msg_iov = hiov;
+        if (giov != gstack) free(giov);
+        hmsg->msg_iov = hiov;
+        *hiov_out = hiov;
+    }
+    return 0;
+}
+
+void shim_sendmsg(GuestContext *ctx) {
+    int sockfd = (int)ctx->rdi;
+    uint64_t msg_addr = ctx->rsi;
+    int flags = (int)ctx->rdx;
+    struct guest_msghdr gm;
+    struct msghdr hmsg;
+    struct iovec stack_iov[16], *hiov;
+    int err = load_guest_msg(ctx, msg_addr, &gm, &hmsg, stack_iov, &hiov);
+    if (err) {
+        set_guest_errno(ctx, err);
+        ctx->rax = (uint64_t)-1;
+        SHIM_RETURN();
     }
 
-    ssize_t ret = sendmsg(sockfd, &hmsg, flags);
+    ssize_t ret = nps5_ksendmsg(sockfd, &hmsg, flags);
     if (hiov != stack_iov) {
         free(hiov);
     }
@@ -216,36 +238,18 @@ void shim_recvmsg(GuestContext *ctx) {
     int sockfd = (int)ctx->rdi;
     uint64_t msg_addr = ctx->rsi;
     int flags = (int)ctx->rdx;
-    if (!msg_addr || !ctx->mem_base) {
-        set_guest_errno(ctx, EFAULT);
+    struct guest_msghdr gm;
+    struct msghdr hmsg;
+    struct iovec stack_iov[16], *hiov;
+    int err = load_guest_msg(ctx, msg_addr, &gm, &hmsg, stack_iov, &hiov);
+    if (err) {
+        set_guest_errno(ctx, err);
         ctx->rax = (uint64_t)-1;
         SHIM_RETURN();
     }
-    struct guest_msghdr *gmsg = (struct guest_msghdr *)(ctx->mem_base + msg_addr);
-    struct msghdr hmsg;
-    memset(&hmsg, 0, sizeof(hmsg));
-    hmsg.msg_name = gmsg->msg_name ? (void *)(ctx->mem_base + gmsg->msg_name) : NULL;
-    hmsg.msg_namelen = gmsg->msg_namelen;
-    hmsg.msg_iovlen = gmsg->msg_iovlen;
-    hmsg.msg_control = gmsg->msg_control ? (void *)(ctx->mem_base + gmsg->msg_control) : NULL;
-    hmsg.msg_controllen = gmsg->msg_controllen;
-    hmsg.msg_flags = gmsg->msg_flags;
+    struct guest_msghdr *gmsg = (struct guest_msghdr *)(ctx->mem_base + msg_addr); // validated readable above; written back below
 
-    struct iovec stack_iov[16];
-    struct iovec *hiov = stack_iov;
-    if (gmsg->msg_iovlen > 16) {
-        hiov = (struct iovec *)malloc(sizeof(struct iovec) * gmsg->msg_iovlen);
-    }
-    if (gmsg->msg_iov && gmsg->msg_iovlen > 0) {
-        const struct guest_iovec *giov = (const struct guest_iovec *)(ctx->mem_base + gmsg->msg_iov);
-        for (int i = 0; i < gmsg->msg_iovlen; i++) {
-            hiov[i].iov_base = giov[i].iov_base ? (void *)(ctx->mem_base + giov[i].iov_base) : NULL;
-            hiov[i].iov_len = (size_t)giov[i].iov_len;
-        }
-        hmsg.msg_iov = hiov;
-    }
-
-    ssize_t ret = recvmsg(sockfd, &hmsg, flags);
+    ssize_t ret = nps5_krecvmsg(sockfd, &hmsg, flags);
     if (ret >= 0) {
         gmsg->msg_namelen = hmsg.msg_namelen;
         gmsg->msg_controllen = hmsg.msg_controllen;
@@ -285,7 +289,7 @@ void shim_getsockopt(GuestContext *ctx) {
     int optname = (int)ctx->rdx;
     void *optval = guest_to_host(ctx, ctx->rcx);
     socklen_t *optlen = (socklen_t *)guest_to_host(ctx, ctx->r8);
-    int ret = getsockopt(sockfd, level, optname, optval, optlen);
+    int ret = nps5_kgetsockopt(sockfd, level, optname, optval, optlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -299,7 +303,7 @@ void shim_getsockname(GuestContext *ctx) {
     int sockfd = (int)ctx->rdi;
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
-    int ret = getsockname(sockfd, addr, addrlen);
+    int ret = nps5_kgetsockname(sockfd, addr, addrlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -313,7 +317,7 @@ void shim_getpeername(GuestContext *ctx) {
     int sockfd = (int)ctx->rdi;
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
-    int ret = getpeername(sockfd, addr, addrlen);
+    int ret = nps5_kgetpeername(sockfd, addr, addrlen);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -342,7 +346,7 @@ void shim_select(GuestContext *ctx) {
     fd_set *writefds = (fd_set *)guest_to_host(ctx, ctx->rdx);
     fd_set *exceptfds = (fd_set *)guest_to_host(ctx, ctx->rcx);
     struct timeval *timeout = (struct timeval *)guest_to_host(ctx, ctx->r8);
-    int ret = select(nfds, readfds, writefds, exceptfds, timeout);
+    int ret = nps5_kselect(nfds, readfds, writefds, exceptfds, timeout);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -366,7 +370,7 @@ void shim_inet_pton(GuestContext *ctx) {
 
 void shim_usleep(GuestContext *ctx) {
     useconds_t usec = (useconds_t)ctx->rdi;
-    int ret = usleep(usec);
+    int ret = nps5_sleep_ns((uint64_t)usec * 1000ull, NULL);
     if (ret < 0) {
         set_guest_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;

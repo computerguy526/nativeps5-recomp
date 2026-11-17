@@ -23,6 +23,7 @@
 #include "ps4_gnm_ib.h"
 #include "ps4_gnm_wait_queue.h"
 #include "ps4_gnmdriver.h"
+#include "ps4_gnm_membudget.h"
 #include "ps4_videoout.h"
 #include "gcn_recompiler.h"
 
@@ -135,12 +136,21 @@ static inline bool LogOnce(std::atomic<bool> &flag) {
 
 // Guest GPU addresses are guest virtual addresses (offsets from mem_base); same convention
 // as WRITE_DATA and WrapGuestMemory.
-static inline void *GuestMemPtr(GuestContext *ctx, uint64_t addr, size_t len) {
-    if (!ctx || !ctx->mem_base || addr == 0) return nullptr;
+// m8: the range must also be mapped now (a guest address inside the window can sit in a decommitted hole, which is
+// PROT_NONE in the arena: a plain load or store would SIGSEGV this thread). `write` also demands a writable mapping.
+static inline void *GuestMemPtr(GuestContext *ctx, uint64_t addr, size_t len, bool write = false) {
+    if (!ctx || !RECOMP_MEM_OK(ctx) || addr == 0) return nullptr;
     if (addr >= ctx->mem_size || len > ctx->mem_size - addr) {
         if (LogOnce(s_logged_bad_addr)) {
             fprintf(stderr, "[ps4-gnm] fence/label address 0x%llx out of guest range; ignoring (logged once)\n",
                     (unsigned long long)addr);
+        }
+        return nullptr;
+    }
+    if (len && !ps4_gpumem_range_accessible(ctx->mem_base + addr, len, write)) {
+        if (LogOnce(s_logged_bad_addr)) {
+            fprintf(stderr, "[ps4-gnm] address 0x%llx (+%zu) is not mapped%s; ignoring (logged once)\n",
+                    (unsigned long long)addr, len, write ? " writable" : "");
         }
         return nullptr;
     }
@@ -159,7 +169,7 @@ static bool WriteFenceData(GuestContext *ctx, uint64_t addr, uint32_t data_sel,
     case kDataSelNone:
         return false;
     case kDataSel32: {
-        uint32_t *dst = (uint32_t *)GuestMemPtr(ctx, addr & ~3ULL, 4);
+        uint32_t *dst = (uint32_t *)GuestMemPtr(ctx, addr & ~3ULL, 4, true);
         if (!dst) return false;
         __atomic_store_n(dst, data_lo, __ATOMIC_RELEASE);
         return true;
@@ -169,7 +179,7 @@ static bool WriteFenceData(GuestContext *ctx, uint64_t addr, uint32_t data_sel,
     case kDataSelPerfCounter: {
         uint64_t value = (data_sel == kDataSel64) ? ((uint64_t)data_lo | ((uint64_t)data_hi << 32)) : GpuClock64();
         // 64-bit fences must be qword aligned on HW; the low bits are ignored there.
-        uint64_t *dst = (uint64_t *)GuestMemPtr(ctx, addr & ~7ULL, 8);
+        uint64_t *dst = (uint64_t *)GuestMemPtr(ctx, addr & ~7ULL, 8, true);
         if (!dst) return false;
         __atomic_store_n(dst, value, __ATOMIC_RELEASE);
         return true;
@@ -369,7 +379,7 @@ static void HandleWriteData(GuestContext *ctx, const uint32_t *p, uint32_t paylo
     const uint64_t dst_addr = (uint64_t)p[1] | ((uint64_t)p[2] << 32);
     const uint32_t ndw = payload_dw - 3;
     if (ndw == 0) return;
-    uint32_t *dst = (uint32_t *)GuestMemPtr(ctx, dst_addr & ~3ULL, wr_one_addr ? 4 : (size_t)ndw * 4);
+    uint32_t *dst = (uint32_t *)GuestMemPtr(ctx, dst_addr & ~3ULL, wr_one_addr ? 4 : (size_t)ndw * 4, true);
     if (!dst) return;
     ps4draw::NotifyGuestWrite(dst_addr & ~3ULL, wr_one_addr ? 4 : (uint64_t)ndw * 4, false, 0);
     if (wr_one_addr) {
@@ -526,7 +536,7 @@ static const bool g_min_barriers = getenv("PS4_GNM_STRICT_BARRIERS") == nullptr;
 // on the CPU (guest GPU memory is host memory) after draining encoded GPU work.
 // Layout as in shadPS4 src/video_core/amdgpu/pm4_cmds.h (PM4DmaData).
 static void HandleDmaData(GuestContext *ctx, const uint32_t *p, uint32_t payload_dw) {
-    if (payload_dw < 6 || !ctx || !ctx->mem_base) return;
+    if (payload_dw < 6 || !ctx || !RECOMP_MEM_OK(ctx)) return;
     uint32_t ctl = p[0];
     uint32_t dst_sel = (ctl >> 20) & 3;
     uint32_t src_sel = (ctl >> 29) & 3;
@@ -545,6 +555,7 @@ static void HandleDmaData(GuestContext *ctx, const uint32_t *p, uint32_t payload
         d = gds + p[3];
     } else {
         if (dst + n > ctx->mem_size || dst == 0) return;
+        if (!ps4_gpumem_range_accessible(ctx->mem_base + dst, n, 1)) return; // unmapped hole: skip, do not fault
         d = ctx->mem_base + dst;
     }
     // With GPU work pending, run the copy on the GPU timeline behind it instead of draining
@@ -574,6 +585,7 @@ static void HandleDmaData(GuestContext *ctx, const uint32_t *p, uint32_t payload
         sp = gds + p[1];
     } else {
         if (src + n > ctx->mem_size || src == 0) return;
+        if (!ps4_gpumem_range_accessible(ctx->mem_base + src, n, 0)) return;
         sp = ctx->mem_base + src;
     }
     if (!dst_gds && n == 8 && ((uintptr_t)d & 7u) == 0) {
@@ -614,8 +626,7 @@ static void ApplySetReg(uint32_t base, const uint32_t *payload, uint32_t payload
 static bool ReadGuestForDump(void *c, uint64_t addr, void *dst, uint64_t size) {
     GuestContext *ctx = (GuestContext *)c;
     if (!ctx || addr == 0 || addr >= ctx->mem_size || size > ctx->mem_size - addr) return false;
-    memcpy(dst, ctx->mem_base + addr, size);
-    return true;
+    return nps5_mem_safe_read(ctx->mem_base + addr, dst, size); // m8: false across a hole
 }
 
 // PS4_DUMP_SHADERS=<dir>: write each distinct VS/PS/CS program seen at a draw or
@@ -625,7 +636,7 @@ static bool ReadGuestForDump(void *c, uint64_t addr, void *dst, uint64_t size) {
 static void DumpShaderAtDraw(GuestContext *ctx, const char *stage, uint32_t pgm_lo_reg, const char *draw) {
     static const char *dir = (const char *)-1;
     if (dir == (const char *)-1) dir = getenv("PS4_DUMP_SHADERS");
-    if (!dir || !ctx || !ctx->mem_base) return;
+    if (!dir || !ctx || !RECOMP_MEM_OK(ctx)) return;
     uint64_t addr = ((uint64_t)g_liverpool_regs[pgm_lo_reg] | ((uint64_t)(g_liverpool_regs[pgm_lo_reg + 1] & 0xFF) << 32)) << 8;
     if (addr == 0 || addr >= ctx->mem_size) return;
     static std::mutex& dump_mutex = *new std::mutex;
@@ -636,6 +647,8 @@ static void DumpShaderAtDraw(GuestContext *ctx, const char *stage, uint32_t pgm_
     const uint32_t *code = (const uint32_t *)(ctx->mem_base + addr);
     size_t max_dw = (ctx->mem_size - addr) / 4;
     if (max_dw > 65536) max_dw = 65536;
+    while (max_dw && !ps4_gpumem_range_accessible(code, max_dw * 4, 0)) max_dw /= 2; // m8: never scan into a hole
+    if (!max_dw) return;
     size_t n = 0;
     uint32_t size_bytes = 0;
     uint64_t hash = 0;
@@ -727,7 +740,7 @@ static bool RunCe(GuestContext *ctx, CeState &ce, bool force) {
             const uint32_t off = p[0] & 0xFFFF;
             const uint32_t n = (p[1] & 0x7FFF) * 4;
             const uint64_t addr = (uint64_t)p[2] | ((uint64_t)p[3] << 32);
-            void *dst = GuestMemPtr(ctx, addr, n);
+            void *dst = GuestMemPtr(ctx, addr, n, true);
             if (dst && (uint64_t)off + n <= sizeof(g_const_ram)) {
                 ps4draw::NotifyGuestWrite(addr, n, false, 0);
                 memcpy(dst, g_const_ram + off, n);

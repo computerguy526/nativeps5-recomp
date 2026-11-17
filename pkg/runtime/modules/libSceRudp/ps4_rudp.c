@@ -36,7 +36,7 @@ void shim_sceRudpCreateContext(GuestContext *ctx) {
 
     // As disassembled in games like Yakuza 0:
     // RDX holds pointer to output context id storage (e.g. MOV RDX, R14; CALL; MOV EDI, [R14])
-    if (ctx->rdx && ctx->mem_base) {
+    if (ctx->rdx && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + ctx->rdx) = ctx_id;
     }
     ctx->rax = ORBIS_OK;

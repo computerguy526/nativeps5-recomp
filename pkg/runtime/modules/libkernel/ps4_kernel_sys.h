@@ -29,6 +29,9 @@ typedef struct OrbisKernelSwVersion {
 uint64_t sceKernelGetProcessTimeCounter(void);
 uint64_t sceKernelGetProcessTimeCounterFrequency(void);
 uint64_t sceKernelGetProcessTime(void);
+// Installs a monotonic source of "microseconds of host-only GPU setup work" that sceKernelGetProcessTime and
+// ...Counter subtract (see ps4_kernel_sys.c). NULL removes it.
+void nps5_set_guest_clock_credit(uint64_t (*fn)(void));
 uint64_t sceKernelGetTscFrequency(void);
 uint64_t sceKernelReadTsc(void);
 int32_t sceKernelGettimeofday(OrbisKernelTimeval *tv);
@@ -43,6 +46,7 @@ int32_t sceKernelIsAuthenticNeo(void);
 int32_t sceKernelGetSystemSwVersion(OrbisKernelSwVersion *version);
 int32_t sceKernelUuidCreate(void *uuid);
 int32_t sceKernelSetGPO(uint32_t gpo);
+uint64_t sceKernelGetGPI(void);
 int32_t sceKernelIsProspero(void);
 
 // Guest execution shims
@@ -62,6 +66,7 @@ void shim_sceKernelGetSystemSwVersion(GuestContext *ctx);
 void shim_sceKernelClockGettime(GuestContext *ctx);
 void shim_sceKernelUuidCreate(GuestContext *ctx);
 void shim_sceKernelSetGPO(GuestContext *ctx);
+void shim_sceKernelGetGPI(GuestContext *ctx);
 void shim_sceKernelIsProspero(GuestContext *ctx);
 void shim_sceKernelConvertUtcToLocaltime(GuestContext *ctx);
 void shim_sceKernelConvertLocaltimeToUtc(GuestContext *ctx);

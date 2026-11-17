@@ -72,7 +72,7 @@ void shim_sceScreenShotSetOverlayImageWithOrigin(GuestContext *ctx) {
 }
 
 void shim_sceScreenShotSetParam(GuestContext *ctx) {
-    const void *param = (ctx && ctx->rdi && ctx->mem_base && ctx->rdi < ctx->mem_size)
+    const void *param = (ctx && ctx->rdi && RECOMP_MEM_OK(ctx) && ctx->rdi < ctx->mem_size)
                             ? (const void *)(ctx->mem_base + ctx->rdi)
                             : NULL;
     ctx->rax = (uint64_t)(int64_t)sceScreenShotSetParam(param);

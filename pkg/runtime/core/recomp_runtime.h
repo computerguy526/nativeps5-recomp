@@ -4,6 +4,7 @@
 #define RECOMP_RUNTIME_H
 
 #include "recomp_context.h"
+#include "nps5_mem.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,23 +33,48 @@ void recomp_init_tls_modules(GuestContext *ctx, const RecompTlsModule *mods, siz
 uint64_t recomp_tls_module_offset(uint64_t module_id);
 void recomp_setup_entry_args(GuestContext *ctx, int argc, char **argv, uint64_t entry_addr);
 void recomp_dispatch_external(GuestContext *ctx, uint64_t target);
+// Flat call model runtime (shadow return stack, continuation table); also pulls in the dispatch
+// API shared with tier 1 (recomp_dispatch_api.h).
+#include "nps5_shadow.h"
 // True when host pc is in recompiled guest code (the __recomp_guest section: recompiled
 // functions, shim stubs, indirect-branch entry points). There the guest registers are live in
 // the pinned host registers; in host code (shims, the bridge, helpers) the GuestContext holds
 // what the last guest -> host transition stored. Async-signal-safe.
 bool recomp_pc_in_guest_code(uint64_t pc);
-// Reports guest longjmp / C++ throw (unsupported by the assembly backend) and aborts.
-void shim_guest_nonlocal_jump(GuestContext *ctx);
-void shim_guest_cxa_throw(GuestContext *ctx);
+// Non-local control transfers (nps5_eh.c, docs/m1/setjmp-eh.md).
+void shim_guest_setjmp(GuestContext *ctx);
+void shim_guest_longjmp(GuestContext *ctx);
+void shim_guest_unwind_jumpto(GuestContext *ctx);
+void shim_guest_abort(GuestContext *ctx);
+void recomp_resume_guest(GuestContext *ctx, uintptr_t host_sp, uintptr_t host_pc, uint64_t fpcr) __attribute__((noreturn));
 void recomp_free_runtime(GuestContext *ctx);
 GuestContext *recomp_create_thread_context(GuestContext *parent, uint64_t stack_size);
 uint64_t recomp_vm_alloc(GuestContext *ctx, size_t size);
 uint64_t recomp_vm_alloc_named(GuestContext *ctx, size_t size, int prot, int flags, const char *name);
 uint64_t recomp_vm_alloc_named_aligned(GuestContext *ctx, size_t size, size_t alignment, int prot, int flags, const char *name);
 uint64_t recomp_vm_alloc_fixed(GuestContext *ctx, uint64_t desired_addr, size_t size, int prot, int flags, const char *name);
+// Guest-requested mappings (nps5_mem.h, docs/m1/memory.md): unhinted ones go to the user zone
+// from 0x2_0000_0000; a MAP_FIXED request replaces what the guest had mapped in the range.
+uint64_t recomp_vm_map_guest(GuestContext *ctx, size_t size, size_t alignment, int prot, int flags, const char *name);
+uint64_t recomp_vm_map(GuestContext *ctx, uint64_t addr, size_t size, size_t alignment, int prot, int flags, const char *name);
+// recomp_vm_map with the extent kind (NPS5_EXT_*, nps5_mem.h) and the reason for a failure: *err
+// (may be NULL) gets EINVAL for a malformed request (fixed address 0 or not 16 KiB aligned, range
+// outside the guest window, size overflow) and ENOMEM when the range or space is not available.
+uint64_t recomp_vm_map_ex(GuestContext *ctx, uint64_t addr, size_t size, size_t alignment, int prot, int flags,
+                          const char *name, int kind, int *err);
+uint64_t recomp_vm_map_fixed_replace(GuestContext *ctx, uint64_t addr, size_t size, int prot, int flags, const char *name);
 int recomp_vm_free(GuestContext *ctx, uint64_t addr, size_t size);
 bool recomp_vm_split_extent_at(GuestContext *proc, uint64_t at);
-GuestVMExtent *recomp_vm_find(GuestContext *ctx, uint64_t addr);
+// sceKernelMprotect / sceKernelMtypeprotect: sets the guest protection (and the memory type unless
+// mtype < 0) of the mapped part of [addr, addr+size), splitting extents at the range edges, and
+// applies the CPU view of it to the host pages. Returns 0 or an errno: EINVAL for a range that wraps,
+// leaves the guest window or maps nothing (a range wholly inside the image/system area, which has
+// no extents, succeeds without effect), ENOMEM when bookkeeping memory is unavailable.
+int recomp_vm_protect(GuestContext *ctx, uint64_t addr, uint64_t size, int prot, int mtype);
+// Copies the extent containing addr into *out (under vm_mutex; next/prev are NULLed) and returns
+// true, or returns false when none does. A pointer into the live list would dangle once another
+// thread folds or unmaps the extent.
+bool recomp_vm_query(GuestContext *ctx, uint64_t addr, GuestVMExtent *out);
 // Provably unmapped guest ranges (free extents and untouched reservations), sorted and merged,
 // for readers that must not take vm_mutex per query: [out[i][0], out[i][1]). Writes at most max
 // ranges and returns how many there are; *gen gets the generation they belong to.
@@ -57,6 +83,39 @@ size_t recomp_vm_unmapped_ranges(GuestContext *ctx, uint64_t (*out)[2], size_t m
 // with vm_mutex held by every such change).
 uint64_t recomp_vm_generation(void);
 void recomp_vm_note_change(void);
+
+// Observers of guest mappings (the AGC driver's allocation registry, docs/m3/gpu-followups.md). Hooks may be NULL.
+// Ranges are guest addresses, page aligned, one call per extent. A hook must not call back into the VM.
+//   on_map      after the host pages exist and are final (see recomp_vm_hooks_report_map); vm_mutex HELD: keep it short
+//               and non-blocking
+//   on_protect  an extent's guest protection changes; vm_mutex HELD; called before the host mprotect
+//   on_unmap    BEFORE the host pages are released or reused (munmap, MAP_FIXED over a mapping); vm_mutex NOT held
+//               (the extent is busy, so nothing else can touch it) and the hook may block, e.g. wait for the GPU.
+// Reservations (no pages) are not reported. Lock order: direct-memory lock -> vm_mutex -> hook table.
+typedef struct Nps5VmHooks {
+  void (*on_map)(void *user, uint64_t addr, uint64_t size, int prot, int kind, const char *name);
+  void (*on_protect)(void *user, uint64_t addr, uint64_t size, int prot, int kind, const char *name);
+  void (*on_unmap)(void *user, uint64_t addr, uint64_t size);
+  void *user;
+  // Optional. Guest [a, a+size) and [b, b+size) are (about to be) backed by the same pages: two direct mappings of one
+  // physical range. Called by the direct-memory layer before the on_map of the newer one, with its lock held and
+  // without vm_mutex. A page write watch cannot cover such memory (a store through one address does not trip the
+  // protection of the other).
+  void (*on_alias)(void *user, uint64_t a, uint64_t b, uint64_t size);
+} Nps5VmHooks;
+// Registers (up to 4) and replays on_map for every extent mapped now, atomically with respect to changes
+// (an on_map for a range the hook already has must be accepted). Returns an id >= 0, or -1.
+int recomp_vm_hooks_register(const Nps5VmHooks *h);
+// on_map for the extents in [addr, addr+size), for a mapping whose pages became final after the VM layer mapped it:
+// a direct mapping (NPS5_EXT_DIRECT) is not reported when its extent is created but by the direct-memory layer, once
+// the physical block is aliased over it (the alias replaces the host pages).
+void recomp_vm_hooks_report_map(GuestContext *ctx, uint64_t addr, uint64_t size);
+// on_alias for every hook that has one (see Nps5VmHooks.on_alias).
+void recomp_vm_hooks_report_alias(uint64_t a, uint64_t b, uint64_t size);
+// Waits for calls in flight, then no further call is made. Must not be called from a hook.
+void recomp_vm_hooks_unregister(int id);
+// The process context whose extent list the crash snapshot publishes (set by recomp_init_runtime).
+extern GuestContext *g_nps5_vm_root;
 
 // Unresolved Symbol Diagnostics & Core Stubs
 typedef struct RecompUnresolvedSym {

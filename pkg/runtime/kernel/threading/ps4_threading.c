@@ -2,6 +2,8 @@
 
 #include "recomp_runtime.h"
 #include "ps4_threading.h"
+#include "nps5_thunk.h"
+#include "nps5_libkernel_hle.h"
 #include <inttypes.h>
 #include <errno.h>
 #include <sched.h>
@@ -123,7 +125,7 @@ RecompThread *recomp_find_thread(uint64_t handle) {
         pthread_mutex_unlock(&g_threads_mutex);
         return curr;
       }
-      if (curr->ctx->fs_base && curr->ctx->mem_base &&
+      if (curr->ctx->fs_base && RECOMP_MEM_OK(curr->ctx) &&
           curr->ctx->fs_base + 0x18ULL <= curr->ctx->mem_size) {
         uint64_t t = *(uint64_t *)(curr->ctx->mem_base + curr->ctx->fs_base + 0x10ULL);
         if (t != 0 && t == handle) {
@@ -176,7 +178,7 @@ void recomp_init_main_thread(GuestContext *ctx) {
   g_main_thread_obj.stack_size = ctx->stack_alloc_size;
   atomic_store_explicit(&g_main_thread_obj.start_ready, 1, memory_order_relaxed);
   strncpy(g_main_thread_obj.name, "main", sizeof(g_main_thread_obj.name) - 1);
-  if (ctx->fs_base && ctx->mem_base) {
+  if (ctx->fs_base && RECOMP_MEM_OK(ctx)) {
     *(uint64_t *)(ctx->mem_base + ctx->fs_base + 0x10ULL) = (uint64_t)&g_main_thread_obj;
   }
   g_current_thread = &g_main_thread_obj;
@@ -213,7 +215,7 @@ RecompThread *recomp_init_system_thread(GuestContext *ctx, const char *name) {
     strncpy(t->name, "system_worker", sizeof(t->name) - 1);
   }
 
-  if (ctx->fs_base && ctx->mem_base) {
+  if (ctx->fs_base && RECOMP_MEM_OK(ctx)) {
     *(uint64_t *)(ctx->mem_base + ctx->fs_base + 0x10ULL) = (uint64_t)t;
   }
   g_current_ctx = ctx;
@@ -242,11 +244,11 @@ static void recomp_thread_exit(RecompThread *t, void *status) {
     GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
     for (int iter = 0; iter < 4; iter++) {
       bool has_active = false;
-      for (int k = 0; k < 128; k++) {
-        uint64_t val = ctx->tls_keys[k];
-        uint64_t dtor = proc->tls_destructors[k];
+      for (uint32_t k = 0; k < NPS5_TLS_KEYS_MAX; k++) {
+        uint64_t val = *nps5_tls_val(ctx, k);
+        uint64_t dtor = *nps5_tls_dtor(proc, k);
         if (val != 0 && dtor != 0) {
-          ctx->tls_keys[k] = 0;
+          *nps5_tls_val(ctx, k) = 0;
           has_active = true;
           ctx->rdi = val;
           ctx->rsp -= 8;
@@ -308,8 +310,30 @@ static void guest_worker_apply_qos(const char *name) {
 }
 #endif
 
+// QoS of the host threads that run guest code (docs/m3/perf.md). A thread without a QoS class has the
+// scheduler priority of any command-line job, so a build running next to the title takes its cores (and the
+// efficiency cores take the title): Syobon dropped from its 30 fps to 18 that way. The guest's main thread is
+// user-interactive (as a native game's render thread is), its other threads user-initiated.
+// NPS5_GUEST_QOS=default|utility|initiated|interactive sets one class for all of them (default: leave them alone).
+void nps5_guest_thread_qos(int is_main) {
+#if defined(__APPLE__)
+  qos_class_t cls = is_main ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED;
+  const char *e = getenv("NPS5_GUEST_QOS");
+  if (e && e[0]) {
+    if (strcmp(e, "default") == 0) return;
+    else if (strcmp(e, "utility") == 0) cls = QOS_CLASS_UTILITY;
+    else if (strcmp(e, "initiated") == 0) cls = QOS_CLASS_USER_INITIATED;
+    else if (strcmp(e, "interactive") == 0) cls = QOS_CLASS_USER_INTERACTIVE;
+  }
+  pthread_set_qos_class_self_np(cls, 0);
+#else
+  (void)is_main;
+#endif
+}
+
 static void *recomp_host_thread_runner(void *arg) {
   RecompThread *t = (RecompThread *)arg;
+  nps5_guest_thread_qos(0);
 
   while (!atomic_load_explicit(&t->start_ready, memory_order_acquire)) {
     sched_yield();
@@ -467,7 +491,7 @@ static int do_create_thread(GuestContext *ctx, uint64_t thread_ptr_addr, const P
   t->stack_base = child_ctx->stack_base;
   t->stack_size = child_ctx->stack_alloc_size;
 
-  if (child_ctx->fs_base && child_ctx->mem_base) {
+  if (child_ctx->fs_base && RECOMP_MEM_OK(child_ctx)) {
     *(uint64_t *)(child_ctx->mem_base + child_ctx->fs_base + 0x10ULL) = (uint64_t)t;
   }
 
@@ -496,50 +520,36 @@ static int do_create_thread(GuestContext *ctx, uint64_t thread_ptr_addr, const P
   return 0;
 }
 
-void shim_pthread_create(GuestContext *ctx) {
-  uint64_t thread_ptr_addr = ctx->rdi;
-  uint64_t attr_addr = ctx->rsi;
-  uint64_t start_routine = ctx->rdx;
-  uint64_t arg = ctx->rcx;
-
+// Thread creation behind generated thunks. thread: where the new handle is stored; attr: the
+// guest's pthread_attr_t word, which holds a host PthreadAttr pointer the attr functions put
+// there; entry and arg stay guest values and are handed to the new guest thread.
+static int create_thread_hle(GuestContext *ctx, uint64_t *thread, const uint64_t *attr, uint64_t entry, uint64_t arg,
+                             const char *name) {
   PthreadAttr attr_val;
   PthreadAttr *p_attr = NULL;
-  if (attr_addr) {
-    uint64_t p = *(uint64_t *)(ctx->mem_base + attr_addr);
-    if (p) {
-      memcpy(&attr_val, (void *)p, sizeof(PthreadAttr));
-      p_attr = &attr_val;
-    }
+  if (attr && *attr) {
+    memcpy(&attr_val, (void *)(uintptr_t)*attr, sizeof(PthreadAttr));
+    p_attr = &attr_val;
   }
-
-  int err = do_create_thread(ctx, thread_ptr_addr, p_attr, start_routine, arg, NULL);
-  if (err != 0) {
-    set_guest_errno(ctx, err);
-    ctx->rax = (uint64_t)err;
-  } else {
-    ctx->rax = 0;
-  }
-  SHIM_RETURN();
+  int err = do_create_thread(ctx, NPS5_H2G(ctx, thread), p_attr, entry, arg, name);
+  if (err != 0) set_guest_errno(ctx, err);
+  return err;
 }
 
-void shim_pthread_join(GuestContext *ctx) {
-  uint64_t handle = ctx->rdi;
-  uint64_t retval_ptr_addr = ctx->rsi;
+int hle_pthread_create(GuestContext *ctx, uint64_t *thread, const uint64_t *attr, uint64_t entry, uint64_t arg) {
+  return create_thread_hle(ctx, thread, attr, entry, arg, NULL);
+}
 
-  RecompThread *t = find_thread(handle);
-  void *retval = NULL;
-  int err = do_thread_join(t, retval_ptr_addr ? &retval : NULL);
+int hle_pthread_join(GuestContext *ctx, uint64_t thread, uint64_t *retval) {
+  RecompThread *t = find_thread(thread);
+  void *value = NULL;
+  int err = do_thread_join(t, retval ? &value : NULL);
   if (err != 0) {
     set_guest_errno(ctx, err);
-    ctx->rax = (uint64_t)err;
-    SHIM_RETURN();
+    return err;
   }
-
-  if (retval_ptr_addr) {
-    *(uint64_t *)(ctx->mem_base + retval_ptr_addr) = (uint64_t)retval;
-  }
-  ctx->rax = 0;
-  SHIM_RETURN();
+  if (retval) *retval = (uint64_t)(uintptr_t)value; // the guest thread's return value, a guest word
+  return 0;
 }
 
 void shim_pthread_detach(GuestContext *ctx) {
@@ -581,14 +591,18 @@ void shim_pthread_key_create(GuestContext *ctx) {
   uint64_t key_ptr_addr = ctx->rdi;
   uint64_t destructor_addr = ctx->rsi;
   pthread_mutex_lock(&g_key_lock);
-  uint32_t key = g_next_key++;
+  uint32_t key = g_next_key < NPS5_TLS_KEYS_MAX ? g_next_key++ : NPS5_TLS_KEYS_MAX;
   pthread_mutex_unlock(&g_key_lock);
+  if (key >= NPS5_TLS_KEYS_MAX) { // FreeBSD PTHREAD_KEYS_MAX = 256: EAGAIN, as on the console
+    ctx->rax = EAGAIN; // 35 on FreeBSD and macOS
+    SHIM_RETURN();
+  }
   if (key_ptr_addr) {
     *(uint32_t *)(ctx->mem_base + key_ptr_addr) = key;
   }
-  if (key < 128) {
+  {
     GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-    proc->tls_destructors[key] = destructor_addr;
+    *nps5_tls_dtor(proc, key) = destructor_addr;
   }
   ctx->rax = 0;
   SHIM_RETURN();
@@ -596,9 +610,9 @@ void shim_pthread_key_create(GuestContext *ctx) {
 
 void shim_pthread_key_delete(GuestContext *ctx) {
   uint32_t key = (uint32_t)ctx->rdi;
-  if (key < 128) {
+  if (key < NPS5_TLS_KEYS_MAX) {
     GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-    proc->tls_destructors[key] = 0;
+    *nps5_tls_dtor(proc, key) = 0;
   }
   ctx->rax = 0;
   SHIM_RETURN();
@@ -607,8 +621,8 @@ void shim_pthread_key_delete(GuestContext *ctx) {
 void shim_pthread_setspecific(GuestContext *ctx) {
   uint32_t key = (uint32_t)ctx->rdi;
   uint64_t val = ctx->rsi;
-  if (key < 128) {
-    ctx->tls_keys[key] = val;
+  if (key < NPS5_TLS_KEYS_MAX) {
+    *nps5_tls_val(ctx, key) = val;
     ctx->rax = 0;
   } else {
     set_guest_errno(ctx, EINVAL);
@@ -619,8 +633,8 @@ void shim_pthread_setspecific(GuestContext *ctx) {
 
 void shim_pthread_getspecific(GuestContext *ctx) {
   uint32_t key = (uint32_t)ctx->rdi;
-  if (key < 128) {
-    ctx->rax = ctx->tls_keys[key];
+  if (key < NPS5_TLS_KEYS_MAX) {
+    ctx->rax = *nps5_tls_val(ctx, key);
   } else {
     ctx->rax = 0;
   }
@@ -792,41 +806,15 @@ void shim_pthread_cancel(GuestContext *ctx) {
 }
 
 // Orbis shims forwarding to core implementations
-void shim_scePthreadCreate(GuestContext *ctx) {
-  uint64_t thread_ptr_addr = ctx->rdi;
-  uint64_t attr_addr = ctx->rsi;
-  uint64_t start_routine = ctx->rdx;
-  uint64_t arg = ctx->rcx;
-  uint64_t name_addr = ctx->r8;
-
-  const char *name = NULL;
-  if (name_addr && name_addr < ctx->mem_size) {
-    name = (const char *)(ctx->mem_base + name_addr);
-  }
-
-  PthreadAttr attr_val;
-  PthreadAttr *p_attr = NULL;
-  if (attr_addr) {
-    uint64_t p = *(uint64_t *)(ctx->mem_base + attr_addr);
-    if (p) {
-      memcpy(&attr_val, (void *)p, sizeof(PthreadAttr));
-      p_attr = &attr_val;
-    }
-  }
-
-  int err = do_create_thread(ctx, thread_ptr_addr, p_attr, start_routine, arg, name);
-  if (err != 0) {
-    set_guest_errno(ctx, err);
-    ctx->rax = 0x80020000ULL | (uint64_t)err;
-  } else {
-    ctx->rax = 0;
-  }
-  SHIM_RETURN();
+int hle_scePthreadCreate(GuestContext *ctx, uint64_t *thread, const uint64_t *attr, uint64_t entry, uint64_t arg,
+                         const char *name) {
+  int err = create_thread_hle(ctx, thread, attr, entry, arg, name);
+  return err ? (int)(0x80020000u | (unsigned)err) : 0;
 }
 
-void shim_scePthreadJoin(GuestContext *ctx) {
-  shim_pthread_join(ctx);
-  SCE_PTHREAD_ERR(ctx);
+int hle_scePthreadJoin(GuestContext *ctx, uint64_t thread, uint64_t *retval) {
+  int e = hle_pthread_join(ctx, thread, retval);
+  return (e > 0 && e < 0x100) ? (int)(0x80020000u | (unsigned)e) : e;
 }
 
 void shim_scePthreadDetach(GuestContext *ctx) {
@@ -850,8 +838,74 @@ void shim_scePthreadEqual(GuestContext *ctx) {
   shim_pthread_equal(ctx);
 }
 
+// ---- adaptive yield back-off (core/nps5_yield.h). NPS5_YIELD_BACKOFF_US=<cap us> (default 50; 0 = plain sched_yield),
+// NPS5_YIELD_BACKOFF_MIN_US (default 2), NPS5_YIELD_SPIN_GAP_US (default 20), NPS5_YIELD_BACKOFF_AFTER (default 128).
+// NPS5_YIELD_STATS=1: per-thread yield counts to stderr every 5 s and at exit.
+#include "nps5_yield.h"
+#include "nps5_sleep.h"
+#include <stdatomic.h>
+#define NPS5_YIELD_SLOTS 128
+static nps5_yield_cfg g_yc = {50000, 2000, 20000, 128}; // default ON, 50 us cap (measured: Astro level)
+static int g_ystats;
+static pthread_once_t g_yonce = PTHREAD_ONCE_INIT;
+static _Atomic uint32_t g_yslots;
+static _Atomic uint64_t g_ynext_dump;
+static struct { pthread_t th; _Atomic uint64_t calls, waits, wait_ns; } g_ys[NPS5_YIELD_SLOTS];
+static __thread nps5_yield_state t_ys;
+static __thread int t_yslot = -1;
+static void nps5_yield_dump(void) {
+  uint32_t n = atomic_load(&g_yslots);
+  if (n > NPS5_YIELD_SLOTS) n = NPS5_YIELD_SLOTS;
+  for (uint32_t i = 0; i < n; i++) {
+    char nm[64] = "?";
+    pthread_getname_np(g_ys[i].th, nm, sizeof nm);
+    uint64_t c = atomic_load(&g_ys[i].calls);
+    if (c) fprintf(stderr, "[yield] slot=%u name=%s calls=%llu waits=%llu wait_ms=%.1f\n", i, nm, (unsigned long long)c, (unsigned long long)atomic_load(&g_ys[i].waits), (double)atomic_load(&g_ys[i].wait_ns) / 1e6);
+  }
+}
+static void nps5_yield_init(void) {
+  const char *v = getenv("NPS5_YIELD_BACKOFF_US");
+  if (v) g_yc.cap_ns = atoi(v) > 0 ? (uint64_t)atoi(v) * 1000ull : 0;
+  v = getenv("NPS5_YIELD_BACKOFF_MIN_US");
+  if (v && atoi(v) > 0) g_yc.min_ns = (uint64_t)atoi(v) * 1000ull;
+  v = getenv("NPS5_YIELD_SPIN_GAP_US");
+  if (v && atoi(v) > 0) g_yc.gap_ns = (uint64_t)atoi(v) * 1000ull;
+  v = getenv("NPS5_YIELD_BACKOFF_AFTER");
+  if (v && atoi(v) > 0) g_yc.after = (uint32_t)atoi(v);
+  v = getenv("NPS5_YIELD_STATS");
+  g_ystats = v && atoi(v) > 0;
+  if (g_ystats) atexit(nps5_yield_dump);
+}
+// Shared by scePthreadYield and sched_yield.
+void nps5_yield_adaptive(void) {
+  pthread_once(&g_yonce, nps5_yield_init);
+  if (!g_ystats && g_yc.cap_ns == 0) { sched_yield(); return; }
+  uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  uint64_t w = nps5_yield_step(&g_yc, &t_ys, now);
+  if (g_ystats) {
+    if (t_yslot < 0) {
+      uint32_t i = atomic_fetch_add(&g_yslots, 1);
+      t_yslot = i < NPS5_YIELD_SLOTS ? (int)i : NPS5_YIELD_SLOTS - 1;
+      g_ys[t_yslot].th = pthread_self();
+    }
+    atomic_fetch_add(&g_ys[t_yslot].calls, 1);
+    if (w) { atomic_fetch_add(&g_ys[t_yslot].waits, 1); atomic_fetch_add(&g_ys[t_yslot].wait_ns, w); }
+    uint64_t nd = atomic_load(&g_ynext_dump);
+    if (now >= nd && atomic_compare_exchange_strong(&g_ynext_dump, &nd, now + 5000000000ull)) {
+      if (nd) nps5_yield_dump();
+    }
+  }
+  if (w) {
+    nps5_sleep_ns(w, NULL);
+    t_ys.last_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  } else {
+    sched_yield();
+    t_ys.last_ns = now;
+  }
+}
+
 void shim_scePthreadYield(GuestContext *ctx) {
-  sched_yield();
+  nps5_yield_adaptive();
   ctx->rax = 0;
   SHIM_RETURN();
 }
@@ -1012,21 +1066,15 @@ void shim_scePthreadGetspecific(GuestContext *ctx) {
   shim_pthread_getspecific(ctx);
 }
 
-void shim___tls_get_addr(GuestContext *ctx) {
-  uint64_t ti_addr = ctx->rdi;
-  if (!ti_addr) {
-    ctx->rax = 0;
-    SHIM_RETURN();
-  }
-  uint64_t module_id = *(uint64_t *)(ctx->mem_base + ti_addr);
-  uint64_t offset = *(uint64_t *)(ctx->mem_base + ti_addr + 8);
+// __tls_get_addr(tls_index *ti): the address of a TLS variable of the calling thread, as a
+// host pointer (the thunk hands the guest its guest address).
+void *hle___tls_get_addr(GuestContext *ctx, const uint64_t *ti) {
+  if (!ti) return NULL;
+  uint64_t module_id = ti[0];
+  uint64_t offset = ti[1];
   uint64_t mod_off = recomp_tls_module_offset(module_id);
-  if (mod_off) {
-    ctx->rax = ctx->fs_base - mod_off + offset;
-  } else {
-    ctx->rax = ctx->fs_base + offset;
-  }
-  SHIM_RETURN();
+  uint64_t g = mod_off ? ctx->fs_base - mod_off + offset : ctx->fs_base + offset;
+  return NPS5_G2H(ctx, g);
 }
 
 void shim_scePthreadAttrGetaffinity(GuestContext *ctx) {
@@ -1194,7 +1242,7 @@ static void stall_dump_threads(double stalled_ms) {
       if (dladdr((void *)pc, &di) && di.dli_sname) sym = di.dli_sname;
     }
     const GuestContext *run = t->ctx;
-    if (t->ctx->mem_base && t->ctx->fs_base) {
+    if (RECOMP_MEM_OK(t->ctx) && t->ctx->fs_base) {
       const uint64_t slot = *(const uint64_t *)(t->ctx->mem_base + t->ctx->fs_base + RECOMP_TCB_CTX_SLOT);
       if (slot) run = (const GuestContext *)(uintptr_t)slot;
     }

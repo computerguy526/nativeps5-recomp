@@ -8,6 +8,7 @@
 // The destroy line with an instance's totals is always printed.
 
 #include "ps4_ajm.h"
+#include "nps5_thunk.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -273,7 +274,7 @@ static void ajm_log_maybe(void) {
 }
 
 static inline void *guest_to_host(GuestContext *ctx, uint64_t gaddr) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) return NULL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) return NULL;
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr < (uintptr_t)ctx->mem_base + ctx->mem_size) {
         return (void *)gaddr;
     }
@@ -1346,7 +1347,7 @@ void shim_sceAjmBatchJobRunSplitBufferRa(GuestContext *ctx) {
 // in it are guest addresses, 0 when outside guest memory.
 static uint64_t ajm_host_to_guest(const GuestContext *ctx, const void *p) {
     const uint8_t *b = (const uint8_t *)p;
-    if (b && ctx->mem_base && b >= ctx->mem_base && b < ctx->mem_base + ctx->mem_size) {
+    if (b && RECOMP_MEM_OK(ctx) && b >= ctx->mem_base && b < ctx->mem_base + ctx->mem_size) {
         return (uint64_t)(b - ctx->mem_base);
     }
     return 0; // never hand a host pointer to the guest
@@ -1369,32 +1370,26 @@ static uint64_t ajm_start_fail(GuestContext *ctx, uint64_t record_gaddr, int32_t
     return (uint64_t)(uint32_t)code;
 }
 
-void shim_sceAjmBatchStartBuffer(GuestContext *ctx) {
-    uint32_t context_id = (uint32_t)ctx->rdi;
-    uint64_t batch_gaddr = ctx->rsi;
-    uint32_t batch_size = (uint32_t)ctx->rdx;
-    int priority = (int)ctx->rcx;
-    uint64_t batch_err_gaddr = ctx->r8;
-    uint64_t out_batch_id_gaddr = ctx->r9;
-    (void)priority;
-
+// Parses the chunk-encoded batch at guest batch_gaddr (batch_size bytes) and queues it on the
+// context's worker. Shared by sceAjmBatchStartBuffer (PS4 shape) and sceAjmBatchStart (the PS5
+// builder API, which produces the same chunks). Returns 0 or an ORBIS_AJM_ERROR_*.
+static uint64_t ajm_batch_start(GuestContext *ctx, uint32_t context_id, uint64_t batch_gaddr,
+                                uint32_t batch_size, uint64_t batch_err_gaddr,
+                                uint64_t out_batch_id_gaddr) {
     if ((batch_size & 7) != 0 || out_batch_id_gaddr == 0) {
-        ctx->rax = ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_MALFORMED_BATCH);
-        SHIM_RETURN();
+        return ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_MALFORMED_BATCH);
     }
 
     uint8_t *p_batch = (uint8_t *)guest_to_host(ctx, batch_gaddr);
     uint32_t *p_out_batch_id = (uint32_t *)guest_to_host(ctx, out_batch_id_gaddr);
     if (!p_batch || !p_out_batch_id) {
-        ctx->rax = ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_INVALID_PARAMETER);
-        SHIM_RETURN();
+        return ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_INVALID_PARAMETER);
     }
 
     pthread_mutex_lock(&g_ajm_lock);
     if (context_id >= MAX_AJM_CONTEXTS || !g_ajm_contexts[context_id].in_use) {
         pthread_mutex_unlock(&g_ajm_lock);
-        ctx->rax = ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_INVALID_CONTEXT);
-        SHIM_RETURN();
+        return ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_INVALID_CONTEXT);
     }
 
     AjmContext *ajm_ctx = &g_ajm_contexts[context_id];
@@ -1408,8 +1403,7 @@ void shim_sceAjmBatchStartBuffer(GuestContext *ctx) {
 
     if (slot < 0) {
         pthread_mutex_unlock(&g_ajm_lock);
-        ctx->rax = ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_OUT_OF_MEMORY);
-        SHIM_RETURN();
+        return ajm_start_fail(ctx, batch_err_gaddr, ORBIS_AJM_ERROR_OUT_OF_MEMORY);
     }
 
     AjmBatch *b = &g_ajm_batches[slot];
@@ -1503,7 +1497,12 @@ void shim_sceAjmBatchStartBuffer(GuestContext *ctx) {
     pthread_mutex_unlock(&ajm_ctx->queue_mutex);
 
     pthread_mutex_unlock(&g_ajm_lock);
-    ctx->rax = 0;
+    return 0;
+}
+
+void shim_sceAjmBatchStartBuffer(GuestContext *ctx) {
+    // rdi context, rsi batch, rdx size, rcx priority (unused), r8 &error, r9 &batch id
+    ctx->rax = ajm_batch_start(ctx, (uint32_t)ctx->rdi, ctx->rsi, (uint32_t)ctx->rdx, ctx->r8, ctx->r9);
     SHIM_RETURN();
 }
 
@@ -1764,6 +1763,114 @@ void shim_sceAjmDecMp3ParseFrame(GuestContext *ctx) {
 
 void shim_sceAjmStrError(GuestContext *ctx) {
     ctx->rax = 0;
+    SHIM_RETURN();
+}
+
+
+// ---- PS5 batch builder API (libSceAjm.native: sceAjmBatchInitialize / Job* / Start)
+//
+// The PS5 title builds a batch through a SceAjmBatchInfo {buffer, offset, size} (guest addresses
+// and byte counts) and starts it with sceAjmBatchStart. The jobs are encoded as the same chunk
+// records the PS4 *BufferRa functions write, so the PS4 parser, worker and codecs run them
+// unchanged. Codecs without a decoder here (anything but ATRAC9 / MP3) fail the job with a codec
+// result at Start/Wait time like any unsupported codec; never a silent success.
+
+#define AJM5_CONTROL_RESET_FLAGS ((uint64_t)AJM_CONTROL_RESET << 13)
+#define AJM5_CONTROL_INIT_FLAGS ((uint64_t)AJM_CONTROL_INITIALIZE << 13)
+#define AJM5_DECODE_FLAGS ((uint64_t)AJM_SIDEBAND_STREAM << 45)
+
+// Appends one job to the batch described by info (guest address). run != 0: a run job (decode),
+// otherwise a control job. Returns 0 or an ORBIS_AJM_ERROR_*.
+static uint64_t ajm5_append_job(GuestContext *ctx, uint64_t info_gaddr, uint32_t instance, int run,
+                                uint64_t flags, uint64_t in_gaddr, uint64_t in_size,
+                                uint64_t out_gaddr, uint64_t out_size, uint64_t sb_gaddr,
+                                uint64_t sb_size) {
+    AjmBatchInfo *info = (AjmBatchInfo *)guest_to_host(ctx, info_gaddr);
+    if (!info || !info->p_buffer) return ORBIS_AJM_ERROR_INVALID_PARAMETER;
+    size_t need = sizeof(AjmChunkJob) + sizeof(AjmChunkBuffer) + sizeof(AjmChunkFlags) +
+                  (run ? sizeof(AjmChunkBuffer) : 0) + sizeof(AjmChunkBuffer);
+    if (info->offset > info->size || need > info->size - info->offset) {
+        return ORBIS_AJM_ERROR_JOB_CREATION;
+    }
+    uint8_t *base = (uint8_t *)guest_to_host(ctx, info->p_buffer);
+    if (!base) return ORBIS_AJM_ERROR_INVALID_PARAMETER;
+    uint8_t *p = base + info->offset;
+    AjmChunkJob *job = (AjmChunkJob *)p;
+    job->header = make_chunk_header(AjmIdentJob, instance);
+    uint8_t *cur = p + sizeof(AjmChunkJob);
+    AjmChunkBuffer *in = (AjmChunkBuffer *)cur;
+    in->header = make_chunk_header(run ? AjmIdentInputRunBuf : AjmIdentInputControlBuf, 0);
+    in->size = (uint32_t)in_size;
+    in->p_address = guest_to_host(ctx, in_gaddr);
+    cur += sizeof(AjmChunkBuffer);
+    AjmChunkFlags *fl = (AjmChunkFlags *)cur;
+    fl->header = make_chunk_header(run ? AjmIdentRunFlags : AjmIdentControlFlags, (uint32_t)(flags >> 32));
+    fl->flags_low = (uint32_t)flags;
+    cur += sizeof(AjmChunkFlags);
+    if (run) {
+        AjmChunkBuffer *out = (AjmChunkBuffer *)cur;
+        out->header = make_chunk_header(AjmIdentOutputRunBuf, 0);
+        out->size = (uint32_t)out_size;
+        out->p_address = guest_to_host(ctx, out_gaddr);
+        cur += sizeof(AjmChunkBuffer);
+    }
+    AjmChunkBuffer *sb = (AjmChunkBuffer *)cur;
+    sb->header = make_chunk_header(AjmIdentOutputControlBuf, 0);
+    sb->size = (uint32_t)sb_size;
+    sb->p_address = guest_to_host(ctx, sb_gaddr);
+    cur += sizeof(AjmChunkBuffer);
+    job->size = (uint32_t)(cur - (p + sizeof(AjmChunkJob)));
+    info->offset += (uint64_t)(cur - p);
+    return 0;
+}
+
+// int sceAjmBatchInitialize(void *buffer, size_t size, SceAjmBatchInfo *info)
+void shim_sceAjmBatchInitialize(GuestContext *ctx) {
+    AjmBatchInfo *info = (AjmBatchInfo *)guest_to_host(ctx, ctx->rdx);
+    if (!ctx->rdi || !info) {
+        ctx->rax = ORBIS_AJM_ERROR_INVALID_PARAMETER;
+    } else {
+        info->p_buffer = ctx->rdi;
+        info->offset = 0;
+        info->size = ctx->rsi;
+        ctx->rax = 0;
+    }
+    SHIM_RETURN();
+}
+
+// int sceAjmBatchJobInitialize(info, instance, const void *codecParams, size_t size, void *result)
+void shim_sceAjmBatchJobInitialize(GuestContext *ctx) {
+    ctx->rax = ajm5_append_job(ctx, ctx->rdi, (uint32_t)ctx->rsi, 0, AJM5_CONTROL_INIT_FLAGS,
+                               ctx->rdx, ctx->rcx, 0, 0, ctx->r8, 8);
+    SHIM_RETURN();
+}
+
+// int sceAjmBatchJobClearContext(info, instance, void *result)
+void shim_sceAjmBatchJobClearContext(GuestContext *ctx) {
+    ctx->rax = ajm5_append_job(ctx, ctx->rdi, (uint32_t)ctx->rsi, 0, AJM5_CONTROL_RESET_FLAGS, 0, 0,
+                               0, 0, ctx->rdx, 8);
+    SHIM_RETURN();
+}
+
+// int sceAjmBatchJobDecode(info, instance, const void *in, size_t inSize, void *pcm, size_t pcmSize,
+//                          void *result)   result is the 7th argument, on the stack
+void shim_sceAjmBatchJobDecode(GuestContext *ctx) {
+    uint64_t result = NPS5_GUEST_STACK_ARG(ctx, 0);
+    ctx->rax = ajm5_append_job(ctx, ctx->rdi, (uint32_t)ctx->rsi, 1, AJM5_DECODE_FLAGS, ctx->rdx,
+                               ctx->rcx, ctx->r8, ctx->r9, result, 16);
+    SHIM_RETURN();
+}
+
+// int sceAjmBatchStart(uint32_t context, const SceAjmBatchInfo *info, int priority,
+//                      SceAjmBatchError *error, uint32_t *batch)
+void shim_sceAjmBatchStart(GuestContext *ctx) {
+    const AjmBatchInfo *info = (const AjmBatchInfo *)guest_to_host(ctx, ctx->rsi);
+    if (!info || !info->p_buffer || info->offset > info->size || (info->offset & 7) != 0) {
+        ctx->rax = ajm_start_fail(ctx, ctx->rcx, ORBIS_AJM_ERROR_INVALID_PARAMETER);
+    } else {
+        ctx->rax = ajm_batch_start(ctx, (uint32_t)ctx->rdi, info->p_buffer, (uint32_t)info->offset,
+                                   ctx->rcx, ctx->r8);
+    }
     SHIM_RETURN();
 }
 

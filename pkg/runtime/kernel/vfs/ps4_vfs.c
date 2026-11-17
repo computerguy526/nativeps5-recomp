@@ -1,16 +1,28 @@
 #include "ps4_vfs.h"
+#include "nps5_mem.h"
 #include "ps4_pak.h"
+#include "nps5_diag.h"
+#include "ps4_sfo.h"
 #include <dirent.h>
+#include <execinfo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include <time.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/xattr.h>
+#include <sys/param.h>
 #include <unistd.h>
+
+#define PATH_MAX_VFS 1100
 
 #if defined(__APPLE__)
 #include <libgen.h>
@@ -18,6 +30,7 @@
 #endif
 
 static char *g_app_root = NULL;
+static char *g_app_root_real = NULL; // realpath of g_app_root: the host side of the write guard
 static pthread_mutex_t g_vfs_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_VIRTUAL_FILES 256
@@ -35,7 +48,8 @@ static pthread_mutex_t g_vfile_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static char *discover_app_root(const char *hint) {
   // 1. Environment variable override
-  const char *env = getenv("PS4_APP_DIR");
+  const char *env = getenv("NPS5_APP0_DIR"); // data folder on a separate read-only volume (wins over PS4_APP_DIR)
+  if (!env || !*env) env = getenv("PS4_APP_DIR");
   if (env && *env && access(env, F_OK) == 0) {
     char resolved[1024];
     if (realpath(env, resolved) != NULL) {
@@ -162,16 +176,279 @@ static char *discover_app_root(const char *hint) {
   return strdup(".");
 }
 
-#define MAX_VFS_MOUNTS 32
-
+// Growable table (the overlay mounts one entry per file; a fixed table silently dropped the rest).
 typedef struct {
-  char guest_prefix[64];
-  char host_path[1024];
+  char *guest_prefix;
+  char *host_path;
   int active;
+  int ro; // read-only mount: the write gate refuses every mutation below it, whatever the host path is
 } VfsMount;
 
-static VfsMount g_mounts[MAX_VFS_MOUNTS];
+static VfsMount *g_mounts = NULL;
 static int g_mount_count = 0;
+static int g_mount_cap = 0;
+
+static void vfs_mounts_clear_locked(void) {
+  for (int i = 0; i < g_mount_count; i++) { free(g_mounts[i].guest_prefix); free(g_mounts[i].host_path); }
+  free(g_mounts);
+  g_mounts = NULL;
+  g_mount_count = g_mount_cap = 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-title writable roots. The application image is read-only; everything a title writes goes
+// below one host directory per title (see ps4_vfs.h).
+
+static char g_title_id[64];
+static int g_title_id_known;
+static pthread_mutex_t g_title_mutex = PTHREAD_MUTEX_INITIALIZER; // held while the id is computed (the SFO loader re-enters the VFS)
+
+static void vfs_sanitize_id(char *s) {
+  for (; *s; s++) {
+    const char c = *s;
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) *s = '_';
+  }
+}
+
+// "titleId": "PPSA01234" in sce_sys/param.json (PS5 packages carry no param.sfo).
+static bool vfs_title_id_from_param_json(const char *root, char *out, size_t out_sz) {
+  char path[1100];
+  snprintf(path, sizeof(path), "%s/sce_sys/param.json", root);
+  FILE *f = fopen(path, "r");
+  if (!f) return false;
+  char buf[16384];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = '\0';
+  const char *p = strstr(buf, "\"titleId\"");
+  if (!p) return false;
+  p = strchr(p + 9, ':');
+  if (!p) return false;
+  p = strchr(p, '"');
+  if (!p) return false;
+  p++;
+  size_t k = 0;
+  while (p[k] && p[k] != '"' && k + 1 < out_sz) { out[k] = p[k]; k++; }
+  out[k] = '\0';
+  return k > 0 && p[k] == '"';
+}
+
+const char *ps4_vfs_title_id(void) {
+  pthread_mutex_lock(&g_title_mutex);
+  if (!g_title_id_known) {
+    char id[sizeof(g_title_id)] = {0};
+    const char *env = getenv("NPS5_TITLE_ID");
+    pthread_mutex_lock(&g_vfs_mutex);
+    char *root = strdup(g_app_root ? g_app_root : ".");
+    pthread_mutex_unlock(&g_vfs_mutex);
+    if (env && *env) {
+      snprintf(id, sizeof(id), "%s", env);
+    } else if (!vfs_title_id_from_param_json(root ? root : ".", id, sizeof(id))) {
+      id[0] = '\0';
+      Ps4SfoContext sfo = {0}; // resolves paths through the VFS (g_vfs_mutex is not held here)
+      char tid[64] = {0};
+      if (ps4_sfo_find_and_load(&sfo)) {
+        ps4_sfo_get_string(&sfo, "TITLE_ID", tid, sizeof(tid));
+        ps4_sfo_free(&sfo);
+      }
+      snprintf(id, sizeof(id), "%s", tid);
+    }
+    free(root);
+    vfs_sanitize_id(id);
+    memcpy(g_title_id, id, sizeof(g_title_id));
+    g_title_id_known = 1;
+  }
+  pthread_mutex_unlock(&g_title_mutex);
+  return g_title_id;
+}
+
+static int vfs_mkdir_p(const char *path) {
+  char tmp[1100];
+  snprintf(tmp, sizeof(tmp), "%s", path);
+  for (char *p = tmp + 1; *p; p++) {
+    if (*p == '/') {
+      *p = '\0';
+      if (mkdir(tmp, 0755) != 0 && errno != EEXIST) return -1;
+      *p = '/';
+    }
+  }
+  return (mkdir(tmp, 0755) != 0 && errno != EEXIST) ? -1 : 0;
+}
+
+static bool vfs_host_in_app_root(const char *host);
+bool ps4_vfs_userdata_dir(const char *kind, char *out, size_t out_sz) {
+  if (!kind || !out || out_sz == 0) return false;
+  const char *root = getenv("NPS5_USERDATA_DIR");
+  int n;
+  if (root && *root) {
+    n = snprintf(out, out_sz, "%s/%s", root, kind);
+  } else {
+    const char *legacy = getenv("PS4RECOMP_DATA_DIR");
+    const char *tid = ps4_vfs_title_id();
+    if (!*tid) tid = "UNKNOWN";
+    if (legacy && *legacy) {
+      if (strcmp(kind, "data") != 0) return false; // download0/temp0/savedata keep the PS4Recomp layout there
+      n = snprintf(out, out_sz, "%s/data/%s", legacy, tid);
+    } else {
+      const char *home = getenv("HOME");
+      if (!home || !*home) return false;
+      n = snprintf(out, out_sz, "%s/Library/Application Support/nativeps5/%s/%s", home, tid, kind);
+    }
+  }
+  if (n < 0 || (size_t)n >= out_sz) return false;
+  // A userdata root inside the application directory would put guest-writable files (and the exit-time temp sweep) into the
+  // dump: refuse it (checked before the directory is created).
+  if (vfs_host_in_app_root(out)) {
+    fprintf(stderr, "[ps4-vfs] ERROR: the per-title %s directory %s lies inside the application directory; refused (set NPS5_USERDATA_DIR elsewhere)\n", kind, out);
+    return false;
+  }
+  // /temp0 is private to this process: two instances of a title (or two titles whose id is unknown) must not
+  // empty each other's files. Directories of dead processes are swept at start (vfs_sweep_stale_temp).
+  if (!strcmp(kind, "temp")) {
+    n = snprintf(out + n, out_sz - (size_t)n, "/p%d", (int)getpid()) + n;
+    if ((size_t)n >= out_sz) return false;
+  }
+  return vfs_mkdir_p(out) == 0;
+}
+
+static char g_temp_dir[1100]; // the /temp0 directory this process owns ("" = none)
+
+static void vfs_remove_tree(const char *dir, int keep_top) {
+  DIR *d = opendir(dir);
+  if (d) {
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      char p[1400];
+      snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+      struct stat st;
+      if (lstat(p, &st) != 0) continue;
+      if (S_ISDIR(st.st_mode)) vfs_remove_tree(p, 0);
+      else unlink(p);
+    }
+    closedir(d);
+  }
+  if (!keep_top) rmdir(dir);
+}
+
+static void vfs_clear_temp(void) {
+  if (g_temp_dir[0]) vfs_remove_tree(g_temp_dir, 0);
+}
+
+// Removes <temp>/p<pid> of processes that no longer exist (a run that did not exit cleanly).
+static void vfs_sweep_stale_temp(const char *own_dir) {
+  char parent[1100];
+  snprintf(parent, sizeof(parent), "%s", own_dir);
+  char *slash = strrchr(parent, '/');
+  if (!slash) return;
+  *slash = '\0';
+  DIR *d = opendir(parent);
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (e->d_name[0] != 'p' || e->d_name[1] < '0' || e->d_name[1] > '9') continue;
+    char *end = NULL;
+    long pid = strtol(e->d_name + 1, &end, 10);
+    if (!end || *end || pid <= 0 || pid == (long)getpid()) continue;
+    if (kill((pid_t)pid, 0) == 0 || errno != ESRCH) continue; // still running (or not ours to judge)
+    char p[1400];
+    snprintf(p, sizeof(p), "%s/%s", parent, e->d_name);
+    vfs_remove_tree(p, 0);
+  }
+  closedir(d);
+}
+
+// /data, /temp0 and /download0 exist for every application. Mounted at init so that no path
+// below them can ever resolve into the application image. When a directory cannot be created the
+// root stays unmounted and ps4_vfs_resolve fails for it (ENODEV): there is deliberately no fallback
+// into the dump.
+static void vfs_mount_userdata(void) {
+  static const struct { const char *guest, *kind; } roots[] = {{"/data", "data"}, {"/temp0", "temp"}, {"/download0", "download0"}};
+  for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+    char dir[1100];
+    if (!ps4_vfs_userdata_dir(roots[i].kind, dir, sizeof(dir))) {
+      const char *legacy = getenv("PS4RECOMP_DATA_DIR");
+      if (strcmp(roots[i].kind, "data") != 0 && legacy && *legacy && !(getenv("NPS5_USERDATA_DIR") && *getenv("NPS5_USERDATA_DIR"))) {
+        fprintf(stderr, "[ps4-vfs] note: PS4RECOMP_DATA_DIR layout: %s is not provided (set NPS5_USERDATA_DIR)\n", roots[i].guest);
+        continue;
+      }
+      fprintf(stderr, "[ps4-vfs] ERROR: cannot create the per-title %s directory (set NPS5_USERDATA_DIR to a writable place); %s is unavailable, "
+                      "access fails with ENODEV\n", roots[i].kind, roots[i].guest);
+      continue;
+    }
+    if (!strcmp(roots[i].kind, "temp")) {
+      static int registered;
+      snprintf(g_temp_dir, sizeof(g_temp_dir), "%s", dir);
+      vfs_remove_tree(dir, 1); // this process's own directory (non-empty only when the VFS is initialised again)
+      vfs_sweep_stale_temp(dir);
+      if (!registered) { registered = 1; atexit(vfs_clear_temp); }
+    }
+    ps4_vfs_mount(roots[i].guest, dir);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-title overlay (docs/m3/uecvar.md). Every regular file below NPS5_OVERLAY_DIR (default
+// <userdata>/overlay when it exists) is mounted read-only over the same relative path below /app0,
+// so a title sees an Engine.ini / UECommandLine.txt of ours without the application image (which
+// stays EROFS and untouched) ever being written. Only files: a directory under /app0 keeps its
+// real listing. Guest paths are compared case-insensitively (the console file system is).
+static int g_overlay_dropped;
+
+static int vfs_overlay_walk(const char *host_dir, const char *rel, int depth) {
+  DIR *d = opendir(host_dir);
+  if (!d) return 0;
+  int n = 0;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (e->d_name[0] == '.') continue;
+    char host[1100], grel[1100];
+    int a = snprintf(host, sizeof(host), "%s/%s", host_dir, e->d_name);
+    int b = snprintf(grel, sizeof(grel), "%s%s%s", rel, *rel ? "/" : "", e->d_name);
+    struct stat st;
+    if (a < 0 || (size_t)a >= sizeof(host) || b < 0 || (size_t)b >= sizeof(grel)) {
+      g_overlay_dropped++;
+      fprintf(stderr, "[ps4-vfs] WARNING: overlay path too long, not mounted: %s/%s\n", host_dir, e->d_name);
+      continue;
+    }
+    if (stat(host, &st) != 0) continue;
+    if (S_ISDIR(st.st_mode)) {
+      if (depth < 12) n += vfs_overlay_walk(host, grel, depth + 1);
+    } else if (S_ISREG(st.st_mode)) {
+      char guest[1200];
+      snprintf(guest, sizeof(guest), "/app0/%s", grel);
+      int r = ps4_vfs_mount_ro(guest, host);
+      if (r == 0) {
+        n++;
+        PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Overlay: %s -> %s\n", guest, host);
+      } else {
+        g_overlay_dropped++;
+        fprintf(stderr, "[ps4-vfs] WARNING: overlay file not mounted (%s): %s\n", strerror(-r), guest);
+      }
+    }
+  }
+  closedir(d);
+  return n;
+}
+
+static void vfs_mount_overlay(void) {
+  char dir[1100];
+  const char *env = getenv("NPS5_OVERLAY_DIR");
+  if (env && *env) {
+    snprintf(dir, sizeof(dir), "%s", env);
+  } else {
+    const char *root = getenv("NPS5_USERDATA_DIR");
+    if (!root || !*root) return; // the implicit location only with an explicit per-title data root
+    snprintf(dir, sizeof(dir), "%s/overlay", root);
+  }
+  struct stat st;
+  if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+  g_overlay_dropped = 0;
+  int n = vfs_overlay_walk(dir, "", 0);
+  fprintf(stderr, "[ps4-vfs] overlay %s: %d file(s) mounted over /app0\n", dir, n);
+  if (g_overlay_dropped)
+    fprintf(stderr, "[ps4-vfs] ERROR: overlay %s: %d file(s) NOT mounted and invisible to the title (see warnings above)\n", dir, g_overlay_dropped);
+}
 
 void ps4_vfs_init(const char *app_root) {
   pthread_mutex_lock(&g_vfs_mutex);
@@ -191,17 +468,24 @@ void ps4_vfs_init(const char *app_root) {
     }
   }
 
-  printf("[ps4-vfs] Application root: %s\n",
+  PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Application root: %s\n",
          g_app_root ? g_app_root : "(null)");
 
-  memset(g_mounts, 0, sizeof(g_mounts));
-  g_mount_count = 0;
+  vfs_mounts_clear_locked();
 
   pthread_mutex_lock(&g_vfile_mutex);
   memset(g_vfiles, 0, sizeof(g_vfiles));
   pthread_mutex_unlock(&g_vfile_mutex);
 
+  free(g_app_root_real);
+  g_app_root_real = g_app_root ? realpath(g_app_root, NULL) : NULL;
   pthread_mutex_unlock(&g_vfs_mutex);
+
+  pthread_mutex_lock(&g_title_mutex);
+  g_title_id_known = 0;
+  pthread_mutex_unlock(&g_title_mutex);
+  vfs_mount_userdata();
+  vfs_mount_overlay();
 
   // Initialize universal PAK provider
   ps4_pak_init(g_app_root);
@@ -214,39 +498,57 @@ const char *ps4_vfs_get_app_root(void) {
   return root;
 }
 
-int ps4_vfs_mount(const char *guest_prefix, const char *host_path) {
+static int vfs_mount_flags(const char *guest_prefix, const char *host_path, int ro) {
   if (!guest_prefix || !host_path || *guest_prefix == '\0' ||
       *host_path == '\0') {
     return -EINVAL;
   }
+  if (strlen(host_path) >= 1024) return -ENAMETOOLONG; // longer than the resolver's buffers: would truncate and alias
 
   pthread_mutex_lock(&g_vfs_mutex);
   for (int i = 0; i < g_mount_count; i++) {
     if (g_mounts[i].active &&
-        strcmp(g_mounts[i].guest_prefix, guest_prefix) == 0) {
-      strncpy(g_mounts[i].host_path, host_path,
-              sizeof(g_mounts[i].host_path) - 1);
-      g_mounts[i].host_path[sizeof(g_mounts[i].host_path) - 1] = '\0';
+        strcasecmp(g_mounts[i].guest_prefix, guest_prefix) == 0) {
+      char *hp = strdup(host_path);
+      if (!hp) { pthread_mutex_unlock(&g_vfs_mutex); return -ENOMEM; }
+      free(g_mounts[i].host_path);
+      g_mounts[i].host_path = hp;
+      g_mounts[i].ro = ro;
       pthread_mutex_unlock(&g_vfs_mutex);
       return 0;
     }
   }
 
-  if (g_mount_count >= MAX_VFS_MOUNTS) {
+  if (g_mount_count >= g_mount_cap) {
+    int cap = g_mount_cap ? g_mount_cap * 2 : 64;
+    VfsMount *nm = (VfsMount *)realloc(g_mounts, (size_t)cap * sizeof(VfsMount));
+    if (!nm) {
+      pthread_mutex_unlock(&g_vfs_mutex);
+      return -ENOMEM;
+    }
+    g_mounts = nm;
+    g_mount_cap = cap;
+  }
+
+  char *gp = strdup(guest_prefix), *hp = strdup(host_path);
+  if (!gp || !hp) {
+    free(gp);
+    free(hp);
     pthread_mutex_unlock(&g_vfs_mutex);
     return -ENOMEM;
   }
-
   VfsMount *m = &g_mounts[g_mount_count++];
-  strncpy(m->guest_prefix, guest_prefix, sizeof(m->guest_prefix) - 1);
-  m->guest_prefix[sizeof(m->guest_prefix) - 1] = '\0';
-  strncpy(m->host_path, host_path, sizeof(m->host_path) - 1);
-  m->host_path[sizeof(m->host_path) - 1] = '\0';
+  m->guest_prefix = gp;
+  m->host_path = hp;
   m->active = 1;
+  m->ro = ro;
 
   pthread_mutex_unlock(&g_vfs_mutex);
   return 0;
 }
+
+int ps4_vfs_mount(const char *guest_prefix, const char *host_path) { return vfs_mount_flags(guest_prefix, host_path, 0); }
+int ps4_vfs_mount_ro(const char *guest_prefix, const char *host_path) { return vfs_mount_flags(guest_prefix, host_path, 1); }
 
 int ps4_vfs_unmount(const char *guest_prefix) {
   if (!guest_prefix) {
@@ -256,7 +558,7 @@ int ps4_vfs_unmount(const char *guest_prefix) {
   pthread_mutex_lock(&g_vfs_mutex);
   for (int i = 0; i < g_mount_count; i++) {
     if (g_mounts[i].active &&
-        strcmp(g_mounts[i].guest_prefix, guest_prefix) == 0) {
+        strcasecmp(g_mounts[i].guest_prefix, guest_prefix) == 0) {
       g_mounts[i].active = 0;
       pthread_mutex_unlock(&g_vfs_mutex);
       return 0;
@@ -417,95 +719,97 @@ static int case_insensitive_lookup(const char *host_path, char *out_path,
   return 0;
 }
 
-int ps4_vfs_resolve(const char *guest_path, char *host_path,
-                    size_t host_path_sz) {
+static bool vfs_prefix_ci(const char *g, const char *root) {
+  size_t n = strlen(root);
+  return strncasecmp(g, root, n) == 0 && (g[n] == '/' || g[n] == '\0');
+}
+
+static bool vfs_is_userdata_root(const char *g) {
+  return vfs_prefix_ci(g, "/data") || vfs_prefix_ci(g, "/temp0") || vfs_prefix_ci(g, "/download0");
+}
+
+// How a guest path was resolved: through a mount (the per-title roots, overlay files), below the application
+// root (/app0, /hostapp, relative paths), or passed through as a host path.
+enum { VFS_VIA_MOUNT = 0, VFS_VIA_APPROOT = 1, VFS_VIA_RAW = 2 };
+
+static void vfs_join_root(char *raw_host, size_t sz, const char *root, const char *subpath) {
+  while (*subpath == '/') subpath++;
+  char norm_subpath[1024];
+  normalize_chroot_subpath(subpath, norm_subpath, sizeof(norm_subpath));
+  if (norm_subpath[0]) snprintf(raw_host, sz, "%s/%s", root, norm_subpath);
+  else snprintf(raw_host, sz, "%s", root);
+}
+
+static int vfs_resolve_ex(const char *guest_path, char *host_path, size_t host_path_sz, int *kind, int *mount_ro) {
+  if (kind) *kind = VFS_VIA_MOUNT;
+  if (mount_ro) *mount_ro = 0;
   if (!guest_path || !host_path || host_path_sz == 0) {
     return -EINVAL;
+  }
+  { // NPS5_VFS_TRACE_INI=1: log every lookup of a *.ini path (which config files does the title probe?)
+    static int trace = -1;
+    if (trace < 0) { const char *e = getenv("NPS5_VFS_TRACE_INI"); trace = e && *e == '1'; }
+    if (trace) {
+      size_t n = strlen(guest_path);
+      if (n > 4 && !strcasecmp(guest_path + n - 4, ".ini")) {
+        int overlay = 0;
+        pthread_mutex_lock(&g_vfs_mutex);
+        for (int i = 0; i < g_mount_count; i++) if (g_mounts[i].active && !strcasecmp(guest_path, g_mounts[i].guest_prefix)) overlay = 1;
+        pthread_mutex_unlock(&g_vfs_mutex);
+        fprintf(stderr, "[ps4-vfs] ini lookup: %s%s\n", guest_path, overlay ? " (overlay)" : "");
+        if (overlay) { void *bt[4]; int nb = backtrace(bt, 4); backtrace_symbols_fd(bt, nb, 2); }
+      }
+    }
   }
 
   pthread_mutex_lock(&g_vfs_mutex);
   const char *root = g_app_root ? g_app_root : ".";
   char raw_host[1024];
   raw_host[0] = '\0';
+  int via = VFS_VIA_MOUNT;
+  int err = 0;
 
   for (int i = 0; i < g_mount_count; i++) {
     if (!g_mounts[i].active)
       continue;
     size_t plen = strlen(g_mounts[i].guest_prefix);
-    if (strncmp(guest_path, g_mounts[i].guest_prefix, plen) == 0 &&
+    if (strncasecmp(guest_path, g_mounts[i].guest_prefix, plen) == 0 &&
         (guest_path[plen] == '/' || guest_path[plen] == '\0')) {
-      const char *subpath = guest_path + plen;
-      while (*subpath == '/')
-        subpath++;
-
-      char norm_subpath[1024];
-      normalize_chroot_subpath(subpath, norm_subpath, sizeof(norm_subpath));
-      if (norm_subpath[0]) {
-        snprintf(raw_host, sizeof(raw_host), "%s/%s", g_mounts[i].host_path,
-                 norm_subpath);
-      } else {
-        snprintf(raw_host, sizeof(raw_host), "%s", g_mounts[i].host_path);
-      }
+      vfs_join_root(raw_host, sizeof(raw_host), g_mounts[i].host_path, guest_path + plen);
+      if (mount_ro) *mount_ro = g_mounts[i].ro;
       break;
     }
   }
 
   if (raw_host[0] == '\0') {
-    if (strncmp(guest_path, "/app0", 5) == 0 &&
-        (guest_path[5] == '/' || guest_path[5] == '\0')) {
-      const char *subpath = guest_path + 5;
-      while (*subpath == '/')
-        subpath++;
-
-      char norm_subpath[1024];
-      normalize_chroot_subpath(subpath, norm_subpath, sizeof(norm_subpath));
-      if (norm_subpath[0]) {
-        snprintf(raw_host, sizeof(raw_host), "%s/%s", root, norm_subpath);
-      } else {
-        snprintf(raw_host, sizeof(raw_host), "%s", root);
-      }
-    } else if (strncmp(guest_path, "/hostapp", 8) == 0 &&
-               (guest_path[8] == '/' || guest_path[8] == '\0')) {
-      const char *subpath = guest_path + 8;
-      while (*subpath == '/')
-        subpath++;
-
-      char norm_subpath[1024];
-      normalize_chroot_subpath(subpath, norm_subpath, sizeof(norm_subpath));
-      if (norm_subpath[0]) {
-        snprintf(raw_host, sizeof(raw_host), "%s/%s", root, norm_subpath);
-      } else {
-        snprintf(raw_host, sizeof(raw_host), "%s", root);
-      }
-    } else if (strncmp(guest_path, "/data", 5) == 0 &&
-               (guest_path[5] == '/' || guest_path[5] == '\0')) {
-      const char *subpath = guest_path + 5;
-      while (*subpath == '/')
-        subpath++;
-
-      char norm_subpath[1024];
-      normalize_chroot_subpath(subpath, norm_subpath, sizeof(norm_subpath));
-      if (norm_subpath[0]) {
-        snprintf(raw_host, sizeof(raw_host), "%s/data/%s", root, norm_subpath);
-      } else {
-        snprintf(raw_host, sizeof(raw_host), "%s/data", root);
-      }
+    if (vfs_prefix_ci(guest_path, "/app0")) {
+      via = VFS_VIA_APPROOT;
+      vfs_join_root(raw_host, sizeof(raw_host), root, guest_path + 5);
+    } else if (vfs_prefix_ci(guest_path, "/hostapp")) {
+      via = VFS_VIA_APPROOT;
+      vfs_join_root(raw_host, sizeof(raw_host), root, guest_path + 8);
+    } else if (vfs_is_userdata_root(guest_path)) {
+      // /data, /temp0 or /download0 whose per-title mount could not be created at init: fail closed. (/data used to
+      // resolve to <app root>/data, i.e. into the dump, which made it writable.)
+      err = -ENODEV;
     } else if (guest_path[0] != '/') {
-      char norm_subpath[1024];
-      normalize_chroot_subpath(guest_path, norm_subpath, sizeof(norm_subpath));
-      if (norm_subpath[0]) {
-        snprintf(raw_host, sizeof(raw_host), "%s/%s", root, norm_subpath);
-      } else {
-        snprintf(raw_host, sizeof(raw_host), "%s", root);
-      }
+      via = VFS_VIA_APPROOT;
+      vfs_join_root(raw_host, sizeof(raw_host), root, guest_path);
     } else {
+      via = VFS_VIA_RAW;
       strncpy(raw_host, guest_path, sizeof(raw_host) - 1);
       raw_host[sizeof(raw_host) - 1] = '\0';
     }
   }
   pthread_mutex_unlock(&g_vfs_mutex);
 
+  if (err) return err;
+  if (kind) *kind = via;
   return case_insensitive_lookup(raw_host, host_path, host_path_sz);
+}
+
+int ps4_vfs_resolve(const char *guest_path, char *host_path, size_t host_path_sz) {
+  return vfs_resolve_ex(guest_path, host_path, host_path_sz, NULL, NULL);
 }
 
 static const char *get_app0_subpath(const char *guest_path) {
@@ -526,30 +830,344 @@ static const char *get_app0_subpath(const char *guest_path) {
   return NULL;
 }
 
+// /app0 is the title's read-only package image on the console: nothing under it can be created,
+// written, renamed or removed (EROFS). Titles probe for that (Unreal Engine tries to write
+// Engine/Saved under /app0 and falls back to /download0), and the dump on the host stays as it is.
+// Case-insensitive, like the mount matching and the console file system.
+bool ps4_vfs_is_readonly(const char *guest_path) {
+  if (!guest_path) return false;
+  if (guest_path[0] != '/') return true; // relative: the working directory is the application image
+  return vfs_prefix_ci(guest_path, "/hostapp") || vfs_prefix_ci(guest_path, "/app0");
+}
+
+// Lexically normalizes an absolute host path ("." and ".." removed, repeated slashes folded).
+static void vfs_lex_normalize(const char *in, char *out, size_t sz) {
+  char abs[2200];
+  if (in[0] == '/') {
+    snprintf(abs, sizeof(abs), "%s", in);
+  } else {
+    char cwd[1100];
+    if (!getcwd(cwd, sizeof(cwd))) cwd[0] = '\0';
+    snprintf(abs, sizeof(abs), "%s/%s", cwd, in);
+  }
+  size_t w = 0;
+  out[0] = '\0';
+  char *save = NULL;
+  char *segs[256];
+  int n = 0;
+  for (char *t = strtok_r(abs, "/", &save); t; t = strtok_r(NULL, "/", &save)) {
+    if (!strcmp(t, ".") || !*t) continue;
+    if (!strcmp(t, "..")) { if (n) n--; continue; }
+    if (n < 256) segs[n++] = t;
+  }
+  for (int i = 0; i < n; i++) {
+    int k = snprintf(out + w, sz - w, "/%s", segs[i]);
+    if (k < 0 || (size_t)k >= sz - w) break;
+    w += (size_t)k;
+  }
+  if (!w) snprintf(out, sz, "/");
+}
+
+// True when the host path lies inside the application directory (the dump): the deepest existing ancestor is
+// canonicalized with realpath, so symlinks and ".." cannot hide it. Compared case-insensitively. With
+// include_ancestors a path that is the root itself or one of its ancestors also counts (renaming, removing or
+// truncating an ancestor moves or destroys the dump). The gate FAILS CLOSED: when the root is set but could not be
+// canonicalized (dump moved or unmounted) every path counts as inside.
+static bool vfs_host_hits_root(const char *host, bool include_ancestors) {
+  pthread_mutex_lock(&g_vfs_mutex);
+  char *root_raw = g_app_root ? strdup(g_app_root) : NULL;
+  pthread_mutex_unlock(&g_vfs_mutex);
+  if (!root_raw) return false; // no application root configured yet: nothing to protect
+  // Resolved on every check (not cached at init): a dump that is moved or unmounted later makes the gate fail closed.
+  char *root = realpath(root_raw, NULL);
+  free(root_raw);
+  if (!root) return true;
+  char norm[1100], probe[1100], rp[PATH_MAX_VFS];
+  vfs_lex_normalize(host, norm, sizeof(norm));
+  snprintf(probe, sizeof(probe), "%s", norm);
+  bool in = false;
+  for (;;) {
+    if (realpath(probe, rp)) {
+      char full[2200];
+      snprintf(full, sizeof(full), "%s%s", rp, norm + strlen(probe));
+      size_t rl = strlen(root), fl = strlen(full);
+      in = strncasecmp(full, root, rl) == 0 && (full[rl] == '/' || full[rl] == '\0');
+      if (!in && include_ancestors) {
+        // "full" is an ancestor of root: root continues with '/' right after it (or full is "/")
+        in = fl <= rl && strncasecmp(full, root, fl) == 0 && (fl == 1 || root[fl] == '/' || root[fl] == '\0');
+      }
+      break;
+    }
+    char *slash = strrchr(probe, '/');
+    if (!slash || slash == probe) break;
+    *slash = '\0';
+  }
+  free(root);
+  return in;
+}
+static bool vfs_host_in_app_root(const char *host) { return vfs_host_hits_root(host, false); }
+
+// THE write gate. Every path-taking call that creates, changes or removes anything resolves through here (the
+// ps4_vfs_* mutators below; shims must not call ps4_vfs_resolve for a mutation). Returns 0, or a negative errno:
+// -EROFS for the read-only application image (case-insensitive, relative paths, and any path that resolves into
+// the application directory by a host path, a "..", a symlink or a mount of any kind) and for read-only mounts,
+// -ENODEV for a per-title root that has no mount.
+int ps4_vfs_resolve_for_write(const char *guest_path, char *host_path, size_t host_path_sz) {
+  if (!guest_path) return -EFAULT;
+  if (ps4_vfs_is_readonly(guest_path)) return -EROFS;
+  int kind = 0, ro = 0;
+  int r = vfs_resolve_ex(guest_path, host_path, host_path_sz, &kind, &ro);
+  if (r < 0) return r;
+  if (ro) return -EROFS;
+  if (vfs_host_hits_root(host_path, true)) return -EROFS;
+  return 0;
+}
+
+int ps4_vfs_check_writable(const char *guest_path) {
+  char h[1024];
+  return ps4_vfs_resolve_for_write(guest_path, h, sizeof(h));
+}
+
+// An fd that refers to a file in the application image can be changed through fchmod/fchown/futimes/ftruncate even
+// when it was opened read-only. Virtual (pak) fds and fds whose path is inside the application directory are refused.
+int ps4_vfs_fd_check_writable(int fd) {
+  if (ps4_vfs_is_virtual_fd(fd)) return -EROFS;
+#ifdef F_GETPATH
+  char p[PATH_MAX_VFS];
+  if (fcntl(fd, F_GETPATH, p) == 0) {
+    if (vfs_host_in_app_root(p)) return -EROFS;
+  }
+#endif
+  return 0;
+}
+
+#define VFS_W1(guest, hv)                                      \
+  char hv[1024];                                               \
+  do {                                                         \
+    int r_ = ps4_vfs_resolve_for_write((guest), hv, sizeof(hv)); \
+    if (r_ < 0) { errno = -r_; return -1; }                    \
+  } while (0)
+#define VFS_FD(fd)                                       \
+  do {                                                   \
+    int r_ = ps4_vfs_fd_check_writable(fd);              \
+    if (r_ < 0) { errno = -r_; return -1; }              \
+  } while (0)
+
+int ps4_vfs_unlink(const char *g) { VFS_W1(g, h); return unlink(h); }
+int ps4_vfs_mkdir(const char *g, mode_t mode) { VFS_W1(g, h); return mkdir(h, mode); }
+int ps4_vfs_rmdir(const char *g) { VFS_W1(g, h); return rmdir(h); }
+int ps4_vfs_remove(const char *g) { VFS_W1(g, h); return remove(h); }
+int ps4_vfs_truncate(const char *g, off_t len) { VFS_W1(g, h); return truncate(h, len); }
+int ps4_vfs_chmod(const char *g, mode_t mode) { VFS_W1(g, h); return chmod(h, mode); }
+int ps4_vfs_chown(const char *g, uid_t u, gid_t gr) { VFS_W1(g, h); return chown(h, u, gr); }
+int ps4_vfs_chflags(const char *g, unsigned int fl) { VFS_W1(g, h); return chflags(h, fl); }
+int ps4_vfs_mkfifo(const char *g, mode_t mode) { VFS_W1(g, h); return mkfifo(h, mode); }
+int ps4_vfs_utimes(const char *g, const struct timeval tv[2]) { VFS_W1(g, h); return utimes(h, tv); }
+int ps4_vfs_setxattr(const char *g, const char *name, const void *v, size_t n, int flags) {
+  VFS_W1(g, h);
+  return setxattr(h, name, v, n, 0, flags);
+}
+int ps4_vfs_removexattr(const char *g, const char *name) { VFS_W1(g, h); return removexattr(h, name, 0); }
+int ps4_vfs_rename(const char *a, const char *b) {
+  VFS_W1(a, ha);
+  VFS_W1(b, hb);
+  return rename(ha, hb);
+}
+// A hard link shares the inode, so a writable name for an image file would write the image: both ends must be writable.
+int ps4_vfs_link(const char *src, const char *dst) {
+  VFS_W1(src, hs);
+  VFS_W1(dst, hd);
+  return link(hs, hd);
+}
+// The link text is stored as the resolved host path; a link to the application image is refused for the same reason.
+int ps4_vfs_symlink(const char *target, const char *linkpath) {
+  VFS_W1(linkpath, hl);
+  char ht[1024];
+  if (!target) { errno = EFAULT; return -1; }
+  if (ps4_vfs_is_readonly(target)) { errno = EROFS; return -1; }
+  int kind = 0;
+  if (vfs_resolve_ex(target, ht, sizeof(ht), &kind, NULL) < 0) snprintf(ht, sizeof(ht), "%s", target);
+  // A relative host target is relative to the link's directory.
+  char abs_t[2300];
+  if (ht[0] != '/') snprintf(abs_t, sizeof(abs_t), "%s/../%s", hl, ht);
+  else snprintf(abs_t, sizeof(abs_t), "%s", ht);
+  // Refuse a target that is the application directory, inside it, or one of its ancestors (a link through which the
+  // gate would otherwise be walked around), for every kind of path.
+  if (vfs_host_hits_root(abs_t, true)) { errno = EROFS; return -1; }
+  return symlink(ht, hl);
+}
+int ps4_vfs_fchmod(int fd, mode_t mode) { VFS_FD(fd); return fchmod(fd, mode); }
+int ps4_vfs_fchown(int fd, uid_t u, gid_t gr) { VFS_FD(fd); return fchown(fd, u, gr); }
+int ps4_vfs_futimes(int fd, const struct timeval tv[2]) { VFS_FD(fd); return futimes(fd, tv); }
+int ps4_vfs_ftruncate(int fd, off_t len) { VFS_FD(fd); return ftruncate(fd, len); }
+int ps4_vfs_fsetxattr(int fd, const char *name, const void *v, size_t n, int flags) {
+  VFS_FD(fd);
+  return fsetxattr(fd, name, v, n, 0, flags);
+}
+
+// Opens a gate-approved host path for writing. The descriptor is re-checked after the open (F_GETPATH): another guest
+// thread may have swapped a path component for a symlink between the gate and the open. O_TRUNC is applied only after
+// that check (ftruncate), so a refused open leaves the file's bytes alone. (A file that O_CREAT itself created inside
+// the image by that race stays; the bytes of existing files are never touched.)
+static int vfs_open_checked(const char *host, int flags, mode_t mode, bool trunc) {
+  int fl = flags & ~O_TRUNC;
+  int fd = open(host, fl, mode);
+  if (fd < 0) return -1;
+  int r = ps4_vfs_fd_check_writable(fd);
+  if (r < 0) { close(fd); errno = -r; return -1; }
+  if (trunc) {
+    if ((flags & O_ACCMODE) == O_RDONLY) {
+      // O_RDONLY|O_TRUNC is undefined by POSIX; there is no descriptor that may truncate: nothing is truncated
+    } else if (ftruncate(fd, 0) != 0) {
+      int e = errno; close(fd); errno = e; return -1;
+    }
+  }
+  return fd;
+}
+
+FILE *ps4_vfs_fopen(const char *guest_path, const char *mode) {
+  if (!guest_path || !mode) { errno = EFAULT; return NULL; }
+  char host[1024];
+  bool write = strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+') || strchr(mode, 'x');
+  int r = write ? ps4_vfs_resolve_for_write(guest_path, host, sizeof(host)) : ps4_vfs_resolve(guest_path, host, sizeof(host));
+  if (r < 0) {
+    errno = (write || r == -ENODEV || r == -EROFS) ? -r : ENOENT;
+    return NULL;
+  }
+  if (!write) return fopen(host, mode);
+  // Write modes: open the descriptor ourselves (without truncating), re-check where it really landed, then truncate.
+  int fl = strchr(mode, '+') ? O_RDWR : O_WRONLY;
+  bool trunc = false;
+  if (strchr(mode, 'w')) { fl |= O_CREAT; trunc = true; }
+  if (strchr(mode, 'a')) fl |= O_CREAT | O_APPEND;
+  if (strchr(mode, 'x')) fl |= O_EXCL;
+  int fd = vfs_open_checked(host, fl, 0666, trunc);
+  if (fd < 0) return NULL;
+  FILE *f = fdopen(fd, mode);
+  if (!f) { int e = errno; close(fd); errno = e; }
+  return f;
+}
+
 bool ps4_vfs_is_virtual_fd(int fd) {
   return (fd >= PS4_VFS_VIRTUAL_FD_BASE &&
           fd < PS4_VFS_VIRTUAL_FD_BASE + MAX_VIRTUAL_FILES);
 }
+
+// [scene-open] <name> t=<s>: first open of any file under <key><name>/ (path relative to app0, case-insensitive, any depth of
+// prefix such as data/prein/). <key> is NPS5_SCENE_OPEN_KEY (profile game.tsv key scene_open_key; default "levels/", a
+// trailing "/" is added; "off" or empty disables). Printed once per name. The legacy "[level-open] <name> t=<s>" line is
+// printed right after it (alias kept for one release so smartwatch.py and agent scripts keep working; NPS5_NO_LEVEL_ALIAS=1
+// drops it). Lock-free lookup (acquire-loaded count over immutable entries), the mutex is taken only the first time a name
+// is seen; no allocation. Cost per open: one scan of the path for the key. Disable all with NPS5_NO_LEVEL_LOG=1.
+#define LVL_MAX 128
+#define LVL_NAME 48
+#define SCENE_KEY_MAX 64
+static char g_lvl_names[LVL_MAX][LVL_NAME];
+static _Atomic int g_lvl_count;
+static pthread_mutex_t g_lvl_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct timespec g_lvl_t0;
+static int g_lvl_off, g_lvl_alias = 1;
+static char g_scene_key[SCENE_KEY_MAX] = "levels/";
+static size_t g_scene_klen = 7;
+// Parse the key value (NULL = default) into key/klen; returns 0 when scene logging is off. Pure, for the unit test.
+int ps4_vfs_scene_key_parse(const char *v, char *key, size_t cap, size_t *klen) {
+  if (!v) v = "levels/";
+  while (*v == ' ' || *v == '\t') v++;
+  size_t n = strlen(v);
+  while (n && (v[n - 1] == ' ' || v[n - 1] == '\t' || v[n - 1] == '\n')) n--;
+  if (n == 0 || (n == 3 && !strncasecmp(v, "off", 3))) { key[0] = 0; *klen = 0; return 0; }
+  if (n + 2 > cap) { snprintf(key, cap, "levels/"); *klen = 7; return 1; }
+  memcpy(key, v, n);
+  if (key[n - 1] != '/') key[n++] = '/';
+  key[n] = 0;
+  *klen = n;
+  return 1;
+}
+// Re-read the environment and forget every logged name (constructor; also used by tests).
+void ps4_vfs_scene_reset(void) {
+  pthread_mutex_lock(&g_lvl_mu);
+  atomic_store_explicit(&g_lvl_count, 0, memory_order_release);
+  g_lvl_off = getenv("NPS5_NO_LEVEL_LOG") != NULL;
+  g_lvl_alias = getenv("NPS5_NO_LEVEL_ALIAS") == NULL;
+  if (!ps4_vfs_scene_key_parse(getenv("NPS5_SCENE_OPEN_KEY"), g_scene_key, sizeof g_scene_key, &g_scene_klen)) g_lvl_off = 1;
+  pthread_mutex_unlock(&g_lvl_mu);
+}
+__attribute__((constructor)) static void lvl_init_clock(void) {
+  clock_gettime(CLOCK_MONOTONIC, &g_lvl_t0);
+  ps4_vfs_scene_reset();
+}
+int ps4_vfs_note_scene_path(const char *path) {
+  if (!path || g_lvl_off) return 0;
+  const char *p = path;
+  const size_t kl = g_scene_klen;
+  for (;; p++) {
+    char c = *p;
+    if (!c) return 0;
+    if ((p == path || p[-1] == '/') && strncasecmp(p, g_scene_key, kl) == 0) break;
+  }
+  p += kl;
+  const char *e = p;
+  while (*e && *e != '/') e++;
+  size_t n = (size_t)(e - p);
+  if (*e != '/' || n == 0 || n >= LVL_NAME) return 0;  // a file directly under the key is not a scene directory
+  char nm[LVL_NAME];
+  for (size_t i = 0; i < n; i++) { char c = p[i]; nm[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+  nm[n] = 0;
+  int cnt = atomic_load_explicit(&g_lvl_count, memory_order_acquire);
+  for (int i = 0; i < cnt; i++) if (!strcmp(g_lvl_names[i], nm)) return 0;
+  int added = 0;
+  pthread_mutex_lock(&g_lvl_mu);
+  cnt = atomic_load_explicit(&g_lvl_count, memory_order_relaxed);
+  int found = 0;
+  for (int i = 0; i < cnt; i++) if (!strcmp(g_lvl_names[i], nm)) { found = 1; break; }
+  if (!found && cnt < LVL_MAX) {
+    memcpy(g_lvl_names[cnt], nm, n + 1);
+    atomic_store_explicit(&g_lvl_count, cnt + 1, memory_order_release);
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    double s = (double)(t.tv_sec - g_lvl_t0.tv_sec) + (double)(t.tv_nsec - g_lvl_t0.tv_nsec) * 1e-9;
+    fprintf(stderr, "[scene-open] %s t=%.1f\n", nm, s);
+    if (g_lvl_alias) fprintf(stderr, "[level-open] %s t=%.1f\n", nm, s);
+    added = 1;
+  }
+  pthread_mutex_unlock(&g_lvl_mu);
+  return added;
+}
+
+int ps4_vfs_note_level_path(const char *path) { return ps4_vfs_note_scene_path(path); }  // legacy name
 
 int ps4_vfs_open(const char *guest_path, int host_flags, mode_t mode) {
   if (!guest_path) {
     errno = EFAULT;
     return -1;
   }
+  ps4_vfs_note_level_path(guest_path);
 
   char resolved[1024];
+  // Anything that can create, write or truncate goes through the central write gate (ps4_vfs_resolve_for_write).
+  if ((host_flags & O_ACCMODE) != O_RDONLY || (host_flags & (O_CREAT | O_TRUNC | O_APPEND))) {
+    int wr = ps4_vfs_resolve_for_write(guest_path, resolved, sizeof(resolved));
+    if (wr < 0) {
+      errno = -wr;
+      return -1;
+    }
+    return vfs_open_checked(resolved, host_flags, mode ? mode : 0666, (host_flags & O_TRUNC) != 0);
+  }
+
   if (ps4_vfs_resolve(guest_path, resolved, sizeof(resolved)) == 0) {
     if (access(resolved, F_OK) == 0 || (host_flags & O_CREAT)) {
-      return open(resolved, host_flags, mode ? mode : 0666);
+      int hfd = open(resolved, host_flags, mode ? mode : 0666);
+      if (getenv("NPS5_VFS_TRACE_INI")) { size_t n = strlen(guest_path); if (n > 4 && !strcasecmp(guest_path + n - 4, ".ini")) fprintf(stderr, "[ps4-vfs] ini open: %s -> fd %d\n", guest_path, hfd); }
+      return hfd;
     }
   }
 
-  // Physical disk locale fallback for .res resource bundles
+  // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
   char cur_guest[1024];
   strncpy(cur_guest, guest_path, sizeof(cur_guest) - 1);
   cur_guest[sizeof(cur_guest) - 1] = '\0';
   char parent_guest[1024];
-  while (ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
+  while (ps4_pak_locale_fallback_enabled() &&
+         ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
                                         sizeof(parent_guest))) {
     if (ps4_vfs_resolve(parent_guest, resolved, sizeof(resolved)) == 0) {
       if (access(resolved, F_OK) == 0) {
@@ -595,7 +1213,7 @@ int ps4_vfs_open(const char *guest_path, int host_flags, mode_t mode) {
       pthread_mutex_unlock(&g_vfile_mutex);
 
       int vfd = PS4_VFS_VIRTUAL_FD_BASE + slot;
-      printf("[ps4-vfs] Virtual open: '%s' -> vfd=%d (pak_offset=0x%llx, "
+      PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual open: '%s' -> vfd=%d (pak_offset=0x%llx, "
              "size=%llu)\n",
              guest_path, vfd, (unsigned long long)entry.data_offset,
              (unsigned long long)entry.size);
@@ -614,7 +1232,7 @@ int ps4_vfs_close(int fd) {
     if (slot >= 0 && slot < MAX_VIRTUAL_FILES && g_vfiles[slot].active) {
       g_vfiles[slot].active = 0;
       pthread_mutex_unlock(&g_vfile_mutex);
-      printf("[ps4-vfs] Virtual close: vfd=%d\n", fd);
+      PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual close: vfd=%d\n", fd);
       return 0;
     }
     pthread_mutex_unlock(&g_vfile_mutex);
@@ -624,7 +1242,18 @@ int ps4_vfs_close(int fd) {
   return close(fd);
 }
 
+static ssize_t vfs_read_inner(int fd, void *buf, size_t count);
 ssize_t ps4_vfs_read(int fd, void *buf, size_t count) {
+  nps5_host_write_begin(buf, count);
+  const ssize_t r = vfs_read_inner(fd, buf, count);
+  const int e = errno;
+  nps5_host_write_end(buf, count);
+  errno = e;
+  return r;
+}
+
+static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
+  unsigned refault = 0; // nps5_mem.h nps5_host_write_refault: EFAULT on a destination that was opened for the kernel
   if (ps4_vfs_is_virtual_fd(fd)) {
     int slot = fd - PS4_VFS_VIRTUAL_FD_BASE;
     pthread_mutex_lock(&g_vfile_mutex);
@@ -652,6 +1281,8 @@ ssize_t ps4_vfs_read(int fd, void *buf, size_t count) {
       if (ret < 0) {
         if (errno == EINTR)
           continue;
+        if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
+          continue; // a page of the destination was closed again before the kernel copied: opened again, repeat
         if (total > 0)
           break;
         pthread_mutex_unlock(&g_vfile_mutex);
@@ -670,11 +1301,16 @@ ssize_t ps4_vfs_read(int fd, void *buf, size_t count) {
   if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
     size_t total = 0;
     char *p = (char *)buf;
+    const off_t pos = nps5_host_access_active() ? lseek(fd, 0, SEEK_CUR) : (off_t)-1;
     while (total < count) {
       ssize_t n = read(fd, p + total, count - total);
       if (n < 0) {
         if (errno == EINTR)
           continue;
+        if (errno == EFAULT && nps5_host_write_refault(p + total, count - total, &refault)) {
+          if (pos >= 0) lseek(fd, pos + (off_t)total, SEEK_SET); // the failed call may have moved the position
+          continue;
+        }
         if (total > 0)
           return (ssize_t)total;
         return -1;
@@ -689,7 +1325,19 @@ ssize_t ps4_vfs_read(int fd, void *buf, size_t count) {
   return read(fd, buf, count);
 }
 
+static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset);
+// The kernel fills buf: the pages must be open for it (nps5_mem.h host access hooks; EFAULT otherwise).
 ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
+  nps5_host_write_begin(buf, count);
+  const ssize_t r = vfs_pread_inner(fd, buf, count, offset);
+  const int e = errno;
+  nps5_host_write_end(buf, count);
+  errno = e;
+  return r;
+}
+
+static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
+  unsigned refault = 0;
   if (ps4_vfs_is_virtual_fd(fd)) {
     int slot = fd - PS4_VFS_VIRTUAL_FD_BASE;
     pthread_mutex_lock(&g_vfile_mutex);
@@ -717,6 +1365,8 @@ ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
       if (ret < 0) {
         if (errno == EINTR)
           continue;
+        if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
+          continue;
         if (total > 0)
           break;
         pthread_mutex_unlock(&g_vfile_mutex);
@@ -738,6 +1388,8 @@ ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
       ssize_t n = pread(fd, p + total, count - total, offset + (off_t)total);
       if (n < 0) {
         if (errno == EINTR)
+          continue;
+        if (errno == EFAULT && nps5_host_write_refault(p + total, count - total, &refault))
           continue;
         if (total > 0)
           return (ssize_t)total;
@@ -783,7 +1435,7 @@ off_t ps4_vfs_lseek(int fd, off_t offset, int whence) {
     }
 
     vf->cur_offset = new_off;
-    printf("[ps4-vfs] Virtual lseek: vfd=%d offset=%lld whence=%d -> "
+    PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual lseek: vfd=%d offset=%lld whence=%d -> "
            "new_off=%lld\n",
            fd, (long long)offset, whence, (long long)new_off);
     pthread_mutex_unlock(&g_vfile_mutex);
@@ -812,7 +1464,7 @@ int ps4_vfs_fstat(int fd, struct stat *st) {
     st->st_size = (off_t)vf->file_size;
     st->st_blksize = 4096;
     st->st_blocks = (off_t)((vf->file_size + 511) / 512);
-    printf("[ps4-vfs] Virtual fstat: vfd=%d size=%llu\n", fd,
+    PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual fstat: vfd=%d size=%llu\n", fd,
            (unsigned long long)vf->file_size);
     pthread_mutex_unlock(&g_vfile_mutex);
     return 0;
@@ -832,12 +1484,13 @@ int ps4_vfs_stat(const char *guest_path, struct stat *st) {
     }
   }
 
-  // Physical disk locale fallback for .res resource bundles
+  // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
   char cur_guest[1024];
   strncpy(cur_guest, guest_path, sizeof(cur_guest) - 1);
   cur_guest[sizeof(cur_guest) - 1] = '\0';
   char parent_guest[1024];
-  while (ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
+  while (ps4_pak_locale_fallback_enabled() &&
+         ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
                                         sizeof(parent_guest))) {
     if (ps4_vfs_resolve(parent_guest, resolved, sizeof(resolved)) == 0) {
       if (stat(resolved, st) == 0) {
@@ -890,12 +1543,13 @@ int ps4_vfs_access(const char *guest_path, int mode) {
     }
   }
 
-  // Physical disk locale fallback for .res resource bundles
+  // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
   char cur_guest[1024];
   strncpy(cur_guest, guest_path, sizeof(cur_guest) - 1);
   cur_guest[sizeof(cur_guest) - 1] = '\0';
   char parent_guest[1024];
-  while (ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
+  while (ps4_pak_locale_fallback_enabled() &&
+         ps4_pak_get_parent_locale_path(cur_guest, parent_guest,
                                         sizeof(parent_guest))) {
     if (ps4_vfs_resolve(parent_guest, resolved, sizeof(resolved)) == 0) {
       if (access(resolved, mode) == 0) {
@@ -959,8 +1613,9 @@ void ps4_vfs_destroy(void) {
     free(g_app_root);
     g_app_root = NULL;
   }
-  memset(g_mounts, 0, sizeof(g_mounts));
-  g_mount_count = 0;
+  vfs_mounts_clear_locked();
+  free(g_app_root_real);
+  g_app_root_real = NULL;
 
   pthread_mutex_lock(&g_vfile_mutex);
   memset(g_vfiles, 0, sizeof(g_vfiles));

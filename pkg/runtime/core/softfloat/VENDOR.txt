@@ -1,0 +1,11 @@
+Berkeley SoftFloat Release 3e (BSD-3-Clause, see COPYING.txt), vendored for the x87 f80 mode.
+
+Upstream:  https://github.com/ucb-bar/berkeley-softfloat-3  commit 07ebd29db0cfb55723a79fbbffe99103ef38e305
+Variant:   8086-SSE specialization (x87 default NaN = negative quiet NaN with significand
+           0xC000000000000000, x87 NaN propagation), SOFTFLOAT_FAST_INT64, built for arm64.
+Subset:    only what pkg/runtime/core/nps5_x87.c reaches: the extF80 add/sub/mul/div/sqrt/rem/
+           roundToInt/compare/convert functions, f32/f64/i32/i64/ui64 <-> extF80 and their
+           shared primitives. Sources are unmodified, except for platform.h, which is this
+           project's build configuration (the options upstream passes on the compiler command
+           line, THREAD_LOCAL = _Thread_local) and keeps the upstream licence header.
+Flat layout: source/, source/include/ and source/8086-SSE/ of upstream are merged here.

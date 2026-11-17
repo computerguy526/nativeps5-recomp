@@ -40,7 +40,7 @@ std::unordered_map<uint64_t, InflateResult> g_results;
 uint64_t g_next_request_id = 1;
 
 void *guest_ptr(const GuestContext *ctx, uint64_t addr, size_t size) {
-    if (!ctx || !ctx->mem_base || addr == 0) {
+    if (!ctx || !RECOMP_MEM_OK(ctx) || addr == 0) {
         return nullptr;
     }
     const uintptr_t base = (uintptr_t)ctx->mem_base;

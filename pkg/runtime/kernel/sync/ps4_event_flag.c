@@ -390,7 +390,7 @@ void shim_sceKernelCancelEventFlag(GuestContext *ctx) {
     uint64_t setPattern = ctx->rsi;
     uint64_t numWaitGuest = ctx->rdx;
 
-    int32_t *pNumWait = (numWaitGuest && ctx->mem_base) ? (int32_t *)(ctx->mem_base + numWaitGuest) : NULL;
+    int32_t *pNumWait = (numWaitGuest && RECOMP_MEM_OK(ctx)) ? (int32_t *)(ctx->mem_base + numWaitGuest) : NULL;
     int32_t rc = sceKernelCancelEventFlag(id, setPattern, pNumWait);
     ctx->rax = (uint64_t)(int64_t)rc;
     SHIM_RETURN();

@@ -2831,7 +2831,8 @@ static RowFmt RowFmtFromVideoOut(uint32_t fmt) {
 bool ReadVideoOutBufferBGRA8(const uint8_t* mem_base, uint64_t mem_size, uint64_t address,
                              uint32_t width, uint32_t height, uint32_t pitch, bool tiled,
                              uint32_t videoout_format, uint8_t* out, uint32_t out_row_bytes) {
-    if (!mem_base || !out || address == 0 || address >= mem_size || width == 0 || height == 0) return false;
+    // mem_base is NULL in identity mode; mem_size != 0 is the "guest memory is set up" test.
+    if (mem_size == 0 || !out || address == 0 || address >= mem_size || width == 0 || height == 0) return false;
     const RowFmt rf = RowFmtFromVideoOut(videoout_format);
     const uint32_t bpe = RowFmtBytes(rf);
     SurfaceDesc d;
@@ -3272,7 +3273,7 @@ static uint64_t ReadablePrefixBytes(const uint8_t* p, uint64_t max_len) {
 }
 
 bool TextureCache::ComputeGuestDigestLocked(Entry* e, uint64_t* out) {
-    if (!mem_base_ || e->address >= mem_size_ || !e->layout.total_size) return false;
+    if (mem_size_ == 0 || e->address >= mem_size_ || !e->layout.total_size) return false;
     const uint64_t max_avail = std::min<uint64_t>(mem_size_ - e->address, e->layout.total_size);
     if (!e->readable_known) {
         e->readable_bytes = ReadablePrefixBytes(mem_base_ + e->address, max_avail);
@@ -3333,7 +3334,7 @@ bool TextureCache::UploadLocked(Entry* e) {
 }
 
 bool TextureCache::UploadLockedImpl(Entry* e) {
-    if (!e->tex || !mem_base_) return false;
+    if (!e->tex || mem_size_ == 0) return false;
     // MSAA textures and non-Color private textures cannot be written from guest memory
     if (e->tex.sampleCount > 1 || (e->tex.storageMode == MTLStorageModePrivate && e->kind != Entry::Color)) {
         e->dirty = false;
@@ -4923,7 +4924,7 @@ bool TextureCache::ReadTextureBGRA8(id<MTLTexture> tex, DataFormat, NumberFormat
 bool TextureCache::WriteBackColorTarget(uint64_t address) {
     TimedLock lk(mutex_);
     const Entry* e = LastWrittenLocked(address, Entry::Color, [](const Entry*) { return true; });
-    if (!e || !mem_base_ || e->address >= mem_size_) return false;
+    if (!e || mem_size_ == 0 || e->address >= mem_size_) return false;
     DrainQueueLocked();
     const uint32_t bpe = e->surf.bpp / 8;
     std::vector<uint8_t> lin((size_t)e->layout.total_size, 0);

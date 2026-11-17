@@ -7,12 +7,15 @@
 // Values come from ~/Library/Application Support/PS4Recomp/settings/<app dir name>.cfg; a Cocoa
 // dialog asks for them on the first launch and whenever Option is held at startup. Environment
 // variables override the stored values: PS4_LANG, PS4_PRO=0|1, PS4_UPSCALE=off|metalfx,
-// MTL_HUD_ENABLED=0|1; PS4_NO_DIALOGS=1 never shows the dialog.
+// MTL_HUD_ENABLED=0|1. Game patches the title was translated with (core/nps5_patches.h, e.g.
+// ASTRO BOT "Lighting: Fast (non-tiled) / Full quality (tiled)") are settings too: "patch.<key>=0|1"
+// in the file, one pop-up each in the dialog, their own environment variable. The dialog is opt-in (NPS5_SETTINGS_DIALOG=1, ps4_settings_policy.h); PS4_NO_DIALOGS=1 still suppresses it.
 //
 // The language is the console system language. Games typically use it only as the default
 // for a new profile: e.g. The Last of Us Remastered stores its text/subtitle/speech language
 // in its profile save, so once a save exists, the in-game Options menu changes the language.
 
+#include "ps4_settings_policy.h"
 #import <Cocoa/Cocoa.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -20,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "nps5_patches.h"
 #include "ps4_vfs.h"
 
 typedef struct {
@@ -143,6 +147,7 @@ static bool load_settings(HostSettings *s) {
         char key[64];
         int v;
         if (sscanf(line, "%63[^=]=%d", key, &v) != 2) continue;
+        if (nps5_patches_cfg_line(key, v)) continue;
         if (!strcmp(key, "lang")) s->lang = v;
         else if (!strcmp(key, "pro")) s->pro = v != 0;
         else if (!strcmp(key, "upscale")) s->upscale = v != 0;
@@ -161,6 +166,7 @@ static void save_settings(const HostSettings *s) {
     FILE *f = fopen(p, "w");
     if (!f) return;
     fprintf(f, "lang=%d\npro=%d\nupscale=%d\nhud=%d\n", s->lang, s->pro, s->upscale, s->hud);
+    nps5_patches_cfg_write(f);
     fclose(f);
 }
 
@@ -191,11 +197,34 @@ static void show_settings_dialog(HostSettings *s) {
         hud.state = s->hud ? NSControlStateValueOn : NSControlStateValueOff;
         NSButton *remember = [NSButton checkboxWithTitle:@"Запомнить / Remember" target:nil action:nil];
         remember.state = NSControlStateValueOn;
-        NSStackView *stack = [NSStackView stackViewWithViews:@[ langLabel, popup, pro, up, hud, remember ]];
+        // Game patches: "<title>:" and a pop-up with the patched choice first; the profile default is marked.
+        NSMutableArray<NSView *> *views = [NSMutableArray arrayWithArray:@[ langLabel, popup, pro, up, hud ]];
+        NSMutableArray<NSPopUpButton *> *patchPopups = [NSMutableArray array];
+        const int npatch = nps5_patches_count();
+        for (int i = 0; i < npatch; i++) {
+            const Nps5PatchDesc *d = nps5_patches_desc(i);
+            NSString *(^text)(const char *, NSString *) = ^(const char *t, NSString *tail) {
+                return [([NSString stringWithUTF8String:t ? t : ""] ?: @"") stringByAppendingString:tail];
+            };
+            NSTextField *label = [NSTextField labelWithString:text(d->title, @":")];
+            NSPopUpButton *pp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 300, 26) pullsDown:NO];
+            [pp addItemWithTitle:text(d->on, d->def ? @" (default)" : @"")];
+            [pp addItemWithTitle:text(d->off, d->def ? @"" : @" (default)")];
+            [pp selectItemAtIndex:nps5_patches_get(i) ? 0 : 1];
+            if (d->description && *d->description) {
+                label.toolTip = [NSString stringWithUTF8String:d->description];
+                pp.toolTip = label.toolTip;
+            }
+            [views addObject:label];
+            [views addObject:pp];
+            [patchPopups addObject:pp];
+        }
+        [views addObject:remember];
+        NSStackView *stack = [NSStackView stackViewWithViews:views];
         stack.orientation = NSUserInterfaceLayoutOrientationVertical;
         stack.alignment = NSLayoutAttributeLeading;
         stack.spacing = 8;
-        stack.frame = NSMakeRect(0, 0, 400, 170);
+        stack.frame = NSMakeRect(0, 0, 400, 170 + 56 * npatch);
         alert.accessoryView = stack;
         [alert addButtonWithTitle:@"OK"];
         [NSApp activateIgnoringOtherApps:YES];
@@ -206,6 +235,7 @@ static void show_settings_dialog(HostSettings *s) {
         s->pro = pro.state == NSControlStateValueOn;
         s->upscale = up.state == NSControlStateValueOn;
         s->hud = hud.state == NSControlStateValueOn;
+        for (int i = 0; i < npatch; i++) nps5_patches_set(i, patchPopups[i].indexOfSelectedItem == 0);
         if (remember.state == NSControlStateValueOn) save_settings(s);
     }
 }
@@ -215,7 +245,7 @@ void ps4_host_settings_init(void) {
     HostSettings s = g_settings;
     const bool stored = load_settings(&s);
     const bool option_held = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
-    if ((!stored || option_held) && !getenv("PS4_NO_DIALOGS") && !getenv("PS4_LANG")) {
+    if (ps4_settings_dialog_wanted(stored, option_held)) {
         if ([NSThread isMainThread]) {
             show_settings_dialog(&s);
         } else {
@@ -241,6 +271,7 @@ void ps4_host_settings_init(void) {
     if (!s.hud) setenv("MTL_HUD_ENABLED", "0", 1);
     g_settings = s;
     g_settings_ready = true;
+    nps5_patches_resolve(); // game patches: environment overrides, flag bytes, one log line each
     fprintf(stderr, "[ps4-settings] language %d, PS4 Pro mode %s, MetalFX upscaling %s, FPS HUD %s\n", s.lang,
             s.pro ? "on" : "off", s.upscale ? "on" : "off", s.hud ? "on" : "off");
 }

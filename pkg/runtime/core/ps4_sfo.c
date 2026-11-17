@@ -33,6 +33,8 @@ static uint32_t read_le32(const void *p) {
     return (uint32_t)(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
 }
 
+static bool ps4_sfo_find_and_load_sfo(Ps4SfoContext *sfo);
+
 bool ps4_sfo_load_memory(Ps4SfoContext *sfo, const uint8_t *buf, size_t size) {
     if (!sfo || !buf || size < sizeof(PsfHeader)) {
         return false;
@@ -180,7 +182,7 @@ bool ps4_sfo_get_string(const Ps4SfoContext *sfo, const char *key, char *out_buf
     return true;
 }
 
-bool ps4_sfo_find_and_load(Ps4SfoContext *sfo) {
+static bool ps4_sfo_find_and_load_sfo(Ps4SfoContext *sfo) {
     char test_path[1024];
 
     // 1. Through VFS
@@ -233,4 +235,202 @@ bool ps4_sfo_find_and_load(Ps4SfoContext *sfo) {
     }
 
     return false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// PS5 sce_sys/param.json -> an in-memory PSF with the keys the HLE reads (TITLE_ID, CONTENT_ID,
+// TITLE, APP_VER, VERSION, CATEGORY, APPLICATION_CATEGORY_TYPE, USER_DEFINED_PARAM_1..4). PS5
+// packages carry no param.sfo; building the PSF here gives sceAppContent*, savedata, the game key
+// and the GPU cache the same view of the title as on PS4. A real param.sfo always wins.
+
+// Value of "key": "..." (string) at or after `from`; returns pointer past the closing quote or NULL.
+static const char *pj_string(const char *from, const char *key, char *out, size_t out_sz) {
+    char pat[96];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(from, pat);
+    while (p) {
+        const char *q = p + strlen(pat);
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+        if (*q == ':') {
+            q++;
+            while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+            if (*q != '"') return NULL;
+            q++;
+            size_t k = 0;
+            while (*q && *q != '"') {
+                if (*q == '\\' && q[1]) q++;
+                if (k + 1 < out_sz) out[k++] = *q;
+                q++;
+            }
+            out[k] = '\0';
+            return *q == '"' ? q + 1 : NULL;
+        }
+        p = strstr(p + 1, pat);
+    }
+    return NULL;
+}
+
+// Integer value of "key": N (or "key": "N"); true if present.
+static bool pj_int(const char *from, const char *key, int64_t *out) {
+    char pat[96];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(from, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') return false;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == '"') p++;
+    char *end = NULL;
+    long long v = strtoll(p, &end, 0);
+    if (end == p) return false;
+    *out = v;
+    return true;
+}
+
+typedef struct {
+    char key[40];
+    bool is_int;
+    char str[256];
+    int32_t num;
+} PjEntry;
+
+static void pj_add_str(PjEntry *e, int *n, const char *key, const char *val) {
+    if (!val || !*val) return;
+    snprintf(e[*n].key, sizeof(e[*n].key), "%s", key);
+    e[*n].is_int = false;
+    snprintf(e[*n].str, sizeof(e[*n].str), "%s", val);
+    (*n)++;
+}
+
+static void pj_add_int(PjEntry *e, int *n, const char *key, int32_t v) {
+    snprintf(e[*n].key, sizeof(e[*n].key), "%s", key);
+    e[*n].is_int = true;
+    e[*n].num = v;
+    (*n)++;
+}
+
+bool ps4_sfo_from_param_json(Ps4SfoContext *sfo, const char *json, size_t json_len) {
+    if (!sfo || !json) return false;
+    char *text = (char *)malloc(json_len + 1);
+    if (!text) return false;
+    memcpy(text, json, json_len);
+    text[json_len] = '\0';
+
+    PjEntry ent[16];
+    int n = 0;
+    char v[256], dl[64];
+    bool ok = pj_string(text, "titleId", v, sizeof(v)) != NULL && v[0];
+    if (!ok) {
+        free(text);
+        return false;
+    }
+    pj_add_str(ent, &n, "TITLE_ID", v);
+    if (pj_string(text, "contentId", v, sizeof(v))) pj_add_str(ent, &n, "CONTENT_ID", v);
+    // title: localizedParameters[defaultLanguage].titleName, else the first titleName
+    const char *lp = strstr(text, "\"localizedParameters\"");
+    if (lp) {
+        const char *scope = lp;
+        if (pj_string(lp, "defaultLanguage", dl, sizeof(dl))) {
+            char lk[80];
+            snprintf(lk, sizeof(lk), "\"%s\"", dl);
+            const char *lang = strstr(lp, lk);
+            // the language key as an object key (followed by ':'), not the defaultLanguage value
+            while (lang) {
+                const char *q = lang + strlen(lk);
+                while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
+                if (*q == ':') { scope = lang; break; }
+                lang = strstr(lang + 1, lk);
+            }
+        }
+        if (pj_string(scope, "titleName", v, sizeof(v))) pj_add_str(ent, &n, "TITLE", v);
+    }
+    if (pj_string(text, "contentVersion", v, sizeof(v))) pj_add_str(ent, &n, "APP_VER", v);
+    if (pj_string(text, "masterVersion", v, sizeof(v))) pj_add_str(ent, &n, "VERSION", v);
+    int64_t cat = 0;
+    if (pj_int(text, "applicationCategoryType", &cat)) {
+        pj_add_int(ent, &n, "APPLICATION_CATEGORY_TYPE", (int32_t)cat);
+        pj_add_str(ent, &n, "CATEGORY", "gd"); // 0 = full application; the PS5 types all load as an app
+    }
+    for (int i = 1; i <= 4; i++) {
+        char k[48];
+        int64_t iv;
+        snprintf(k, sizeof(k), "userDefinedParam%d", i);
+        if (pj_int(text, k, &iv)) {
+            snprintf(k, sizeof(k), "USER_DEFINED_PARAM_%d", i);
+            pj_add_int(ent, &n, k, (int32_t)iv);
+        }
+    }
+    free(text);
+
+    size_t keys_sz = 0, data_sz = 0;
+    for (int i = 0; i < n; i++) {
+        keys_sz += strlen(ent[i].key) + 1;
+        data_sz += ent[i].is_int ? 4 : (strlen(ent[i].str) + 1 + 3) / 4 * 4;
+    }
+    size_t hdr = sizeof(PsfHeader) + (size_t)n * sizeof(PsfRawEntry);
+    size_t key_off = hdr, data_off = (hdr + keys_sz + 3) / 4 * 4;
+    size_t total = data_off + data_sz;
+    uint8_t *buf = (uint8_t *)calloc(1, total);
+    if (!buf) return false;
+    PsfHeader *h = (PsfHeader *)buf;
+    h->magic[1] = 'P'; h->magic[2] = 'S'; h->magic[3] = 'F';
+    h->version = 0x101;
+    h->key_table_offset = (uint32_t)key_off;
+    h->data_table_offset = (uint32_t)data_off;
+    h->entries_count = (uint32_t)n;
+    size_t ko = 0, dof = 0;
+    for (int i = 0; i < n; i++) {
+        PsfRawEntry *e = (PsfRawEntry *)(buf + sizeof(PsfHeader)) + i;
+        size_t kl = strlen(ent[i].key) + 1;
+        memcpy(buf + key_off + ko, ent[i].key, kl);
+        e->key_offset = (uint16_t)ko;
+        ko += kl;
+        e->data_offset = (uint32_t)dof;
+        if (ent[i].is_int) {
+            e->param_fmt = PSF_FMT_INT;
+            e->param_len = e->param_max_len = 4;
+            memcpy(buf + data_off + dof, &ent[i].num, 4);
+            dof += 4;
+        } else {
+            size_t l = strlen(ent[i].str) + 1;
+            e->param_fmt = PSF_FMT_STRING;
+            e->param_len = (uint32_t)l;
+            e->param_max_len = (uint32_t)((l + 3) / 4 * 4);
+            memcpy(buf + data_off + dof, ent[i].str, l);
+            dof += (l + 3) / 4 * 4;
+        }
+    }
+    if (!ps4_sfo_load_memory(sfo, buf, total)) {
+        free(buf);
+        return false;
+    }
+    sfo->is_allocated = true;
+    return true;
+}
+
+static bool sfo_load_param_json_file(Ps4SfoContext *sfo, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char *buf = (char *)malloc(1 << 20);
+    if (!buf) { fclose(f); return false; }
+    size_t n = fread(buf, 1, (1 << 20) - 1, f);
+    fclose(f);
+    bool ok = ps4_sfo_from_param_json(sfo, buf, n);
+    free(buf);
+    return ok;
+}
+
+bool ps4_sfo_find_and_load(Ps4SfoContext *sfo) {
+    if (ps4_sfo_find_and_load_sfo(sfo)) return true;
+    char p[1100];
+    if (ps4_vfs_resolve("/app0/sce_sys/param.json", p, sizeof(p)) == 0 && access(p, R_OK) == 0 &&
+        sfo_load_param_json_file(sfo, p))
+        return true;
+    const char *root = ps4_vfs_get_app_root();
+    if (root && *root) {
+        snprintf(p, sizeof(p), "%s/sce_sys/param.json", root);
+        if (access(p, R_OK) == 0 && sfo_load_param_json_file(sfo, p)) return true;
+    }
+    return access("sce_sys/param.json", R_OK) == 0 && sfo_load_param_json_file(sfo, "sce_sys/param.json");
 }

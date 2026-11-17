@@ -37,6 +37,8 @@
 //                           writer thread does the file I/O (never under the
 //                           mixer lock or on the device's thread); the host
 //                           stats line gives its longest write (dump_io_max_ms).
+//   NPS5_AUDIO_CAPTURE=<dir> per-port WAV (+ grain arrival CSV) of the converted stream, see
+//                           nps5_audio_capture.h; works with the real device and with NULL/MUTE.
 //   PS4_AUDIO_MUTE=1        don't start the host output device (time-paced).
 //   PS4_AUDIO_NULL=1        headless output: instead of the host device, a
 //                           clock thread pulls and mixes 512 frames every
@@ -50,6 +52,7 @@
 
 #include "ps4_audioout.h"
 #include "ps4_audioout_internal.h"
+#include "nps5_audio_capture.h"
 #include <errno.h>
 #include <math.h>
 #include <pthread.h>
@@ -136,6 +139,7 @@ typedef struct {
   uint64_t first_sound_us;
   uint64_t first_sound_play_us;
   uint64_t first_sound_outputs;
+  nps5_acap *cap; // NPS5_AUDIO_CAPTURE: this port's converted stream, NULL when off
   // stats (guest input after volume, before mixing)
   double stat_sq;
   float stat_peak;
@@ -723,7 +727,9 @@ static void audio_host_start(AudioLogBuf *b) {
     logbuf_add(b, "[AudioOut] PS4_AUDIO_MUTE set; host output disabled\n");
     return;
   }
-  const char *null_dev = getenv("PS4_AUDIO_NULL");
+  // NPS5_AUDIO_NULL is the nativeps5 spelling of PS4_AUDIO_NULL (headless clock device: CI, tests).
+  const char *null_dev = getenv("NPS5_AUDIO_NULL");
+  if (!null_dev || !*null_dev) null_dev = getenv("PS4_AUDIO_NULL");
   if (null_dev && *null_dev && strcmp(null_dev, "0") != 0) {
     pthread_t t;
     g_null_start_us = get_time_micros();
@@ -965,6 +971,7 @@ static void audio_port_push(Ps4AudioPort *p, const void *pcm, AudioLogBuf *b) {
   }
   uint32_t len = p->length > 2048 ? 2048 : p->length;
   int nonzero = audio_convert(p, (const uint8_t *)pcm, tmp, len);
+  if (p->cap) nps5_acap_append(p->cap, tmp, len, p->last_output_us);
   if (nonzero && p->first_sound_us == 0) {
     // Its first frame plays after the period the device is playing and the
     // frames queued ahead of it.
@@ -1068,6 +1075,8 @@ int32_t ps4_audioout_port_open(int32_t user, int32_t type, int32_t index, uint32
   port->ring_cap = port->ring_limit + len;
   port->ring = (float *)calloc((size_t)port->ring_cap * 2, sizeof(float));
   port->win_start_us = get_time_micros();
+  port->cap = nps5_acap_open(nps5_acap_dir(), slot, type);
+  if (port->cap) logbuf_add(&log, "[AudioOut] NPS5_AUDIO_CAPTURE: port %d (type %d) -> %s/port%d_type%d.wav\n", slot, type, nps5_acap_dir(), slot, type);
 
   logbuf_add(&log,
              "[AudioOut] open: user=%d type=%d index=%d len=%u freq=%u param=0x%x (fmt=%u %s %uch) "
@@ -1272,6 +1281,7 @@ int32_t ps4_audioout_port_close(int32_t handle) {
   AudioLogBuf log;
   log.len = 0;
   log.truncated = false;
+  nps5_acap *cap = NULL;
   pthread_mutex_lock(&g_audio_lock);
   Ps4AudioPort *port = &g_ports[handle];
   bool closed = port->in_use != 0;
@@ -1279,10 +1289,13 @@ int32_t ps4_audioout_port_close(int32_t handle) {
     audio_port_gap_lines(port, &log); // the gaps since the last stats line
     free(port->ring);
     port->ring = NULL;
+    cap = port->cap;
+    port->cap = NULL;
     port->in_use = 0;
   }
   pthread_cond_broadcast(&g_audio_cond);
   pthread_mutex_unlock(&g_audio_lock);
+  nps5_acap_close(cap);
   logbuf_flush(&log);
   if (closed) {
     fprintf(stderr, "[AudioOut] close handle %d\n", handle);

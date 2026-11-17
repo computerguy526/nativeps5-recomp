@@ -8,6 +8,11 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <uuid/uuid.h>
+#include <stdatomic.h>
+#include <signal.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <time.h>
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -16,31 +21,161 @@
 
 void shim_clock_gettime(GuestContext *ctx);
 
-static uint64_t g_initial_tsc = 0;
-static int g_time_inited = 0;
+// ---- Guest clocks (docs/m3/clock.md)
+//
+// One time base serves every guest clock: the host counter cntvct_el0 (24 MHz on M1-M3, 1 GHz on the M4 Pro this was measured on; one value for the whole
+// system, so it is monotonic across threads and cores). It is read with a single MRS (no mach call, no syscall):
+//   * the TSC the guest sees (RDTSC, sceKernelReadTsc) = floor(cntvct * 2.13e9 / cntfrq)  -- recomp_cnt_to_tsc
+//   * the process-time counter = the same scale of (cntvct - cntvct at startup), counted in TSC ticks
+//     (sceKernelGetProcessTimeCounterFrequency = RECOMP_TSC_FREQ), minus the GPU-stall credit below
+//   * sceKernelGetProcessTime (us) = process-time counter / 2130 (exactly floor(ticks * 1e6 / 2.13e9))
+//   * CLOCK_MONOTONIC / CLOCK_UPTIME = cntvct in ns plus an offset fixed at startup (mono_init)
+// The scale is exact (recomp_cnt_to_tsc): multiply by 355 and shift at 24 MHz, a divmod pair at any other frequency.
+static uint64_t g_cnt_base;   // cntvct at startup: process time 0
+static uint64_t g_cntfrq;     // cntfrq_el0
+static uint64_t g_credit_window; // cntvct ticks of the credit cache lifetime (250 us)
 
-static void init_time(void) {
-    if (!g_time_inited) {
-        g_initial_tsc = recomp_rdtsc();
-        g_time_inited = 1;
+#ifdef NPS5_CLOCK_TEST
+static uint64_t g_cnt_skew; // tests/clock/clock_unit.c: simulate a machine that has been up for years
+#define CNT_SKEW g_cnt_skew
+#else
+#define CNT_SKEW 0
+#endif
+static inline uint64_t cntvct_now(void) {
+    uint64_t v;
+#ifdef NPS5_CLOCK_ISB
+    __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(v));
+#else
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+#endif
+    return v + CNT_SKEW;
+}
+
+static inline uint64_t cnt_to_ns(uint64_t v) {
+    if (__builtin_expect(g_cntfrq == 24000000ULL, 1)) return (v / 3) * 125 + ((v % 3) * 125) / 3; // v * 1e9 / 24e6
+    const uint64_t q = v / g_cntfrq, r = v % g_cntfrq;
+    return q * 1000000000ULL + (r * 1000000000ULL) / g_cntfrq;
+}
+
+// CLOCK_MONOTONIC / CLOCK_UPTIME for the guest: the counter in ns plus an offset fixed at startup so that the value
+// starts at the host's CLOCK_MONOTONIC (an uptime-like epoch; the guest only uses differences). Like the process
+// time it does not count time the machine spends asleep. Nothing in the runtime compares guest monotonic times with
+// the host clock: every host absolute wait (pthread_cond_timedwait, sem_timedwait, equeue, event flags) is converted
+// from CLOCK_REALTIME, which stays a host call.
+static int64_t g_mono_off;
+
+static void mono_init(void) {
+    uint64_t best = UINT64_MAX;
+    for (int i = 0; i < 4; i++) { // bracket the host read with two counter reads; keep the tightest sample
+        const uint64_t v0 = cntvct_now();
+        const uint64_t h = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+        const uint64_t v1 = cntvct_now();
+        if (v1 - v0 < best) {
+            best = v1 - v0;
+            g_mono_off = (int64_t)h - (int64_t)cnt_to_ns(v0 + (v1 - v0) / 2);
+        }
+        if (best <= g_cntfrq / 250000) break; // 4 us
     }
 }
 
-uint64_t sceKernelGetProcessTimeCounter(void) {
-    init_time();
-    uint64_t now = recomp_rdtsc();
-    return now >= g_initial_tsc ? now - g_initial_tsc : 0;
+static inline uint64_t mono_ns(void) { return (uint64_t)(g_mono_off + (int64_t)cnt_to_ns(cntvct_now())); }
+
+__attribute__((constructor)) static void nps5_clock_init(void) {
+    uint64_t f;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    g_cntfrq = f ? f : 24000000ULL;
+    g_cnt_base = cntvct_now();
+    g_credit_window = g_cntfrq / 4000; // 250 us
+    mono_init();
 }
+
+// Guest clock credit (docs/m3/gpu-followups.md, task 4): microseconds the host spent building GPU state a console does not
+// have to build (shader recompile, pipeline and device creation on a cold cache). The process-time clocks the title
+// measures its own timeouts with exclude it, so a "first frame within 5 s" check does not fire on a cold first launch.
+// The source (a host function that takes a lock and reads the host clock: ~100+ ns, contended across threads) is
+// monotonic and never exceeds the real elapsed time. It is sampled at most every 250 us into a seqlock-protected
+// {ec, floor, deadline} record, so a clock read costs two loads and a validation instead of the call:
+//   ec     the credit in guest ticks, never above the elapsed ticks, never decreasing
+//   floor  the largest process time any reader can have seen before the last credit increase. Readers return
+//          max(ticks - ec, floor): a credit step freezes the clock until it catches up instead of moving it back, so
+//          the clock stays monotonic across threads with no per-read compare-and-swap.
+// The floor is published with one microsecond of slack: a reader's counter read may retire a few ns after its
+// sequence validation, and the slack covers that window.
+static _Atomic(uint64_t (*)(void)) g_clock_credit_fn;
+static _Atomic uint32_t g_cr_seq, g_cr_busy;
+static _Atomic uint64_t g_cr_ec, g_cr_floor, g_cr_deadline;
+// Non-zero while this thread runs the host SIGUSR1 handler (or any handler that reads the clock): the credit function takes a
+// mutex the interrupted frame may own, so a handler must never call it; it reads the cached credit (lock-free) instead.
+static __thread int g_clock_in_signal;
+#define NPS5_MAX_CLOCK_CREDIT_US (120ull * 1000000ull) // a hung compile must still time out eventually
+#define NPS5_CLOCK_SLACK_TICKS (RECOMP_TSC_FREQ / 1000000ull)
+
+void nps5_set_guest_clock_credit(uint64_t (*fn)(void)) { atomic_store(&g_clock_credit_fn, fn); }
+
+static inline uint64_t proc_ticks_at(uint64_t v) {
+    return recomp_cnt_to_tsc(v > g_cnt_base ? v - g_cnt_base : 0, g_cntfrq);
+}
+
+// Returns true when it published a new record.
+static bool credit_refresh(uint64_t (*fn)(void)) {
+    if (atomic_exchange_explicit(&g_cr_busy, 1, memory_order_acquire)) return false;
+    uint64_t c_us = fn();
+    if (c_us > NPS5_MAX_CLOCK_CREDIT_US) c_us = NPS5_MAX_CLOCK_CREDIT_US;
+    const uint64_t target = c_us * (RECOMP_TSC_FREQ / 1000000ull);
+    // The odd-sequence window runs with every signal blocked. A signal handler (the suspend / exception handlers run guest
+    // code) that read this clock on this thread between the two sequence stores would wait for a writer that cannot finish
+    // until the handler returns: an endless spin. Other threads just retry until this one stores the even sequence.
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &old);
+    const uint32_t s = atomic_load_explicit(&g_cr_seq, memory_order_relaxed);
+    atomic_store_explicit(&g_cr_seq, s + 1, memory_order_relaxed); // odd: readers retry
+    atomic_thread_fence(memory_order_seq_cst);
+    const uint64_t vpub = cntvct_now(); // after the store: later than every counter read a validated reader made
+    const uint64_t tpub = proc_ticks_at(vpub);
+    const uint64_t ec_old = atomic_load_explicit(&g_cr_ec, memory_order_relaxed);
+    uint64_t ec = target < tpub ? target : tpub;
+    if (ec < ec_old) ec = ec_old;
+    if (ec != ec_old) {
+        const uint64_t seen = (tpub > ec_old ? tpub - ec_old : 0) + NPS5_CLOCK_SLACK_TICKS;
+        if (seen > atomic_load_explicit(&g_cr_floor, memory_order_relaxed)) atomic_store_explicit(&g_cr_floor, seen, memory_order_relaxed);
+        atomic_store_explicit(&g_cr_ec, ec, memory_order_relaxed);
+    }
+    atomic_store_explicit(&g_cr_deadline, vpub + g_credit_window, memory_order_relaxed);
+    atomic_store_explicit(&g_cr_seq, s + 2, memory_order_release);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    atomic_store_explicit(&g_cr_busy, 0, memory_order_release);
+    return true;
+}
+
+// Process time in guest TSC ticks.
+static inline uint64_t proc_ticks(void) {
+    const uint64_t v = cntvct_now();
+    const uint64_t t = proc_ticks_at(v);
+    uint64_t (*fn)(void) = atomic_load_explicit(&g_clock_credit_fn, memory_order_relaxed);
+    if (__builtin_expect(!fn, 1)) return t;
+    for (;;) {
+        const uint32_t s1 = atomic_load_explicit(&g_cr_seq, memory_order_acquire);
+        if (s1 & 1) continue;
+        const uint64_t ec = atomic_load_explicit(&g_cr_ec, memory_order_relaxed);
+        const uint64_t fl = atomic_load_explicit(&g_cr_floor, memory_order_relaxed);
+        const uint64_t dl = atomic_load_explicit(&g_cr_deadline, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&g_cr_seq, memory_order_relaxed) != s1) continue;
+        if (__builtin_expect(v >= dl, 0) && !g_clock_in_signal && credit_refresh(fn)) continue;
+        const uint64_t r = t > ec ? t - ec : 0;
+        return r > fl ? r : fl;
+    }
+}
+
+uint64_t sceKernelGetProcessTimeCounter(void) { return proc_ticks(); }
 
 uint64_t sceKernelGetProcessTimeCounterFrequency(void) {
     return RECOMP_TSC_FREQ;
 }
 
 uint64_t sceKernelGetProcessTime(void) {
-    init_time();
-    uint64_t now = recomp_rdtsc();
-    uint64_t elapsed = now >= g_initial_tsc ? now - g_initial_tsc : 0;
-    return (uint64_t)(((unsigned __int128)elapsed * 1000000ULL) / RECOMP_TSC_FREQ);
+    return proc_ticks() / (RECOMP_TSC_FREQ / 1000000ull); // 2130 ticks per microsecond: exact
 }
 
 uint64_t sceKernelGetTscFrequency(void) {
@@ -160,7 +295,7 @@ void shim_sceKernelGettimeofday(GuestContext *ctx) {
 
 void shim_sceKernelGettimezone(GuestContext *ctx) {
     uint64_t tz_guest = ctx->rdi;
-    if (!tz_guest || !ctx->mem_base) {
+    if (!tz_guest || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0x80020016; // ORBIS_KERNEL_ERROR_EINVAL
         SHIM_RETURN();
     }
@@ -223,6 +358,10 @@ int32_t sceKernelUuidCreate(void *uuid) {
     return 0;
 }
 
+uint64_t sceKernelGetGPI(void) {
+    return 0; // devkit GPIO input pins: none on retail
+}
+
 int32_t sceKernelSetGPO(uint32_t gpo) {
     (void)gpo;
     // GPO is devkit GPIO pins; retail PS4 returns ORBIS_OK (0).
@@ -240,7 +379,7 @@ void shim_sceKernelClockGettime(GuestContext *ctx) {
 
 void shim_sceKernelUuidCreate(GuestContext *ctx) {
     uint64_t uuidGuest = ctx->rdi;
-    if (!uuidGuest || !ctx->mem_base) {
+    if (!uuidGuest || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0x80020016; // ORBIS_KERNEL_ERROR_EINVAL
         SHIM_RETURN();
     }
@@ -250,6 +389,11 @@ void shim_sceKernelUuidCreate(GuestContext *ctx) {
         memcpy(ctx->mem_base + uuidGuest, u, sizeof(u));
     }
     ctx->rax = (uint64_t)(int64_t)rc;
+    SHIM_RETURN();
+}
+
+void shim_sceKernelGetGPI(GuestContext *ctx) {
+    ctx->rax = sceKernelGetGPI();
     SHIM_RETURN();
 }
 
@@ -280,16 +424,16 @@ void shim_sceKernelConvertUtcToLocaltime(GuestContext *ctx) {
     localtime_r(&utc_sec, &tm_loc);
     time_t local_sec = utc_sec + tm_loc.tm_gmtoff;
 
-    if (local_out && ctx->mem_base) {
+    if (local_out && RECOMP_MEM_OK(ctx)) {
         *(int64_t *)(ctx->mem_base + local_out) = (int64_t)local_sec;
     }
-    if (st_out && ctx->mem_base) {
+    if (st_out && RECOMP_MEM_OK(ctx)) {
         struct OrbisTimesec *st = (struct OrbisTimesec *)(ctx->mem_base + st_out);
         st->t = (int64_t)utc_sec;
         st->west_sec = -(int32_t)tm_loc.tm_gmtoff;
         st->dst_sec = tm_loc.tm_isdst > 0 ? 3600 : 0;
     }
-    if (dst_out && ctx->mem_base) {
+    if (dst_out && RECOMP_MEM_OK(ctx)) {
         *(uint64_t *)(ctx->mem_base + dst_out) = tm_loc.tm_isdst > 0 ? 3600ULL : 0ULL;
     }
     ctx->rax = 0;
@@ -306,16 +450,16 @@ void shim_sceKernelConvertLocaltimeToUtc(GuestContext *ctx) {
     localtime_r(&loc_sec, &tm_loc);
     time_t utc_sec = loc_sec - tm_loc.tm_gmtoff;
 
-    if (utc_out && ctx->mem_base) {
+    if (utc_out && RECOMP_MEM_OK(ctx)) {
         *(int64_t *)(ctx->mem_base + utc_out) = (int64_t)utc_sec;
     }
-    if (st_out && ctx->mem_base) {
+    if (st_out && RECOMP_MEM_OK(ctx)) {
         struct OrbisTimesec *st = (struct OrbisTimesec *)(ctx->mem_base + st_out);
         st->t = (int64_t)utc_sec;
         st->west_sec = -(int32_t)tm_loc.tm_gmtoff;
         st->dst_sec = tm_loc.tm_isdst > 0 ? 3600 : 0;
     }
-    if (dst_out && ctx->mem_base) {
+    if (dst_out && RECOMP_MEM_OK(ctx)) {
         *(uint64_t *)(ctx->mem_base + dst_out) = tm_loc.tm_isdst > 0 ? 3600ULL : 0ULL;
     }
     ctx->rax = 0;
@@ -357,11 +501,11 @@ void shim__sceKernelSetThreadDtors(GuestContext *ctx) {
 static uint64_t g_app_heap_api = 0;
 void shim__sceKernelRtldSetApplicationHeapAPI(GuestContext *ctx) {
     g_app_heap_api = ctx->rdi;
-    fprintf(stderr, "[ps4-kernel] _sceKernelRtldSetApplicationHeapAPI: table at 0x%llx\n",
+    PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "_sceKernelRtldSetApplicationHeapAPI: table at 0x%llx\n",
             (unsigned long long)ctx->rdi);
-    if (ctx->rdi && ctx->mem_base) {
+    if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
         uint64_t *table = (uint64_t *)(ctx->mem_base + ctx->rdi);
-        fprintf(stderr, "[ps4-kernel] heap_malloc=0x%llx, heap_free=0x%llx\n",
+        PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "heap_malloc=0x%llx, heap_free=0x%llx\n",
                 (unsigned long long)table[0], (unsigned long long)table[1]);
     }
     ctx->rax = 0;
@@ -394,13 +538,13 @@ void shim_Func_7C980FFB0AA27E7A(GuestContext *ctx) {
     uint64_t flags_guest = ctx->rcx;
     uint64_t ret1_guest = ctx->r8;
     uint64_t ret2_guest = ctx->r9;
-    if (flags_guest && ctx->mem_base) {
+    if (flags_guest && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + flags_guest) = 0;
     }
-    if (ret1_guest && ctx->mem_base) {
+    if (ret1_guest && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + ret1_guest) = 0;
     }
-    if (ret2_guest && ctx->mem_base) {
+    if (ret2_guest && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + ret2_guest) = 0;
     }
     ctx->rax = 0;
@@ -410,10 +554,10 @@ void shim_Func_7C980FFB0AA27E7A(GuestContext *ctx) {
 void shim_sceDiscMapGetPackageSize(GuestContext *ctx) {
     uint64_t ret1_guest = ctx->rsi;
     uint64_t ret2_guest = ctx->rdx;
-    if (ret1_guest && ctx->mem_base) {
+    if (ret1_guest && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + ret1_guest) = 0;
     }
-    if (ret2_guest && ctx->mem_base) {
+    if (ret2_guest && RECOMP_MEM_OK(ctx)) {
         *(int32_t *)(ctx->mem_base + ret2_guest) = 0;
     }
     ctx->rax = 0;
@@ -512,7 +656,13 @@ static bool g_sigusr1_installed = false;
 // entry up by the host number, which is the same (30 on FreeBSD and macOS).
 _Static_assert(SIGUSR1 == 30, "host SIGUSR1 is Orbis signal 30");
 
+static void host_sigusr1_handler_inner(int sig, siginfo_t *si, void *ucontext_raw);
 static void host_sigusr1_handler(int sig, siginfo_t *si, void *ucontext_raw) {
+    g_clock_in_signal++; // the signal path never calls the credit function (self-deadlock on its mutex)
+    host_sigusr1_handler_inner(sig, si, ucontext_raw);
+    g_clock_in_signal--;
+}
+static void host_sigusr1_handler_inner(int sig, siginfo_t *si, void *ucontext_raw) {
     (void)si;
     if (sig != SIGUSR1) return;
 
@@ -520,7 +670,7 @@ static void host_sigusr1_handler(int sig, siginfo_t *si, void *ucontext_raw) {
     if (!handler) return;
 
     GuestContext *ctx = g_current_ctx;
-    if (!ctx || !ctx->mem_base || !ctx->fs_base) return;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || !ctx->fs_base) return;
 
     // Guest code finds its GuestContext through the TCB slot (contract at recomp_enter_guest).
     // When the slot names another endpoint of this guest thread, that endpoint is what the
@@ -616,10 +766,19 @@ static void host_sigusr1_handler(int sig, siginfo_t *si, void *ucontext_raw) {
     *(uint64_t *)(ctx->mem_base + ctx->rsp) = 0xdeadbeefULL;
     ctx->rip = handler;
 
+    // Flat call model: when the signal interrupted this context's guest code, its shadow stack
+    // pointer is in the interrupted x29; the handler's entries go below it (and its red zone).
+    if (saved_slot == (uint64_t)(uintptr_t)ctx) recomp_shadow_sync_from_signal(ctx, ucontext_raw);
+
     // Execute the guest exception handler (which signals SuspendSemaphore and waits on event flag)
+    // A signal that arrives inside a lean HLE call (NPS5_LEAN_CHECK, docs/m3/leanshim.md) runs guest
+    // code on its own: that is not the lean function entering the guest.
+    void *const lean_active = ctx->lean_active;
+    ctx->lean_active = NULL;
     *slot = (uint64_t)(uintptr_t)ctx;
     recomp_dispatch(ctx, handler);
     *slot = saved_slot;
+    ctx->lean_active = lean_active;
 
     // The CPU state in ctx as before the signal. Not `interrupted`: in guest code its GPRs are the
     // live registers, which may not hold what the code wrote to ctx just before (a helper's
@@ -727,7 +886,7 @@ void shim_sceKernelDebugRaiseException(GuestContext *ctx) {
         static int s_nonfatal_logged = 0;
         if (s_nonfatal_logged < 8) {
             s_nonfatal_logged++;
-            fprintf(stderr, "[ps4-kernel] Non-fatal debug exception 0x%llx (unk=0x%llx, RIP=0x%llx) ignored\n",
+            PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "Non-fatal debug exception 0x%llx (unk=0x%llx, RIP=0x%llx) ignored\n",
                     (unsigned long long)error, (unsigned long long)unk, (unsigned long long)ctx->rip);
         }
         ctx->rax = 0;
@@ -748,7 +907,7 @@ void shim_sceKernelDebugRaiseExceptionOnReleaseMode(GuestContext *ctx) {
         static int s_nonfatal_rel_logged = 0;
         if (s_nonfatal_rel_logged < 8) {
             s_nonfatal_rel_logged++;
-            fprintf(stderr, "[ps4-kernel] Non-fatal debug exception (release mode) 0x%llx (unk=0x%llx, RIP=0x%llx) ignored\n",
+            PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "Non-fatal debug exception (release mode) 0x%llx (unk=0x%llx, RIP=0x%llx) ignored\n",
                     (unsigned long long)error, (unsigned long long)unk, (unsigned long long)ctx->rip);
         }
         ctx->rax = 0;
@@ -763,7 +922,7 @@ void shim_sceKernelDebugRaiseExceptionOnReleaseMode(GuestContext *ctx) {
 }
 
 void shim_sceKernelPrintBacktraceWithModuleInfo(GuestContext *ctx) {
-    fprintf(stderr, "[ps4-kernel] Backtrace with module info requested\n");
+    PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "Backtrace with module info requested\n");
     ctx->rax = 0;
     SHIM_RETURN();
 }
@@ -828,7 +987,7 @@ static uint32_t snapshot_segments_out(const RecompModuleSnapshot *m, OrbisKernel
 }
 
 static int fill_module_info_ex(GuestContext *ctx, uint64_t addr, uint64_t info_addr) {
-    if (!info_addr || !ctx->mem_base) return ORBIS_KERNEL_ERROR_EFAULT;
+    if (!info_addr || !RECOMP_MEM_OK(ctx)) return ORBIS_KERNEL_ERROR_EFAULT;
     RecompModuleSnapshot snap;
     if (recomp_module_info_by_addr(addr, &snap) != 0) return ORBIS_KERNEL_ERROR_ESRCH;
     OrbisKernelModuleInfoEx *info = (OrbisKernelModuleInfoEx *)(ctx->mem_base + info_addr);
@@ -844,7 +1003,7 @@ static int fill_module_info_ex(GuestContext *ctx, uint64_t addr, uint64_t info_a
     // Logged on the first call only (unwinding can call this for every frame).
     static int s_logged;
     if (!__atomic_exchange_n(&s_logged, 1, __ATOMIC_RELAXED)) {
-        fprintf(stderr, "[ps4-kernel] GetModuleInfoFromAddr: addr=0x%llx -> mod=%s (handle %d), num_segments=%u (first call)\n",
+        PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "GetModuleInfoFromAddr: addr=0x%llx -> mod=%s (handle %d), num_segments=%u (first call)\n",
                 (unsigned long long)addr, info->name, info->id, info->segment_count);
         for (uint32_t i = 0; i < info->segment_count; i++) {
             fprintf(stderr, "    seg[%u]: addr=0x%llx, size=0x%x, prot=%d\n",
@@ -857,7 +1016,7 @@ static int fill_module_info_ex(GuestContext *ctx, uint64_t addr, uint64_t info_a
 // The first segment of the module containing rsi, to rdx; ESRCH if no module contains it.
 void shim_sceKernelInternalMemoryGetModuleSegmentInfo(GuestContext *ctx) {
     uint64_t seg_out = ctx->rdx;
-    if (!seg_out || !ctx->mem_base) {
+    if (!seg_out || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_KERNEL_ERROR_EFAULT;
         SHIM_RETURN();
     }
@@ -881,7 +1040,7 @@ void shim_sceKernelGetModuleInfo2(GuestContext *ctx) {
 void shim_sceKernelGetModuleInfoInternal(GuestContext *ctx) {
     int32_t handle = (int32_t)ctx->rdi;
     uint64_t info_addr = ctx->rsi;
-    if (!info_addr || !ctx->mem_base) {
+    if (!info_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)0x8002000e; // ORBIS_KERNEL_ERROR_EFAULT
         SHIM_RETURN();
     }
@@ -910,13 +1069,13 @@ void shim_sceKernelGetModuleInfoForUnwind(GuestContext *ctx) {
     uint64_t info_addr = ctx->rdx;
 
     if (flags >= 3) {
-        if (info_addr && ctx->mem_base) {
+        if (info_addr && RECOMP_MEM_OK(ctx)) {
             memset(ctx->mem_base + info_addr, 0, sizeof(OrbisModuleInfoForUnwind));
         }
         ctx->rax = (uint64_t)(int64_t)0x80020016; // ORBIS_KERNEL_ERROR_EINVAL
         SHIM_RETURN();
     }
-    if (!info_addr || !ctx->mem_base) {
+    if (!info_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)0x8002000e; // ORBIS_KERNEL_ERROR_EFAULT
         SHIM_RETURN();
     }
@@ -954,13 +1113,13 @@ void shim_sceKernelGetModuleInfoFromAddr(GuestContext *ctx) {
     uint64_t info_addr = ctx->rdx;
 
     if (flags >= 3) {
-        if (info_addr && ctx->mem_base) {
+        if (info_addr && RECOMP_MEM_OK(ctx)) {
             memset(ctx->mem_base + info_addr, 0, sizeof(OrbisKernelModuleInfoEx));
         }
         ctx->rax = (uint64_t)(int64_t)0x80020016; // ORBIS_KERNEL_ERROR_EINVAL
         SHIM_RETURN();
     }
-    if (!info_addr || !ctx->mem_base) {
+    if (!info_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)0x8002000e; // ORBIS_KERNEL_ERROR_EFAULT
         SHIM_RETURN();
     }
@@ -970,7 +1129,7 @@ void shim_sceKernelGetModuleInfoFromAddr(GuestContext *ctx) {
 }
 
 void shim_getargv(GuestContext *ctx) {
-    if (ctx && ctx->args_addr && ctx->mem_base) {
+    if (ctx && ctx->args_addr && RECOMP_MEM_OK(ctx)) {
         ctx->rax = ctx->args_addr + 8ULL;
     } else {
         ctx->rax = 0;
@@ -979,7 +1138,7 @@ void shim_getargv(GuestContext *ctx) {
 }
 
 void shim___progname(GuestContext *ctx) {
-    if (ctx && ctx->args_addr && ctx->mem_base) {
+    if (ctx && ctx->args_addr && RECOMP_MEM_OK(ctx)) {
         uint64_t argv0 = *(uint64_t *)(ctx->mem_base + ctx->args_addr + 8ULL);
         if (argv0) {
             ctx->rax = argv0;
@@ -999,7 +1158,7 @@ static uint64_t g_guest_heap_trace_info_buf = 0;
 
 void shim_sceLibcHeapGetTraceInfo(GuestContext *ctx) {
     uint64_t info_guest = ctx->rdi;
-    if (!info_guest || !ctx->mem_base) {
+    if (!info_guest || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0;
         SHIM_RETURN();
     }
@@ -1038,4 +1197,67 @@ void shim_Need_sceLibcInternal(GuestContext *ctx) {
 void shim_sceKernelSetFsstParam(GuestContext *ctx) {
     ctx->rax = 0;
     SHIM_RETURN();
+}
+
+// ---- Lean entries (docs/m3/leanshim.md, docs/m3/clock.md): these clocks are integer leaf functions of a counter read.
+#include "nps5_lean.h"
+
+NPS5_LEAN_FN(sceKernelGetProcessTimeCounter) { return proc_ticks(); }
+NPS5_LEAN_FN(sceKernelGetProcessTimeCounterFrequency) { return RECOMP_TSC_FREQ; }
+NPS5_LEAN_FN(sceKernelGetProcessTime) { return sceKernelGetProcessTime(); }
+NPS5_LEAN_FN(sceKernelGetTscFrequency) { return RECOMP_TSC_FREQ; }
+NPS5_LEAN_FN(sceKernelReadTsc) { return recomp_rdtsc(); }
+
+// clock_gettime(clk_id, tp): same results as shim_clock_gettime (kernel/syscalls); the monotonic ids read the counter.
+static uint64_t lean_clock_gettime_impl(uint64_t clk, uint64_t tp_addr, GuestContext *ctx) {
+    if (!tp_addr) {
+        set_guest_errno(ctx, EFAULT);
+        return (uint64_t)-1;
+    }
+    int64_t sec, nsec;
+    if ((int)clk == 4 || (int)clk == 5) { // FreeBSD CLOCK_MONOTONIC, CLOCK_UPTIME
+        const uint64_t ns = mono_ns();
+        sec = (int64_t)(ns / 1000000000ULL);
+        nsec = (int64_t)(ns % 1000000000ULL);
+    } else {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) < 0) {
+            set_guest_errno(ctx, errno);
+            return (uint64_t)-1;
+        }
+        sec = (int64_t)ts.tv_sec;
+        nsec = (int64_t)ts.tv_nsec;
+    }
+    int64_t *g = (int64_t *)(ctx->mem_base + tp_addr);
+    g[0] = sec;
+    g[1] = nsec;
+    return 0;
+}
+
+NPS5_LEAN_FN(clock_gettime) { return lean_clock_gettime_impl(a0, a1, ctx); }
+NPS5_LEAN_FN(sceKernelClockGettime) { return lean_clock_gettime_impl(a0, a1, ctx); }
+
+// gettimeofday(tv, tz): the wall clock stays a host call.
+NPS5_LEAN_FN(gettimeofday) {
+    struct timeval htv;
+    struct timezone htz;
+    if (gettimeofday(&htv, a1 ? &htz : NULL) < 0) {
+        set_guest_errno(ctx, errno);
+        return (uint64_t)-1;
+    }
+    if (a0) {
+        int64_t *g = (int64_t *)(ctx->mem_base + a0);
+        g[0] = (int64_t)htv.tv_sec;
+        g[1] = (int64_t)htv.tv_usec;
+    }
+    if (a1) *(struct timezone *)(ctx->mem_base + a1) = htz;
+    return 0;
+}
+
+NPS5_LEAN_FN(sceKernelGettimeofday) {
+    if (!a0) return (uint64_t)(int64_t)-EINVAL;
+    OrbisKernelTimeval tv = {0};
+    const int32_t rc = sceKernelGettimeofday(&tv);
+    if (rc == 0) memcpy(ctx->mem_base + a0, &tv, sizeof(tv));
+    return (uint64_t)(int64_t)rc;
 }

@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <ftw.h>
 #include <time.h>
+#include "nps5_kio.h"
 
 #define MAX_SAVE_MEMORY_SLOTS 16
 #define STANDARD_DIRNAME_SAVE_DATA_MEMORY "sce_sdmemory"
@@ -42,8 +43,17 @@ static pthread_mutex_t g_savedata_mutex = PTHREAD_MUTEX_INITIALIZER;
 static SaveMemorySlot g_slots[MAX_SAVE_MEMORY_SLOTS];
 static SdMountSlot g_sd_mounts[SD_MAX_MOUNTS];
 
+// NPS5_SAVEDATA_TRACE=1: log every libSceSaveData shim call with its first args and result (a global NPS5_TRACE_HLE slows the title to a crawl).
+static int sd_trace_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("NPS5_SAVEDATA_TRACE"); v = (e && *e && *e != '0') ? 1 : 0; }
+    return v;
+}
+#define SD_TRACE(nm) do { if (sd_trace_on()) fprintf(stderr, "[ps4-savedata] call %s(rdi=0x%llx rsi=0x%llx rdx=0x%llx) -> 0x%x\n", nm, \
+    (unsigned long long)ctx->rdi, (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdx, (unsigned)ctx->rax); } while (0)
+
 static inline void *recomp_guest_to_host(const GuestContext *ctx, uint64_t gaddr) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) {
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) {
         return NULL;
     }
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr < (uintptr_t)ctx->mem_base + ctx->mem_size) {
@@ -101,6 +111,44 @@ static void sanitize_filename(const char *src, char *dst, size_t dst_size) {
     }
 }
 
+// The save root of the running title. Precedence:
+//   NPS5_SAVEDATA_DIR            the root itself: <root>/user_<id>/<dir>/ (tests, relocation)
+//   NPS5_USERDATA_DIR            <dir>/savedata
+//   PS4_SAVEDATA_DIR / PS4RECOMP_DATA_DIR / (no title id known)   the PS4Recomp layout, see below
+//   title id known (NPS5_TITLE_ID, else the SFO's TITLE_ID)
+//                                ~/Library/Application Support/nativeps5/<titleId>/savedata
+static bool sd_nps5_root(char *out, size_t out_size) {
+    const char *env_root = getenv("NPS5_SAVEDATA_DIR");
+    if (env_root && *env_root) {
+        snprintf(out, out_size, "%s", env_root);
+        return true;
+    }
+    const char *user_root = getenv("NPS5_USERDATA_DIR"); // the per-title root of every writable area (ps4_vfs.h)
+    if (user_root && *user_root) {
+        snprintf(out, out_size, "%s/savedata", user_root);
+        return true;
+    }
+    if (getenv("PS4_SAVEDATA_DIR") || getenv("PS4RECOMP_DATA_DIR")) return false;
+    char title_id[64] = {0};
+    const char *tid = getenv("NPS5_TITLE_ID");
+    if (tid && *tid) {
+        snprintf(title_id, sizeof(title_id), "%s", tid);
+    } else {
+        Ps4SfoContext sfo = {0};
+        if (ps4_sfo_find_and_load(&sfo)) {
+            ps4_sfo_get_string(&sfo, "TITLE_ID", title_id, sizeof(title_id));
+            ps4_sfo_free(&sfo);
+        }
+    }
+    if (!title_id[0]) return false;
+    char clean[64];
+    sanitize_filename(title_id, clean, sizeof(clean));
+    const char *home = getenv("HOME");
+    if (!home || !*home) return false;
+    snprintf(out, out_size, "%s/Library/Application Support/nativeps5/%s/savedata", home, clean);
+    return true;
+}
+
 static void get_savedata_base_dir(char *out_path, size_t out_size) {
     const char *env_dir = getenv("PS4_SAVEDATA_DIR");
     if (env_dir && *env_dir) {
@@ -135,6 +183,7 @@ static void get_app_title_and_id(char *out_title, size_t title_size, char *out_t
 }
 
 static void get_game_save_dir(char *out_path, size_t out_size) {
+    if (sd_nps5_root(out_path, out_size)) return;
     char base_dir[1024];
     get_savedata_base_dir(base_dir, sizeof(base_dir));
 
@@ -335,7 +384,7 @@ static bool sd_write_sfo(const char *sfo_path, const SdParam *param, const char 
         free(buf);
         return false;
     }
-    size_t written = fwrite(buf, 1, total_size, f);
+    size_t written = nps5_kfwrite(buf, 1, total_size, f);
     fclose(f);
     free(buf);
     return written == total_size;
@@ -367,7 +416,7 @@ static bool sd_load_param(const char *dir_path, SdParam *out) {
     snprintf(bin_path, sizeof(bin_path), "%s/%s", dir_path, SD_PARAM_FILE);
     FILE *f = fopen(bin_path, "rb");
     if (!f) return false;
-    size_t got = fread(out, 1, sizeof(*out), f);
+    size_t got = nps5_kfread(out, 1, sizeof(*out), f);
     fclose(f);
     return got == sizeof(*out);
 }
@@ -386,7 +435,7 @@ static int sd_store_param(const char *dir_path, const SdParam *param, const char
     snprintf(bin_path, sizeof(bin_path), "%s/%s", dir_path, SD_PARAM_FILE);
     FILE *f = fopen(bin_path, "wb");
     if (f) {
-        fwrite(param, 1, sizeof(*param), f);
+        nps5_kfwrite(param, 1, sizeof(*param), f);
         fclose(f);
     }
     return 0;
@@ -412,8 +461,8 @@ static void sd_copy_default_icon_if_needed(const char *dir_path) {
     }
     char buf[4096];
     size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-        fwrite(buf, 1, n, out);
+    while ((n = nps5_kfread(buf, 1, sizeof(buf), in)) > 0) {
+        nps5_kfwrite(buf, 1, n, out);
     }
     fclose(in);
     fclose(out);
@@ -536,6 +585,17 @@ static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *
     bool create_if_not_exist = (mountMode & SD_MOUNT_MODE_CREATE2) != 0;
     bool copy_icon = (mountMode & SD_MOUNT_MODE_COPY_ICON) != 0;
 
+    // Mount modes follow RPS5E (GPL-2.0, ps5hle/src/savedata.rs: mount()): CREATE (4) fails with EXISTS when the save directory
+    // exists; CREATE2 (32) opens it or creates it; with neither bit the mode must name an open mode (RDONLY 1 / RDWR 2) and
+    // a missing directory is NOT_FOUND. A mode that names nothing at all is a parameter error. The real bits a title passes
+    // are always logged: they decide whether a first launch sees NOT_FOUND.
+    fprintf(stderr, "[ps4-savedata] Mount request: user=%d dir='%s' mode=0x%x (%s%s%s%s) blocks=%llu\n", userId, dir_name, mountMode,
+            is_ro ? "RDONLY " : "", (mountMode & SD_MOUNT_MODE_RDWR) ? "RDWR " : "", create ? "CREATE " : "", create_if_not_exist ? "CREATE2" : "",
+            (unsigned long long)blocks);
+    if (!create && !create_if_not_exist && !(mountMode & (SD_MOUNT_MODE_RDONLY | SD_MOUNT_MODE_RDWR))) {
+        fprintf(stderr, "[ps4-savedata] Mount: dir='%s' mode=0x%x names no open or create mode -> PARAMETER\n", dir_name, mountMode);
+        return SD_ERR_PARAMETER;
+    }
     pthread_mutex_lock(&g_savedata_mutex);
     if (sd_find_mount_by_dir(userId, dir_name)) {
         pthread_mutex_unlock(&g_savedata_mutex);
@@ -576,8 +636,9 @@ static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *
             sd_copy_default_icon_if_needed(host_path);
         }
         status = SD_MOUNT_STATUS_CREATED;
-    } else if (create && !create_if_not_exist) {
+    } else if (create) { // CREATE wins over CREATE2 (RPS5E savedata.rs: `if create && exists` -> EXISTS)
         pthread_mutex_unlock(&g_savedata_mutex);
+        fprintf(stderr, "[ps4-savedata] Mount: user=%d dir='%s' mode=0x%x -> EXISTS (CREATE on an existing save)\n", userId, dir_name, mountMode);
         return SD_ERR_EXISTS;
     }
 
@@ -602,7 +663,7 @@ static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *
     snprintf(slot->dir_name, sizeof(slot->dir_name), "%s", dir_name);
     snprintf(slot->mount_point, sizeof(slot->mount_point), "/savedata%d", slot_idx);
     snprintf(slot->host_path, sizeof(slot->host_path), "%s", host_path);
-    ps4_vfs_mount(slot->mount_point, slot->host_path);
+    if (slot->read_only) ps4_vfs_mount_ro(slot->mount_point, slot->host_path); else ps4_vfs_mount(slot->mount_point, slot->host_path);
 
     memset(result, 0, sizeof(*result));
     snprintf(result->mountPoint.data, sizeof(result->mountPoint.data), "%s", slot->mount_point);
@@ -634,12 +695,17 @@ int32_t sceSaveDataTransferringMount(GuestContext *ctx, const SdTransferringMoun
     if (!mount || !result) return SD_ERR_PARAMETER;
     char dir_name[SD_DIRNAME_SIZE];
     if (!sd_copy_dirname(ctx, mount->dirName, dir_name)) return SD_ERR_PARAMETER;
-    return sd_mount_internal(ctx, mount->userId, dir_name, 0, SD_MOUNT_MODE_RDONLY, result);
+    // ASTRO BOT 01.007 makes this its FIRST save mount (issue #27 of the PC port). A read-only open of a directory that does
+    // not exist yet is NOT_FOUND and the title takes that as "no save, cannot continue". Mount the same directory the way a
+    // normal first mount does: CREATE2 (open or create) | RDWR. APS5_SAVEDATA_TRANSFER_FALLBACK=0 restores the old read-only open.
+    const char *fb = getenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
+    const uint32_t mode = (fb && strcmp(fb, "0") == 0) ? SD_MOUNT_MODE_RDONLY : (SD_MOUNT_MODE_CREATE2 | SD_MOUNT_MODE_RDWR);
+    return sd_mount_internal(ctx, mount->userId, dir_name, 0, mode, result);
 }
 
 int32_t sceSaveDataGetEventResult(GuestContext *ctx, uint64_t param_addr, uint64_t event_addr) {
     (void)ctx; (void)param_addr; (void)event_addr;
-    return 0x809f0004; // SCE_SAVE_DATA_ERROR_NOT_FOUND
+    return ORBIS_SAVE_DATA_ERROR_NOT_FOUND; // no backup event queued (shadPS4: NOT_FOUND 0x809f0008)
 }
 
 int32_t sceSaveDataUmount(GuestContext *ctx, uint64_t mount_point_addr) {
@@ -852,7 +918,7 @@ int32_t sceSaveDataSaveIcon(GuestContext *ctx, uint64_t mount_point_addr, const 
     FILE *f = fopen(path, "wb");
     size_t put = 0;
     if (f) {
-        put = fwrite(data, 1, (size_t)size, f);
+        put = nps5_kfwrite(data, 1, (size_t)size, f);
         fclose(f);
     }
     pthread_mutex_unlock(&g_savedata_mutex);
@@ -886,7 +952,7 @@ int32_t sceSaveDataLoadIcon(GuestContext *ctx, uint64_t mount_point_addr, SdIcon
     size_t read_bytes = 0;
     if (sz > 0) {
         size_t to_read = (size_t)sz < icon->bufSize ? (size_t)sz : icon->bufSize;
-        read_bytes = fread(dst, 1, to_read, f);
+        read_bytes = nps5_kfread(dst, 1, to_read, f);
         icon->dataSize = (uint64_t)sz;
     } else {
         icon->dataSize = 0;
@@ -1228,7 +1294,7 @@ int32_t sceSaveDataSetupSaveDataMemory2(GuestContext *ctx,
     if (existed_size > 0) {
         FILE *f = fopen(file_path, "rb");
         if (f) {
-            size_t read_bytes = fread(slot->cache, 1, existed_size, f);
+            size_t read_bytes = nps5_kfread(slot->cache, 1, existed_size, f);
             fclose(f);
             fprintf(stderr, "[ps4-recomp] sceSaveDataSetupSaveDataMemory2: Slot %u loaded %zu bytes from '%s'\n",
                     slot_id, read_bytes, file_path);
@@ -1375,7 +1441,7 @@ int32_t sceSaveDataSyncSaveDataMemory(GuestContext *ctx, OrbisSaveDataMemorySync
         return ORBIS_SAVE_DATA_ERROR_INTERNAL;
     }
 
-    size_t written = fwrite(slot->cache, 1, slot->cache_size, f);
+    size_t written = nps5_kfwrite(slot->cache, 1, slot->cache_size, f);
     fflush(f);
     int fd = fileno(f);
     if (fd >= 0) {
@@ -1443,6 +1509,7 @@ void shim_sceSaveDataInitialize(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataInitialize(
         ctx->rdi ? recomp_guest_to_host(ctx, ctx->rdi) : NULL
     );
+    SD_TRACE("sceSaveDataInitialize");
     SHIM_RETURN();
 }
 
@@ -1450,6 +1517,7 @@ void shim_sceSaveDataInitialize2(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataInitialize2(
         ctx->rdi ? recomp_guest_to_host(ctx, ctx->rdi) : NULL
     );
+    SD_TRACE("sceSaveDataInitialize2");
     SHIM_RETURN();
 }
 
@@ -1457,11 +1525,13 @@ void shim_sceSaveDataInitialize3(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataInitialize3(
         ctx->rdi ? recomp_guest_to_host(ctx, ctx->rdi) : NULL
     );
+    SD_TRACE("sceSaveDataInitialize3");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataTerminate(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataTerminate();
+    SD_TRACE("sceSaveDataTerminate");
     SHIM_RETURN();
 }
 
@@ -1469,6 +1539,7 @@ void shim_sceSaveDataMount(GuestContext *ctx) {
     const SdMount *mount = (const SdMount *)recomp_guest_to_host(ctx, ctx->rdi);
     SdMountResult *result = (SdMountResult *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataMount(ctx, mount, result);
+    SD_TRACE("sceSaveDataMount");
     SHIM_RETURN();
 }
 
@@ -1476,6 +1547,7 @@ void shim_sceSaveDataMount2(GuestContext *ctx) {
     const SdMount2 *mount = (const SdMount2 *)recomp_guest_to_host(ctx, ctx->rdi);
     SdMountResult *result = (SdMountResult *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataMount2(ctx, mount, result);
+    SD_TRACE("sceSaveDataMount2");
     SHIM_RETURN();
 }
 
@@ -1483,55 +1555,65 @@ void shim_sceSaveDataTransferringMount(GuestContext *ctx) {
     const SdTransferringMount *mount = (const SdTransferringMount *)recomp_guest_to_host(ctx, ctx->rdi);
     SdMountResult *result = (SdMountResult *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataTransferringMount(ctx, mount, result);
+    SD_TRACE("sceSaveDataTransferringMount");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataGetEventResult(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataGetEventResult(ctx, ctx->rdi, ctx->rsi);
+    SD_TRACE("sceSaveDataGetEventResult");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataUmount(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataUmount(ctx, ctx->rdi);
+    SD_TRACE("sceSaveDataUmount");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataUmountWithBackup(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataUmountWithBackup(ctx, ctx->rdi);
+    SD_TRACE("sceSaveDataUmountWithBackup");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataSetParam(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSetParam(ctx, ctx->rdi, (uint32_t)ctx->rsi, ctx->rdx, ctx->rcx);
+    SD_TRACE("sceSaveDataSetParam");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataGetParam(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataGetParam(ctx, ctx->rdi, (uint32_t)ctx->rsi, ctx->rdx, ctx->rcx, ctx->r8);
+    SD_TRACE("sceSaveDataGetParam");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataSaveIcon(GuestContext *ctx) {
     const SdIcon *icon = (const SdIcon *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSaveIcon(ctx, ctx->rdi, icon);
+    SD_TRACE("sceSaveDataSaveIcon");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataLoadIcon(GuestContext *ctx) {
     SdIcon *icon = (SdIcon *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataLoadIcon(ctx, ctx->rdi, icon);
+    SD_TRACE("sceSaveDataLoadIcon");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataGetMountInfo(GuestContext *ctx) {
     SdMountInfo *info = (SdMountInfo *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataGetMountInfo(ctx, ctx->rdi, info);
+    SD_TRACE("sceSaveDataGetMountInfo");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataDelete(GuestContext *ctx) {
     const SdDelete *del = (const SdDelete *)recomp_guest_to_host(ctx, ctx->rdi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataDelete(ctx, del);
+    SD_TRACE("sceSaveDataDelete");
     SHIM_RETURN();
 }
 
@@ -1539,6 +1621,7 @@ void shim_sceSaveDataDirNameSearch(GuestContext *ctx) {
     const SdDirNameSearchCond *cond = (const SdDirNameSearchCond *)recomp_guest_to_host(ctx, ctx->rdi);
     SdDirNameSearchResult *result = (SdDirNameSearchResult *)recomp_guest_to_host(ctx, ctx->rsi);
     ctx->rax = (uint64_t)(int64_t)sceSaveDataDirNameSearch(ctx, cond, result);
+    SD_TRACE("sceSaveDataDirNameSearch");
     SHIM_RETURN();
 }
 
@@ -1546,6 +1629,7 @@ void shim_sceSaveDataSetupSaveDataMemory(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSetupSaveDataMemory(
         ctx, (int32_t)ctx->rdi, (size_t)ctx->rsi, ctx->rdx
     );
+    SD_TRACE("sceSaveDataSetupSaveDataMemory");
     SHIM_RETURN();
 }
 
@@ -1553,6 +1637,7 @@ void shim_sceSaveDataGetSaveDataMemory(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataGetSaveDataMemory(
         ctx, (int32_t)ctx->rdi, ctx->rsi, (size_t)ctx->rdx, (int64_t)ctx->rcx
     );
+    SD_TRACE("sceSaveDataGetSaveDataMemory");
     SHIM_RETURN();
 }
 
@@ -1560,6 +1645,7 @@ void shim_sceSaveDataSetSaveDataMemory(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSetSaveDataMemory(
         ctx, (int32_t)ctx->rdi, ctx->rsi, (size_t)ctx->rdx, (int64_t)ctx->rcx
     );
+    SD_TRACE("sceSaveDataSetSaveDataMemory");
     SHIM_RETURN();
 }
 
@@ -1570,6 +1656,7 @@ void shim_sceSaveDataSetupSaveDataMemory2(GuestContext *ctx) {
         ctx->rsi ? (OrbisSaveDataMemorySetupResult *)recomp_guest_to_host(ctx, ctx->rsi) : NULL;
 
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSetupSaveDataMemory2(ctx, setupParam, result);
+    SD_TRACE("sceSaveDataSetupSaveDataMemory2");
     SHIM_RETURN();
 }
 
@@ -1578,6 +1665,7 @@ void shim_sceSaveDataGetSaveDataMemory2(GuestContext *ctx) {
         ctx->rdi ? (OrbisSaveDataMemoryGet2 *)recomp_guest_to_host(ctx, ctx->rdi) : NULL;
 
     ctx->rax = (uint64_t)(int64_t)sceSaveDataGetSaveDataMemory2(ctx, getParam);
+    SD_TRACE("sceSaveDataGetSaveDataMemory2");
     SHIM_RETURN();
 }
 
@@ -1586,6 +1674,7 @@ void shim_sceSaveDataSetSaveDataMemory2(GuestContext *ctx) {
         ctx->rdi ? (const OrbisSaveDataMemorySet2 *)recomp_guest_to_host(ctx, ctx->rdi) : NULL;
 
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSetSaveDataMemory2(ctx, setParam);
+    SD_TRACE("sceSaveDataSetSaveDataMemory2");
     SHIM_RETURN();
 }
 
@@ -1594,19 +1683,40 @@ void shim_sceSaveDataSyncSaveDataMemory(GuestContext *ctx) {
         ctx->rdi ? (OrbisSaveDataMemorySync *)recomp_guest_to_host(ctx, ctx->rdi) : NULL;
 
     ctx->rax = (uint64_t)(int64_t)sceSaveDataSyncSaveDataMemory(ctx, syncParam);
+    SD_TRACE("sceSaveDataSyncSaveDataMemory");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataCheckBackupData(GuestContext *ctx) {
-    (void)ctx->rdi;
-    // Returns ORBIS_SAVE_DATA_ERROR_NOT_FOUND (0x809f0003) as no backup exists
-    ctx->rax = (uint64_t)0x809f0003;
+    // SceSaveDataCheckBackupData { userId(4) pad(4) titleId*(8) dirName*(8) param*(8) icon*(8) }. Real libSceSaveData (shadPS4
+    // sceSaveDataCheckBackupData): BUSY only while that dir is mounted, NOT_FOUND (0x809f0008) when no backup exists (we keep
+    // none). It used to return 0x809f0003 = BUSY always, which a title reads as "try again later".
+    int32_t rc = ORBIS_SAVE_DATA_ERROR_NOT_FOUND;
+    if (!g_savedata_initialized) {
+        rc = SD_ERR_NOT_INIT;
+    } else if (!ctx->rdi) {
+        rc = SD_ERR_PARAMETER;
+    } else {
+        const uint8_t *chk = (const uint8_t *)recomp_guest_to_host(ctx, ctx->rdi);
+        uint64_t dn = chk ? *(const uint64_t *)(chk + 16) : 0;
+        char dir_name[SD_DIRNAME_SIZE];
+        if (!chk || !dn || !sd_copy_dirname(ctx, dn, dir_name)) {
+            rc = SD_ERR_PARAMETER;
+        } else {
+            pthread_mutex_lock(&g_savedata_mutex);
+            if (sd_find_mount_by_dir(*(const int32_t *)chk, dir_name)) rc = SD_ERR_BUSY;
+            pthread_mutex_unlock(&g_savedata_mutex);
+        }
+    }
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataCheckBackupData");
     SHIM_RETURN();
 }
 
 void shim_sceSaveDataRestoreBackupData(GuestContext *ctx) {
     (void)ctx->rdi;
-    ctx->rax = (uint64_t)0x809f0003;
+    ctx->rax = (uint64_t)(int64_t)ORBIS_SAVE_DATA_ERROR_NOT_FOUND; // no backup
+    SD_TRACE("sceSaveDataRestoreBackupData");
     SHIM_RETURN();
 }
 
@@ -1625,5 +1735,125 @@ int32_t sceSaveDataClearProgress(void) {
 
 void shim_sceSaveDataClearProgress(GuestContext *ctx) {
     ctx->rax = (uint64_t)(int64_t)sceSaveDataClearProgress();
+    SD_TRACE("sceSaveDataClearProgress");
+    SHIM_RETURN();
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// PS5 shapes: sceSaveDataMount3 / Umount2 / Prepare / Commit / transaction resources.
+// The save directory is a plain host directory mounted into the VFS as /savedataN, so a mounted
+// save is read and written with the ordinary file calls; Prepare and Commit bracket a
+// transaction on the console and here validate the mount and flush to disk.
+
+typedef struct SdMount3 {
+    int32_t userId;
+    int32_t _pad0;
+    uint64_t dirName;      // const SdDirName*
+    uint64_t blocks;
+    uint64_t systemBlocks;
+    uint32_t mountMode;
+    int32_t _pad1;
+    int32_t resource;      // transaction resource, or 0
+    uint8_t _reserved[32];
+} SdMount3;
+_Static_assert(sizeof(SdMount3) == 0x50, "SceSaveDataMount3");
+
+static int32_t g_sd_transactions = 0;      // resources handed out
+static uint32_t g_sd_live_resources = 0;   // bitmap-free: count of live ones
+
+void shim_sceSaveDataMount3(GuestContext *ctx) {
+    const SdMount3 *mount = (const SdMount3 *)recomp_guest_to_host(ctx, ctx->rdi);
+    SdMountResult *result = (SdMountResult *)recomp_guest_to_host(ctx, ctx->rsi);
+    int32_t rc;
+    char dir_name[SD_DIRNAME_SIZE];
+    if (!mount || !result || !sd_copy_dirname(ctx, mount->dirName, dir_name)) {
+        rc = SD_ERR_PARAMETER;
+    } else {
+        if (sd_trace_on()) {
+            const uint32_t *w = (const uint32_t *)mount;
+            fprintf(stderr, "[ps4-savedata] Mount3 raw:");
+            for (size_t i = 0; i < sizeof(SdMount3) / sizeof(uint32_t); i++) fprintf(stderr, " %08x", w[i]);  // bounded to the struct (0x50)
+            const uint64_t *rp = (const uint64_t *)recomp_guest_to_host(ctx, ctx->rsp);
+            fprintf(stderr, " ret=0x%llx\n", (unsigned long long)(rp ? *rp : 0));
+            uint64_t bp = ctx->rbp;
+            fprintf(stderr, "[ps4-savedata] Mount3 callers:");
+            for (int d = 0; d < 8 && bp > 0x10000; d++) {
+                const uint64_t *fr = (const uint64_t *)recomp_guest_to_host(ctx, bp);
+                if (!fr) break;
+                fprintf(stderr, " 0x%llx", (unsigned long long)fr[1]);
+                bp = fr[0];
+            }
+            fprintf(stderr, "\n");
+        }
+        rc = sd_mount_internal(ctx, mount->userId, dir_name, mount->blocks, mount->mountMode, result);
+    }
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataMount3");
+    SHIM_RETURN();
+}
+
+// int sceSaveDataUmount2(uint32_t mode, const SceSaveDataMountPoint *mountPoint)
+void shim_sceSaveDataUmount2(GuestContext *ctx) {
+    // mode (reset-corrupted-flag) has no host meaning
+    ctx->rax = (uint64_t)(int64_t)sceSaveDataUmount(ctx, ctx->rsi);
+    SD_TRACE("sceSaveDataUmount2");
+    SHIM_RETURN();
+}
+
+// int sceSaveDataPrepare(const SceSaveDataMountPoint *mountPoint, const SceSaveDataPrepareParam *param)
+void shim_sceSaveDataPrepare(GuestContext *ctx) {
+    int32_t rc;
+    if (!ctx->rdi) {
+        rc = SD_ERR_PARAMETER;
+    } else {
+        pthread_mutex_lock(&g_savedata_mutex);
+        SdMountSlot *slot = sd_find_mount_by_point(ctx, ctx->rdi);
+        rc = !slot ? SD_ERR_NOT_MOUNTED : (slot->read_only ? SD_ERR_INTERNAL : 0);
+        pthread_mutex_unlock(&g_savedata_mutex);
+    }
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataPrepare");
+    SHIM_RETURN();
+}
+
+// int sceSaveDataCommit(const SceSaveDataCommitParam *param): flushes the written files.
+void shim_sceSaveDataCommit(GuestContext *ctx) {
+    int32_t rc = 0;
+    if (!ctx->rdi) rc = SD_ERR_PARAMETER;
+    else if (!g_savedata_initialized) rc = SD_ERR_NOT_INIT;
+    else sync();
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataCommit");
+    SHIM_RETURN();
+}
+
+// int sceSaveDataCreateTransactionResource(uint32_t size): returns a resource id (> 0).
+void shim_sceSaveDataCreateTransactionResource(GuestContext *ctx) {
+    int32_t rc;
+    pthread_mutex_lock(&g_savedata_mutex);
+    if (!g_savedata_initialized) {
+        rc = SD_ERR_NOT_INIT;
+    } else {
+        rc = ++g_sd_transactions;
+        g_sd_live_resources++;
+    }
+    pthread_mutex_unlock(&g_savedata_mutex);
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataCreateTransactionResource");
+    SHIM_RETURN();
+}
+
+// int sceSaveDataDeleteTransactionResource(int32_t resource)
+void shim_sceSaveDataDeleteTransactionResource(GuestContext *ctx) {
+    int32_t rc = 0;
+    int32_t res = (int32_t)ctx->rdi;
+    pthread_mutex_lock(&g_savedata_mutex);
+    if (!g_savedata_initialized) rc = SD_ERR_NOT_INIT;
+    else if (res <= 0 || res > g_sd_transactions || g_sd_live_resources == 0) rc = SD_ERR_PARAMETER;
+    else g_sd_live_resources--;
+    pthread_mutex_unlock(&g_savedata_mutex);
+    ctx->rax = (uint64_t)(int64_t)rc;
+    SD_TRACE("sceSaveDataDeleteTransactionResource");
     SHIM_RETURN();
 }

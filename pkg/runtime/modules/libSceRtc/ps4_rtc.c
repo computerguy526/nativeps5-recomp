@@ -340,7 +340,7 @@ void shim_sceRtcFormatRFC3339(GuestContext *ctx) {
     uint64_t strOut = ctx->rdi;
     uint64_t tickIn = ctx->rsi;
     int minutes = (int)ctx->rdx;
-    if (!strOut || !ctx->mem_base) {
+    if (!strOut || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)-EINVAL;
         SHIM_RETURN();
     }
@@ -354,7 +354,7 @@ void shim_sceRtcFormatRFC3339(GuestContext *ctx) {
 void shim_sceRtcParseRFC3339(GuestContext *ctx) {
     uint64_t tickOut = ctx->rdi;
     uint64_t strIn = ctx->rsi;
-    if (!tickOut || !strIn || !ctx->mem_base) {
+    if (!tickOut || !strIn || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)-EINVAL;
         SHIM_RETURN();
     }

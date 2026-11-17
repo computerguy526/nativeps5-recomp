@@ -2,6 +2,8 @@
 #include "ps4_sync.h"
 #include "ps4_sync_objects.h"
 #include "ps4_threading.h"
+#include "nps5_thunk.h"
+#include "nps5_libkernel_hle.h"
 #include <errno.h>
 #include <mach/mach_time.h>
 #include <stdatomic.h>
@@ -524,18 +526,18 @@ static void abs_from_usec(struct timespec *ts, uint64_t usec) {
   }
 }
 
-void shim_pthread_mutex_init(GuestContext *ctx) {
-  uint64_t mtx_addr = ctx->rdi;
-  uint64_t attr_addr = ctx->rsi;
+// Mutex entry points: native functions behind generated thunks (nps5_libkernel_thunks.c).
+// `mutex` is the host address of the guest's pthread_mutex_t word; the handle tables are keyed
+// by guest address.
+int hle_pthread_mutex_init(GuestContext *ctx, void *mutex, const void *attr) {
   int guest_type = 0;
-  if (attr_addr) {
-    guest_type = *(int *)(ctx->mem_base + attr_addr);
+  if (attr) {
+    guest_type = *(const int *)attr;
   }
-  const uint64_t h = sync_handle(ctx, mtx_addr, 1);
+  const uint64_t h = sync_handle(ctx, NPS5_H2G(ctx, mutex), 1);
   (void)get_host_mutex_with_type(h, guest_type);
   *(uint32_t *)(ctx->mem_base + h + SYNC_OBJ_MUTEX_FLAGS) = (uint32_t)guest_type & 0xff;
-  ctx->rax = 0;
-  SHIM_RETURN();
+  return 0;
 }
 
 // One lock-family call on the mutex named by ctx->rdi; with PS4_MUTEX_STATS
@@ -545,12 +547,17 @@ typedef struct GmCall {
   uint64_t t0, t1;
 } GmCall;
 
-static inline GuestMutex *gm_call_begin(GuestContext *ctx, GmCall *c) {
+static inline GuestMutex *gm_call_begin_at(GuestContext *ctx, uint64_t mutex_addr, GmCall *c) {
   c->s = mstat_slot();
   c->t0 = mstat_now();
-  GuestMutex *m = gm_lookup(ctx, ctx->rdi);
+  GuestMutex *m = gm_lookup(ctx, mutex_addr);
   c->t1 = mstat_now();
   return m;
+}
+
+// For the shims that are still hand-written: the mutex is the first guest argument.
+static inline GuestMutex *gm_call_begin(GuestContext *ctx, GmCall *c) {
+  return gm_call_begin_at(ctx, ctx->rdi, c);
 }
 
 static inline void gm_call_end(const GmCall *c) {
@@ -559,22 +566,22 @@ static inline void gm_call_end(const GmCall *c) {
   MSTAT_ADD(c->s, shim, mach_absolute_time() - c->t0);
 }
 
-void shim_pthread_mutex_lock(GuestContext *ctx) {
+int hle_pthread_mutex_lock(GuestContext *ctx, void *mutex) {
   GmCall c;
-  GuestMutex *m = gm_call_begin(ctx, &c);
-  ctx->rax = (uint64_t)gm_lock(m, guest_owner_id(ctx), NULL, c.s, c.t1);
+  GuestMutex *m = gm_call_begin_at(ctx, NPS5_H2G(ctx, mutex), &c);
+  int r = gm_lock(m, guest_owner_id(ctx), NULL, c.s, c.t1);
   MSTAT_ADD(c.s, locks, 1);
   gm_call_end(&c);
-  SHIM_RETURN();
+  return r;
 }
 
-void shim_pthread_mutex_trylock(GuestContext *ctx) {
+int hle_pthread_mutex_trylock(GuestContext *ctx, void *mutex) {
   GmCall c;
-  GuestMutex *m = gm_call_begin(ctx, &c);
-  ctx->rax = (uint64_t)gm_trylock(m, guest_owner_id(ctx), c.s, c.t1);
+  GuestMutex *m = gm_call_begin_at(ctx, NPS5_H2G(ctx, mutex), &c);
+  int r = gm_trylock(m, guest_owner_id(ctx), c.s, c.t1);
   MSTAT_ADD(c.s, trylocks, 1);
   gm_call_end(&c);
-  SHIM_RETURN();
+  return r;
 }
 
 void shim_pthread_mutex_timedlock(GuestContext *ctx) {
@@ -593,16 +600,16 @@ void shim_pthread_mutex_timedlock(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
-void shim_pthread_mutex_unlock(GuestContext *ctx) {
+int hle_pthread_mutex_unlock(GuestContext *ctx, void *mutex) {
   GmCall c;
-  GuestMutex *m = gm_call_begin(ctx, &c);
-  ctx->rax = (uint64_t)gm_unlock(m, guest_owner_id(ctx), c.s, c.t1);
+  GuestMutex *m = gm_call_begin_at(ctx, NPS5_H2G(ctx, mutex), &c);
+  int r = gm_unlock(m, guest_owner_id(ctx), c.s, c.t1);
   gm_call_end(&c);
-  SHIM_RETURN();
+  return r;
 }
 
-void shim_pthread_mutex_destroy(GuestContext *ctx) {
-  uint64_t handle = sync_handle_take(ctx, ctx->rdi);
+int hle_pthread_mutex_destroy(GuestContext *ctx, void *mutex) {
+  uint64_t handle = sync_handle_take(ctx, NPS5_H2G(ctx, mutex));
   const uint64_t id = gm_id(handle);
   GuestMutex *m = NULL;
   pthread_mutex_lock(&g_mutex_map_lock);
@@ -627,8 +634,7 @@ void shim_pthread_mutex_destroy(GuestContext *ctx) {
   }
   pthread_mutex_unlock(&g_mutex_map_lock);
   sync_obj_free(handle);
-  ctx->rax = 0;
-  SHIM_RETURN();
+  return 0;
 }
 
 void ps4_sync_print_stats(int frames) {
@@ -776,8 +782,24 @@ typedef struct CondNode {
   uint64_t guest_addr;
   pthread_cond_t host_cond;
   _Atomic(GuestMutex *) m; // mutex of the latest wait (see gm_cond_wait)
+  _Atomic uint64_t sig_ns, sig_tid, sig_count; // NPS5_TRACE_CONDWAIT: latest signal (see gc_signal)
   struct CondNode *next;
 } CondNode;
+
+// NPS5_TRACE_CONDWAIT=<ms>: one stderr line per guest condition-variable wait that blocked at least that long, with the
+// condition's guest address, the requested timeout, whether it timed out, the steady-clock time it ended at (the same
+// clock as AnyPS5's APS5_TRACE_FLIP lines, CLOCK_UPTIME_RAW) and the latest signal on that condition (age, thread, count).
+static int g_condtrace_ms = -1;
+static inline int condtrace_ms(void) {
+  int v = g_condtrace_ms;
+  if (v < 0) {
+    const char *e = getenv("NPS5_TRACE_CONDWAIT");
+    v = e ? (atoi(e) > 0 ? atoi(e) : 1) : 0;
+    g_condtrace_ms = v;
+  }
+  return v;
+}
+static inline uint64_t uptime_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 static CondNode *g_cond_map[COND_MAP_SIZE] = {0};
 static pthread_mutex_t g_cond_map_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -826,7 +848,29 @@ static int gm_cond_wait(GuestMutex *m, CondNode *cn, uint64_t me, const struct t
       pthread_cond_signal(&m->cv);
     }
   }
+  const int ctms = condtrace_ms();
+  uint64_t ct0 = 0;
+  double ct_timeout_ms = -1;
+  if (ctms) {
+    ct0 = uptime_ns();
+    if (abs) {
+      struct timespec nowts;
+      clock_gettime(CLOCK_REALTIME, &nowts);
+      ct_timeout_ms = (double)(abs->tv_sec - nowts.tv_sec) * 1e3 + (double)(abs->tv_nsec - nowts.tv_nsec) / 1e6;
+    }
+  }
   int r = abs ? pthread_cond_timedwait(&cn->host_cond, &m->lk, abs) : pthread_cond_wait(&cn->host_cond, &m->lk);
+  if (ctms) {
+    const uint64_t ct1 = uptime_ns();
+    if ((ct1 - ct0) / 1000000ULL >= (uint64_t)ctms) {
+      const uint64_t sn = atomic_load_explicit(&cn->sig_ns, memory_order_relaxed);
+      fprintf(stderr, "[condwait] cond=0x%llx ms=%.0f timeout_ms=%.0f rc=%d end=%.0f tid=%llu lastsig_age_ms=%.0f lastsig_tid=%llu sigs=%llu\n",
+              (unsigned long long)cn->guest_addr, (double)(ct1 - ct0) / 1e6, ct_timeout_ms, r, (double)ct1 / 1e6,
+              (unsigned long long)(uintptr_t)pthread_self(), sn ? (double)(ct1 - sn) / 1e6 : -1.0,
+              (unsigned long long)atomic_load_explicit(&cn->sig_tid, memory_order_relaxed),
+              (unsigned long long)atomic_load_explicit(&cn->sig_count, memory_order_relaxed));
+    }
+  }
   atomic_fetch_add_explicit(&m->waiters, 1, memory_order_seq_cst);
   if (g_mutex_legacy) {
     while (GM_OWNER(m) != 0) pthread_cond_wait(&m->cv, &m->lk);
@@ -842,6 +886,11 @@ static int gm_cond_wait(GuestMutex *m, CondNode *cn, uint64_t me, const struct t
 }
 
 static int gc_signal(CondNode *cn, bool all) {
+  if (condtrace_ms()) {
+    atomic_store_explicit(&cn->sig_ns, uptime_ns(), memory_order_relaxed);
+    atomic_store_explicit(&cn->sig_tid, (uint64_t)(uintptr_t)pthread_self(), memory_order_relaxed);
+    atomic_fetch_add_explicit(&cn->sig_count, 1, memory_order_relaxed);
+  }
   GuestMutex *m = g_mutex_legacy ? NULL : atomic_load_explicit(&cn->m, memory_order_acquire);
   if (m) pthread_mutex_lock(&m->lk);
   int r = all ? pthread_cond_broadcast(&cn->host_cond) : pthread_cond_signal(&cn->host_cond);
@@ -1042,7 +1091,7 @@ typedef struct GuestRwlockAttr {
 
 void shim_scePthreadRwlockattrInit(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
-  if (!attr_addr || !ctx->mem_base) {
+  if (!attr_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = 0x80020016; // SCE_KERNEL_ERROR_EINVAL
     SHIM_RETURN();
   }
@@ -1060,7 +1109,7 @@ void shim_scePthreadRwlockattrInit(GuestContext *ctx) {
 
 void shim_pthread_rwlockattr_init(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
-  if (!attr_addr || !ctx->mem_base) {
+  if (!attr_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = (uint64_t)EINVAL;
     SHIM_RETURN();
   }
@@ -1078,7 +1127,7 @@ void shim_pthread_rwlockattr_init(GuestContext *ctx) {
 
 void shim_scePthreadRwlockattrDestroy(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
-  if (attr_addr && ctx->mem_base) {
+  if (attr_addr && RECOMP_MEM_OK(ctx)) {
     uint64_t ptr_val = *(uint64_t *)(ctx->mem_base + attr_addr);
     GuestRwlockAttr *attr = (GuestRwlockAttr *)(uintptr_t)ptr_val;
     if (attr) {
@@ -1097,7 +1146,7 @@ void shim_pthread_rwlockattr_destroy(GuestContext *ctx) {
 void shim_scePthreadRwlockattrSettype(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
   int type = (int)ctx->rsi;
-  if (!attr_addr || !ctx->mem_base) {
+  if (!attr_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = 0x80020016;
     SHIM_RETURN();
   }
@@ -1115,7 +1164,7 @@ void shim_scePthreadRwlockattrSettype(GuestContext *ctx) {
 void shim_pthread_rwlockattr_settype_np(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
   int type = (int)ctx->rsi;
-  if (!attr_addr || !ctx->mem_base) {
+  if (!attr_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = (uint64_t)EINVAL;
     SHIM_RETURN();
   }
@@ -1133,7 +1182,7 @@ void shim_pthread_rwlockattr_settype_np(GuestContext *ctx) {
 void shim_scePthreadRwlockattrGettype(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
   uint64_t out_addr = ctx->rsi;
-  if (!attr_addr || !out_addr || !ctx->mem_base) {
+  if (!attr_addr || !out_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = 0x80020016;
     SHIM_RETURN();
   }
@@ -1155,7 +1204,7 @@ void shim_pthread_rwlockattr_gettype_np(GuestContext *ctx) {
 void shim_scePthreadRwlockattrSetpshared(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
   int pshared = (int)ctx->rsi;
-  if (!attr_addr || !ctx->mem_base || pshared != 0) {
+  if (!attr_addr || !RECOMP_MEM_OK(ctx) || pshared != 0) {
     ctx->rax = 0x80020016;
     SHIM_RETURN();
   }
@@ -1177,7 +1226,7 @@ void shim_pthread_rwlockattr_setpshared(GuestContext *ctx) {
 void shim_scePthreadRwlockattrGetpshared(GuestContext *ctx) {
   uint64_t attr_addr = ctx->rdi;
   uint64_t out_addr = ctx->rsi;
-  if (!attr_addr || !out_addr || !ctx->mem_base) {
+  if (!attr_addr || !out_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = 0x80020016;
     SHIM_RETURN();
   }
@@ -1305,19 +1354,19 @@ void ps4_sync_destroy(void) {
 }
 
 // scePthreadMutex shims
-void shim_scePthreadMutexInit(GuestContext *ctx) {
-  shim_pthread_mutex_init(ctx);
-  SCE_PTHREAD_ERR(ctx);
+// POSIX error numbers become SCE_KERNEL_ERROR_* (0x80020000 | errno) for the scePthread names.
+static inline int sce_pthread_err(int e) { return (e > 0 && e < 0x100) ? (int)(0x80020000u | (unsigned)e) : e; }
+
+int hle_scePthreadMutexInit(GuestContext *ctx, void *mutex, const void *attr) {
+  return sce_pthread_err(hle_pthread_mutex_init(ctx, mutex, attr));
 }
 
-void shim_scePthreadMutexLock(GuestContext *ctx) {
-  shim_pthread_mutex_lock(ctx);
-  SCE_PTHREAD_ERR(ctx);
+int hle_scePthreadMutexLock(GuestContext *ctx, void *mutex) {
+  return sce_pthread_err(hle_pthread_mutex_lock(ctx, mutex));
 }
 
-void shim_scePthreadMutexTrylock(GuestContext *ctx) {
-  shim_pthread_mutex_trylock(ctx);
-  SCE_PTHREAD_ERR(ctx);
+int hle_scePthreadMutexTrylock(GuestContext *ctx, void *mutex) {
+  return sce_pthread_err(hle_pthread_mutex_trylock(ctx, mutex));
 }
 
 void shim_scePthreadMutexTimedlock(GuestContext *ctx) {
@@ -1338,14 +1387,12 @@ void shim_scePthreadMutexTimedlock(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
-void shim_scePthreadMutexUnlock(GuestContext *ctx) {
-  shim_pthread_mutex_unlock(ctx);
-  SCE_PTHREAD_ERR(ctx);
+int hle_scePthreadMutexUnlock(GuestContext *ctx, void *mutex) {
+  return sce_pthread_err(hle_pthread_mutex_unlock(ctx, mutex));
 }
 
-void shim_scePthreadMutexDestroy(GuestContext *ctx) {
-  shim_pthread_mutex_destroy(ctx);
-  SCE_PTHREAD_ERR(ctx);
+int hle_scePthreadMutexDestroy(GuestContext *ctx, void *mutex) {
+  return sce_pthread_err(hle_pthread_mutex_destroy(ctx, mutex));
 }
 
 void shim_scePthreadMutexattrInit(GuestContext *ctx) {

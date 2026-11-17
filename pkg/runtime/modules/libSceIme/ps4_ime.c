@@ -7,7 +7,7 @@ static int g_ime_keyboard_opened = 0;
 static OrbisImeKeyboardParam g_ime_keyboard_param = {0};
 
 static inline void *recomp_guest_to_host(const GuestContext *ctx, uint64_t gaddr) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) return NULL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) return NULL;
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr < (uintptr_t)ctx->mem_base + ctx->mem_size) {
         return (void *)gaddr;
     }

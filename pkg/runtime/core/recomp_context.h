@@ -16,6 +16,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include "nps5_diag.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +44,14 @@ typedef union {
   float f32[4];
   double f64[2];
 } xmm_reg_t;
+
+// One 80-bit x87 register (x87=f80): the significand (integer bit explicit) and the sign and
+// 15-bit exponent, in the layout of the x86 FSTP m80 image and of SoftFloat's extFloat80_t.
+typedef struct {
+  uint64_t mant;
+  uint16_t se;
+  uint16_t pad[3];
+} x87_reg_t;
 
 // Guest CPU context
 typedef struct GuestContext {
@@ -116,27 +126,34 @@ typedef struct GuestContext {
 
   // Size of the static TLS area below the TCB (recomp_init_tls_modules)
   uint64_t static_tls_size;
+
+  // x87 80-bit state (translate option x87=f80, nps5_x87.c). Appended after the fields the
+  // assembly addresses; with x87=f64 these stay unused and fpu_stack above holds the doubles.
+  // fpu80[n] is physical register n (ST(i) = fpu80[(fpu_top + i) & 7]); fpu_valid bit n is set
+  // when register n is not empty (the tag word is derived from it).
+  x87_reg_t fpu80[8];
+  uint8_t fpu_valid;
+  // Flat call model (nps5_shadow.c, docs/m1/flatstack.md). Every execution context (thread or
+  // fiber) has its own shadow return stack. Appended fields; the trampoline hardcodes the first
+  // two offsets (asserted below).
+  uint64_t shadow_sp;          // shadow stack pointer whenever this context is not in guest code
+                               // (in guest code it lives in x29); 0 = no shadow stack yet
+  uint64_t host_boundary;      // innermost recomp_enter_guest frame of this context = the flat
+                               // host sp of its guest code; 0 = not in guest code
+  struct RecompShadow *shadow; // the mapping and its bookkeeping
+  // Lean HLE calls (nps5_lean.h): the lean function running on this context in checked mode
+  // (NPS5_LEAN_CHECK=1), else NULL. recomp_call_entry refuses to enter guest code while it is set.
+  void *lean_active;
+  // pthread TLS keys 128..255 (FreeBSD PTHREAD_KEYS_MAX is 256): appended so the hardcoded offsets above do not move.
+  // Use nps5_tls_val / nps5_tls_dtor, never index tls_keys directly.
+  uint64_t tls_keys_hi[128];
+  uint64_t tls_destructors_hi[128];
 } GuestContext;
 
-#define RECOMP_MAX_JMP_RECORDS 64
-typedef struct GuestJmpRecord {
-  uint64_t env;
-  uintptr_t host_sp;
-  uintptr_t host_x30;
-  uintptr_t host_x29;
-  uint64_t guest_rsp;
-  uint64_t guest_rbp;
-  uint64_t guest_rbx;
-  uint64_t guest_r12;
-  uint64_t guest_r13;
-  uint64_t guest_r14;
-  uint64_t guest_r15;
-  uint64_t guest_rip;
-} GuestJmpRecord;
+#define NPS5_TLS_KEYS_MAX 256
+static inline uint64_t *nps5_tls_val(GuestContext *c, uint32_t k) { return k < 128 ? &c->tls_keys[k] : &c->tls_keys_hi[k - 128]; }
+static inline uint64_t *nps5_tls_dtor(GuestContext *c, uint32_t k) { return k < 128 ? &c->tls_destructors[k] : &c->tls_destructors_hi[k - 128]; }
 
-void recomp_save_jmp_record(GuestContext *ctx, const GuestJmpRecord *rec);
-void recomp_guest_do_longjmp(GuestContext *ctx, const GuestJmpRecord *rec, int val);
-void recomp_guest_setjmp(void);
 
 // The TCB slot (guest address fs_base + RECOMP_TCB_CTX_SLOT) that holds the GuestContext
 // pointer of the execution context running on the guest thread (contract at
@@ -176,6 +193,11 @@ RECOMP_CTX_OFFSET(cf, 0x98);
 RECOMP_CTX_OFFSET(zf, 0x99);
 RECOMP_CTX_OFFSET(sf, 0x9a);
 RECOMP_CTX_OFFSET(of, 0x9b);
+// Lazy PF/AF and DF as the lifter keeps them (pkg/lifter/arm64_lifter_parity.go): PF = 1 iff
+// pf has even bit parity, AF = bit 4 of (af ^ pf), df is 0 or 1.
+RECOMP_CTX_OFFSET(pf, 0x9c);
+RECOMP_CTX_OFFSET(af, 0x9d);
+RECOMP_CTX_OFFSET(df, 0x9e);
 RECOMP_CTX_OFFSET(xmm[0], 0xa0);
 RECOMP_CTX_OFFSET(xmm[2], 0xc0);
 RECOMP_CTX_OFFSET(xmm[4], 0xe0);
@@ -186,6 +208,13 @@ RECOMP_CTX_OFFSET(fpu_cw, 0x2e4);
 RECOMP_CTX_OFFSET(fpu_sw, 0x2e6);
 RECOMP_CTX_OFFSET(mxcsr, 0x2e8);
 RECOMP_CTX_OFFSET(mem_base, 0x330);
+// x87=f80 state (appended at the end of the struct; nps5_x87.c and its tests use these).
+RECOMP_CTX_OFFSET(fpu80, 0xbd0);
+RECOMP_CTX_OFFSET(fpu_valid, 0xc50);
+// Flat call model fields (pkg/emitter/asm_trampoline_flat.go: ctxShadowSP, ctxHostBoundary).
+RECOMP_CTX_OFFSET(shadow_sp, 0xc58);
+RECOMP_CTX_OFFSET(host_boundary, 0xc60);
+RECOMP_CTX_OFFSET(lean_active, 0xc70); // checked lean calls (asm_trampoline_flat.go: ctxLeanActive)
 #ifdef __cplusplus
 static_assert(sizeof(xmm_reg_t) == 16 && sizeof(((GuestContext *)0)->fpu_stack[0]) == 8 &&
                   sizeof(((GuestContext *)0)->fpu_top) == 4,
@@ -216,7 +245,9 @@ typedef struct GuestVMExtent {
   int prot;
   int flags;
   int mtype; // memory type set by sceKernelMtypeprotect (0 = write-back onion)
-  char name[32];
+  char name[32];   // for display and sceKernelSetVirtualRangeName only: never decides behaviour
+  int kind;        // NPS5_EXT_* (nps5_mem.h), fixed at creation: what the extent is
+  bool busy;       // a MAP_FIXED replace is still tearing down what was here: leave it alone
   struct GuestVMExtent *prev;
   struct GuestVMExtent *next;
 } GuestVMExtent;
@@ -257,6 +288,11 @@ static inline int32_t x86_cvt_f32_i32(float f) { return x86_cvtt_f32_i32(rintf(f
 static inline int32_t x86_cvt_f64_i32(double f) { return x86_cvtt_f64_i32(rint(f)); }
 static inline int64_t x86_cvt_f32_i64(float f) { return x86_cvtt_f32_i64(rintf(f)); }
 static inline int64_t x86_cvt_f64_i64(double f) { return x86_cvtt_f64_i64(rint(f)); }
+
+// Guest memory exists for this context. mem_base is the guest->host bias (host = mem_base +
+// guest) and is NULL in identity mode, so it must never be used as an "initialised" test;
+// mem_size is the end of the guest address space and is non-zero once the arena is reserved.
+#define RECOMP_MEM_OK(c) ((c)->mem_size != 0)
 
 #define MEM_U8(addr) (*(uint8_t *)((ctx)->mem_base + (uint64_t)(addr)))
 #define MEM_U16(addr) (*(uint16_t *)((ctx)->mem_base + (uint64_t)(addr)))
@@ -418,13 +454,35 @@ static inline int16_t fpu_to_i16(double r) {
 // return the same counter in these units.
 #define RECOMP_TSC_FREQ 2130000000ULL
 
+// Host counter ticks (cntvct_el0, frequency frq = cntfrq_el0) to guest TSC ticks: floor(v * RECOMP_TSC_FREQ / frq).
+// The counter runs at 24 MHz on M1-M3 where the ratio is exactly 355/4: a 64x64->128 multiply (mul + umulh)
+// and a shift, no division, and no overflow at any uptime (the 128-bit product is shifted before it is cut to 64
+// bits). Any other frequency takes the exact divmod form q*F + (r*F)/frq; r*F fits in 64 bits for frq < 2^33.
+static inline uint64_t recomp_cnt_to_tsc(uint64_t v, uint64_t frq) {
+  if (__builtin_expect(frq == 24000000ULL, 1)) return (uint64_t)(((unsigned __int128)v * 355u) >> 2);
+  if (frq == 0) return v;
+  const uint64_t q = v / frq, r = v % frq;
+  return q * RECOMP_TSC_FREQ + (r * RECOMP_TSC_FREQ) / frq;
+}
+
+// cntfrq_el0 is constant for the life of the machine but costs ~3 ns to read (measured, M4 Pro: 1 GHz there, 24 MHz on
+// earlier parts), so each translation unit reads it once.
+static inline uint64_t recomp_cntfrq(void) {
+#if defined(__aarch64__)
+  static uint64_t f;
+  if (__builtin_expect(f == 0, 0)) __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+  return f;
+#else
+  return 0;
+#endif
+}
+
 static inline uint64_t recomp_rdtsc(void) {
 #if defined(__aarch64__)
-  uint64_t val, frq;
+  uint64_t val;
   __asm__ volatile("mrs %0, cntvct_el0" : "=r"(val));
-  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
-  if (frq == 0) return val;
-  return (uint64_t)(((unsigned __int128)val * RECOMP_TSC_FREQ) / frq);
+  const uint64_t frq = recomp_cntfrq();
+  return recomp_cnt_to_tsc(val, frq);
 #elif defined(__x86_64__)
   uint32_t lo, hi;
   __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
@@ -626,7 +684,7 @@ static inline void recomp_dump_guest_context(GuestContext *ctx) {
           (unsigned long long)ctx->r10, (unsigned long long)ctx->r11,
           (unsigned long long)ctx->r12, (unsigned long long)ctx->r13,
           (unsigned long long)ctx->r14, (unsigned long long)ctx->r15);
-  if (ctx->mem_base && ctx->rsp < ctx->mem_size) {
+  if (RECOMP_MEM_OK(ctx) && ctx->rsp < ctx->mem_size) {
     fprintf(stderr, "Guest call stack heuristic (RSP=0x%llx):\n", (unsigned long long)ctx->rsp);
     uint64_t sp = ctx->rsp;
     int frame = 0;
@@ -637,6 +695,25 @@ static inline void recomp_dump_guest_context(GuestContext *ctx) {
       }
     }
   }
+}
+
+// Tier 1 (nps5_tier1.c, recomp_dispatch_api.h): the slow path of a dispatch miss. Returns the
+// entry of code that continues at target (a freshly translated fragment, now registered), or 0
+// when none can be produced (the failure is recorded for crash.txt).
+extern uintptr_t recomp_dispatch_miss(GuestContext *ctx, uint64_t guest_rip, uint32_t reason);
+
+static inline void recomp_call_entry(GuestContext *ctx, recomp_fn_t fn) {
+  if (__builtin_expect(ctx->lean_active != NULL, 0)) {
+    fprintf(stderr, "\nFATAL: lean HLE function %p entered guest code (0x%llx); a function that calls back into the guest must not be marked lean (docs/m3/leanshim.md)\n",
+            ctx->lean_active, (unsigned long long)(uintptr_t)fn);
+    abort();
+  }
+#if defined(RECOMP_ARM64_ASM)
+  extern void recomp_enter_guest(GuestContext *ctx, uint64_t target_fn);
+  recomp_enter_guest(ctx, (uint64_t)fn);
+#else
+  fn(ctx);
+#endif
 }
 
 static inline void recomp_dispatch(GuestContext *ctx, uint64_t target) {
@@ -651,19 +728,26 @@ static inline void recomp_dispatch(GuestContext *ctx, uint64_t target) {
       if (__builtin_expect(l3 != NULL, 1)) {
         recomp_fn_t fn = l3[target & DISPATCH_LEVEL_MASK];
         if (__builtin_expect(fn != NULL, 1)) {
-#if defined(RECOMP_ARM64_ASM)
-          extern void recomp_enter_guest(GuestContext *ctx, uint64_t target_fn);
-          recomp_enter_guest(ctx, (uint64_t)fn);
-#else
-          fn(ctx);
-#endif
+          recomp_call_entry(ctx, fn);
           return;
         }
       }
     }
   }
+  {
+    uintptr_t entry = recomp_dispatch_miss(ctx, target, 3 /* RECOMP_MISS_JUMP */);
+    if (entry) {
+      ctx->rip = target;
+      // The miss API returns the jump entry in the flat model; recomp_enter_guest takes the
+      // function symbol (it adds the offset itself).
+      extern uint64_t g_recomp_call_model;
+      if (g_recomp_call_model) entry -= 8; /* RECOMP_FLAT_JUMP_ENTRY_OFFSET */
+      recomp_call_entry(ctx, (recomp_fn_t)entry);
+      return;
+    }
+  }
   uint64_t ret_addr = 0;
-  if (ctx->mem_base && ctx->rsp < ctx->mem_size) {
+  if (RECOMP_MEM_OK(ctx) && ctx->rsp < ctx->mem_size) {
     ret_addr = *(uint64_t *)(ctx->mem_base + ctx->rsp);
   }
   if (caller_rip != 0 && caller_rip != target) {

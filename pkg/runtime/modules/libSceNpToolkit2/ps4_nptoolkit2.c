@@ -150,7 +150,7 @@ bool ps4_nptoolkit2_dispatch(GuestContext *ctx, const char *nid) {
     if (found) {
         switch (found->type) {
             case TK_CTOR:
-                if (ctx->rdi && ctx->mem_base) {
+                if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
                     memset((void *)(ctx->mem_base + ctx->rdi), 0, 256);
                 }
                 ctx->rax = ctx->rdi;

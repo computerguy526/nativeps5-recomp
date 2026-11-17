@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "nps5_kio.h"
 
 #define ORBIS_KERNEL_AIO_MAX_QUEUES 512
 
@@ -349,7 +350,7 @@ static void execute_read_request(GuestContext *ctx, const OrbisKernelAioRWReques
     size_t nbyte = (size_t)req->nbyte;
     off_t offset = (off_t)req->offset;
 
-    ssize_t ret = pread(fd, buf, nbyte, offset);
+    ssize_t ret = nps5_kpread(fd, buf, nbyte, offset);
 
     if (req->result) {
         OrbisKernelAioResult *res = (OrbisKernelAioResult *)(ctx->mem_base + req->result);
@@ -371,7 +372,7 @@ static void execute_write_request(GuestContext *ctx, const OrbisKernelAioRWReque
     size_t nbyte = (size_t)req->nbyte;
     off_t offset = (off_t)req->offset;
 
-    ssize_t ret = pwrite(fd, buf, nbyte, offset);
+    ssize_t ret = nps5_kpwrite(fd, buf, nbyte, offset);
 
     if (req->result) {
         OrbisKernelAioResult *res = (OrbisKernelAioResult *)(ctx->mem_base + req->result);

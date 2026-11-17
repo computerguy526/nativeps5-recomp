@@ -12,6 +12,7 @@
 #include <sys/event.h>
 #include <pthread.h>
 #include <netdb.h>
+#include "nps5_kio.h"
 
 #define ORBIS_OK 0
 #define ORBIS_FAIL -1
@@ -112,7 +113,7 @@ void shim_sceNetAccept(GuestContext *ctx) {
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
 
-    int ret = accept(s, addr, addrlen);
+    int ret = nps5_kaccept(s, addr, addrlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -143,7 +144,7 @@ void shim_sceNetSend(GuestContext *ctx) {
     size_t len = (size_t)ctx->rdx;
     int flags = (int)ctx->rcx;
 
-    ssize_t ret = send(s, buf, len, flags);
+    ssize_t ret = nps5_ksend(s, buf, len, flags);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -159,7 +160,7 @@ void shim_sceNetRecv(GuestContext *ctx) {
     size_t len = (size_t)ctx->rdx;
     int flags = (int)ctx->rcx;
 
-    ssize_t ret = recv(s, buf, len, flags);
+    ssize_t ret = nps5_krecv(s, buf, len, flags);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -177,7 +178,7 @@ void shim_sceNetSendto(GuestContext *ctx) {
     const struct sockaddr *dest_addr = (const struct sockaddr *)guest_to_host(ctx, ctx->r8);
     socklen_t addrlen = (socklen_t)ctx->r9;
 
-    ssize_t ret = sendto(s, buf, len, flags, dest_addr, addrlen);
+    ssize_t ret = nps5_ksendto(s, buf, len, flags, dest_addr, addrlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -195,7 +196,7 @@ void shim_sceNetRecvfrom(GuestContext *ctx) {
     struct sockaddr *src_addr = (struct sockaddr *)guest_to_host(ctx, ctx->r8);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->r9);
 
-    ssize_t ret = recvfrom(s, buf, len, flags, src_addr, addrlen);
+    ssize_t ret = nps5_krecvfrom(s, buf, len, flags, src_addr, addrlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -229,7 +230,7 @@ void shim_sceNetGetsockopt(GuestContext *ctx) {
     void *optval = guest_to_host(ctx, ctx->rcx);
     socklen_t *optlen = (socklen_t *)guest_to_host(ctx, ctx->r8);
 
-    int ret = getsockopt(s, level, optname, optval, optlen);
+    int ret = nps5_kgetsockopt(s, level, optname, optval, optlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -244,7 +245,7 @@ void shim_sceNetGetsockname(GuestContext *ctx) {
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
 
-    int ret = getsockname(s, addr, addrlen);
+    int ret = nps5_kgetsockname(s, addr, addrlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
@@ -259,7 +260,7 @@ void shim_sceNetGetpeername(GuestContext *ctx) {
     struct sockaddr *addr = (struct sockaddr *)guest_to_host(ctx, ctx->rsi);
     socklen_t *addrlen = (socklen_t *)guest_to_host(ctx, ctx->rdx);
 
-    int ret = getpeername(s, addr, addrlen);
+    int ret = nps5_kgetpeername(s, addr, addrlen);
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;

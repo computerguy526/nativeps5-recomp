@@ -117,6 +117,7 @@ static int app_content_mkdir_p(const char *path, mode_t mode) {
 // the (read-only) game directory: $PS4_DOWNLOAD0_DIR, else
 // ~/Library/Application Support/PS4Recomp/download0/<TITLE_ID>.
 static void ensure_download0_dir(char *out_path, size_t out_sz) {
+    if (ps4_vfs_userdata_dir("download0", out_path, out_sz)) return; // the per-title root (ps4_vfs.h)
     const char *env_dir = getenv("PS4_DOWNLOAD0_DIR");
     if (env_dir && *env_dir) {
         snprintf(out_path, out_sz, "%s", env_dir);
@@ -141,6 +142,7 @@ static void ensure_download0_dir(char *out_path, size_t out_sz) {
 // /temp0 lives next to /download0 in the user's Application Support folder:
 // the game directory is treated as read-only.
 static void ensure_temp_dir(char *out_path, size_t out_sz) {
+    if (ps4_vfs_userdata_dir("temp", out_path, out_sz)) return; // the per-title root (ps4_vfs.h)
     const char *home = getenv("HOME");
     const char *data_dir = getenv("PS4RECOMP_DATA_DIR");
     const char *tid = g_title_id[0] ? g_title_id : "CUSA00000";
@@ -458,7 +460,7 @@ int32_t sceAppContentAddcontMount(uint32_t service_label, const OrbisNpUnifiedEn
     for (uint32_t i = 0; i < g_addcont_count; i++) {
         if (strncmp(entitlement_label->data, g_addcont[i].entitlement_label, sizeof(g_addcont[i].entitlement_label)) == 0) {
             snprintf(mount_point->data, sizeof(mount_point->data), "/addcont%u", i);
-            ps4_vfs_mount(mount_point->data, g_addcont[i].host_dir);
+            ps4_vfs_mount_ro(mount_point->data, g_addcont[i].host_dir);
             return 0;
         }
     }
@@ -467,7 +469,11 @@ int32_t sceAppContentAddcontMount(uint32_t service_label, const OrbisNpUnifiedEn
 
 int32_t sceAppContentAddcontUnmount(const OrbisAppContentMountPoint *mount_point) {
     if (mount_point) {
-        ps4_vfs_unmount(mount_point->data);
+        // only the "/addcont<N>" names this module handed out: a title must not unmount /data or /temp0
+        unsigned idx = 0; int used = 0;
+        if (sscanf(mount_point->data, "/addcont%u%n", &idx, &used) == 1 && used > 0 && mount_point->data[used] == 0 && idx < g_addcont_count) {
+            ps4_vfs_unmount(mount_point->data);
+        }
     }
     return 0;
 }
@@ -574,7 +580,7 @@ int32_t sceAppContentAddcontMountByEntitlementId(const char *entitlementId, Orbi
     for (uint32_t i = 0; i < g_addcont_count; i++) {
         if (strcmp(entitlementId, g_addcont[i].entitlement_label) == 0) {
             snprintf(mount_point->data, sizeof(mount_point->data), "/addcont%u", i);
-            ps4_vfs_mount(mount_point->data, g_addcont[i].host_dir);
+            ps4_vfs_mount_ro(mount_point->data, g_addcont[i].host_dir);
             return 0;
         }
     }
@@ -620,14 +626,14 @@ void shim_sceAppContentInitialize(GuestContext *ctx) {
     OrbisAppContentBootParam *bootParam = NULL;
 
     if (initParamGuest != 0) {
-        if (!ctx->mem_base || initParamGuest + sizeof(OrbisAppContentInitParam) > ctx->mem_size) {
+        if (!RECOMP_MEM_OK(ctx) || initParamGuest + sizeof(OrbisAppContentInitParam) > ctx->mem_size) {
             ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
             SHIM_RETURN();
         }
         initParam = (const OrbisAppContentInitParam *)(ctx->mem_base + initParamGuest);
     }
     if (bootParamGuest != 0) {
-        if (!ctx->mem_base || bootParamGuest + sizeof(OrbisAppContentBootParam) > ctx->mem_size) {
+        if (!RECOMP_MEM_OK(ctx) || bootParamGuest + sizeof(OrbisAppContentBootParam) > ctx->mem_size) {
             ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
             SHIM_RETURN();
         }
@@ -646,7 +652,7 @@ void shim_sceAppContentAppParamGetInt(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || valGuestPtr + sizeof(int32_t) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || valGuestPtr + sizeof(int32_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -667,7 +673,7 @@ void shim_sceAppContentAppParamGetString(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || bufGuestPtr + bufSize > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || bufGuestPtr + bufSize > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -683,7 +689,7 @@ void shim_sceAppContentTemporaryDataMount(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -700,7 +706,7 @@ void shim_sceAppContentTemporaryDataMount2(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -713,7 +719,7 @@ void shim_sceAppContentTemporaryDataMount2(GuestContext *ctx) {
 void shim_sceAppContentTemporaryDataUnmount(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     int32_t ret = sceAppContentTemporaryDataUnmount(mountPoint);
@@ -724,7 +730,7 @@ void shim_sceAppContentTemporaryDataUnmount(GuestContext *ctx) {
 void shim_sceAppContentTemporaryDataFormat(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     int32_t ret = sceAppContentTemporaryDataFormat(mountPoint);
@@ -739,12 +745,12 @@ void shim_sceAppContentTemporaryDataGetAvailableSpaceKb(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     uint64_t avail = 0;
@@ -763,12 +769,12 @@ void shim_sceAppContentDownloadDataGetAvailableSpaceKb(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     uint64_t avail = 0;
@@ -783,7 +789,7 @@ void shim_sceAppContentDownloadDataGetAvailableSpaceKb(GuestContext *ctx) {
 void shim_sceAppContentDownloadDataFormat(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     int32_t ret = sceAppContentDownloadDataFormat(mountPoint);
@@ -799,7 +805,7 @@ void shim_sceAppContentGetAddcontInfo(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
+    if (!RECOMP_MEM_OK(ctx) || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
         infoGuest + sizeof(OrbisAppContentAddcontInfo) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
@@ -819,7 +825,7 @@ void shim_sceAppContentGetAddcontInfoList(GuestContext *ctx) {
 
     OrbisAppContentAddcontInfo *list = NULL;
     if (listGuest != 0 && list_num > 0) {
-        if (!ctx->mem_base || listGuest + (uint64_t)list_num * sizeof(OrbisAppContentAddcontInfo) > ctx->mem_size) {
+        if (!RECOMP_MEM_OK(ctx) || listGuest + (uint64_t)list_num * sizeof(OrbisAppContentAddcontInfo) > ctx->mem_size) {
             ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
             SHIM_RETURN();
         }
@@ -827,7 +833,7 @@ void shim_sceAppContentGetAddcontInfoList(GuestContext *ctx) {
     }
     uint32_t *hit_num = NULL;
     if (hitNumGuest != 0) {
-        if (!ctx->mem_base || hitNumGuest + sizeof(uint32_t) > ctx->mem_size) {
+        if (!RECOMP_MEM_OK(ctx) || hitNumGuest + sizeof(uint32_t) > ctx->mem_size) {
             ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
             SHIM_RETURN();
         }
@@ -847,7 +853,7 @@ void shim_sceAppContentGetEntitlementKey(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
+    if (!RECOMP_MEM_OK(ctx) || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
         keyGuest + sizeof(OrbisAppContentGetEntitlementKey) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
@@ -867,7 +873,7 @@ void shim_sceAppContentAddcontMount(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
+    if (!RECOMP_MEM_OK(ctx) || labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) > ctx->mem_size ||
         mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
@@ -882,7 +888,7 @@ void shim_sceAppContentAddcontMount(GuestContext *ctx) {
 void shim_sceAppContentAddcontUnmount(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
     const OrbisAppContentMountPoint *mount_point = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mount_point = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     int32_t ret = sceAppContentAddcontUnmount(mount_point);
@@ -894,7 +900,7 @@ void shim_sceAppContentAddcontDelete(GuestContext *ctx) {
     uint32_t service_label = (uint32_t)ctx->rdi;
     uint64_t labelGuest = ctx->rsi;
     const OrbisNpUnifiedEntitlementLabel *label = NULL;
-    if (labelGuest != 0 && ctx->mem_base && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
+    if (labelGuest != 0 && RECOMP_MEM_OK(ctx) && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
         label = (const OrbisNpUnifiedEntitlementLabel *)(ctx->mem_base + labelGuest);
     }
     int32_t ret = sceAppContentAddcontDelete(service_label, label);
@@ -906,7 +912,7 @@ void shim_sceAppContentAddcontEnqueueDownload(GuestContext *ctx) {
     uint32_t service_label = (uint32_t)ctx->rdi;
     uint64_t labelGuest = ctx->rsi;
     const OrbisNpUnifiedEntitlementLabel *label = NULL;
-    if (labelGuest != 0 && ctx->mem_base && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
+    if (labelGuest != 0 && RECOMP_MEM_OK(ctx) && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
         label = (const OrbisNpUnifiedEntitlementLabel *)(ctx->mem_base + labelGuest);
     }
     int32_t ret = sceAppContentAddcontEnqueueDownload(service_label, label);
@@ -918,7 +924,7 @@ void shim_sceAppContentAddcontEnqueueDownloadSp(GuestContext *ctx) {
     uint32_t service_label = (uint32_t)ctx->rdi;
     uint64_t labelGuest = ctx->rsi;
     const OrbisNpUnifiedEntitlementLabel *label = NULL;
-    if (labelGuest != 0 && ctx->mem_base && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
+    if (labelGuest != 0 && RECOMP_MEM_OK(ctx) && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
         label = (const OrbisNpUnifiedEntitlementLabel *)(ctx->mem_base + labelGuest);
     }
     int32_t ret = sceAppContentAddcontEnqueueDownloadSp(service_label, label);
@@ -957,10 +963,10 @@ void shim_sceAppContentGetAddcontDownloadProgress(GuestContext *ctx) {
     uint64_t progGuest = ctx->rdx;
     const OrbisNpUnifiedEntitlementLabel *label = NULL;
     void *prog = NULL;
-    if (labelGuest != 0 && ctx->mem_base && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
+    if (labelGuest != 0 && RECOMP_MEM_OK(ctx) && labelGuest + sizeof(OrbisNpUnifiedEntitlementLabel) <= ctx->mem_size) {
         label = (const OrbisNpUnifiedEntitlementLabel *)(ctx->mem_base + labelGuest);
     }
-    if (progGuest != 0 && ctx->mem_base && progGuest <= ctx->mem_size) {
+    if (progGuest != 0 && RECOMP_MEM_OK(ctx) && progGuest <= ctx->mem_size) {
         prog = (void *)(ctx->mem_base + progGuest);
     }
     int32_t ret = sceAppContentGetAddcontDownloadProgress(service_label, label, prog);
@@ -985,7 +991,7 @@ void shim_sceAppContentSmallSharedDataFormat(GuestContext *ctx) {
 
 void shim_sceAppContentSmallSharedDataGetAvailableSpaceKb(GuestContext *ctx) {
     uint64_t spaceGuest = ctx->rdi;
-    if (spaceGuest == 0 || !ctx->mem_base || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
+    if (spaceGuest == 0 || !RECOMP_MEM_OK(ctx) || spaceGuest + sizeof(uint64_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -1000,7 +1006,7 @@ void shim_sceAppContentSmallSharedDataGetAvailableSpaceKb(GuestContext *ctx) {
 
 void shim_sceAppContentSmallSharedDataMount(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
-    if (mountPointGuest == 0 || !ctx->mem_base || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
+    if (mountPointGuest == 0 || !RECOMP_MEM_OK(ctx) || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -1013,7 +1019,7 @@ void shim_sceAppContentSmallSharedDataMount(GuestContext *ctx) {
 void shim_sceAppContentSmallSharedDataUnmount(GuestContext *ctx) {
     uint64_t mountPointGuest = ctx->rdi;
     const OrbisAppContentMountPoint *mountPoint = NULL;
-    if (mountPointGuest != 0 && ctx->mem_base && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
+    if (mountPointGuest != 0 && RECOMP_MEM_OK(ctx) && mountPointGuest + sizeof(OrbisAppContentMountPoint) <= ctx->mem_size) {
         mountPoint = (const OrbisAppContentMountPoint *)(ctx->mem_base + mountPointGuest);
     }
     int32_t ret = sceAppContentSmallSharedDataUnmount(mountPoint);
@@ -1034,7 +1040,7 @@ void shim_Func_C59A36FF8D7C59DA(GuestContext *ctx) {
 void shim_sceAppContentAddcontEnqueueDownloadByEntitlementId(GuestContext *ctx) {
     uint64_t idGuest = ctx->rdi;
     const char *idStr = NULL;
-    if (idGuest != 0 && ctx->mem_base && idGuest < ctx->mem_size) {
+    if (idGuest != 0 && RECOMP_MEM_OK(ctx) && idGuest < ctx->mem_size) {
         idStr = (const char *)(ctx->mem_base + idGuest);
     }
     int32_t ret = sceAppContentAddcontEnqueueDownloadByEntitlementId(idStr);
@@ -1049,7 +1055,7 @@ void shim_sceAppContentAddcontMountByEntitlementId(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || idGuest >= ctx->mem_size || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || idGuest >= ctx->mem_size || mountPointGuest + sizeof(OrbisAppContentMountPoint) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -1067,7 +1073,7 @@ void shim_sceAppContentGetAddcontInfoByEntitlementId(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
-    if (!ctx->mem_base || idGuest >= ctx->mem_size || infoGuest + sizeof(OrbisAppContentAddcontInfo) > ctx->mem_size) {
+    if (!RECOMP_MEM_OK(ctx) || idGuest >= ctx->mem_size || infoGuest + sizeof(OrbisAppContentAddcontInfo) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -1085,7 +1091,7 @@ void shim_sceAppContentGetAddcontInfoListByIroTag(GuestContext *ctx) {
 
 void shim_sceAppContentGetDownloadedStoreCountry(GuestContext *ctx) {
     uint64_t countryGuest = ctx->rdi;
-    if (countryGuest == 0 || !ctx->mem_base || countryGuest + 3 > ctx->mem_size) {
+    if (countryGuest == 0 || !RECOMP_MEM_OK(ctx) || countryGuest + 3 > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_APP_CONTENT_ERROR_PARAMETER;
         SHIM_RETURN();
     }

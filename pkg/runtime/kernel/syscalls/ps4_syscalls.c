@@ -1,7 +1,10 @@
+#include "nps5_sleep.h"
 #include "ps4_syscalls.h"
 #include "ps4_hitch.h"
 #include "ps4_vfs.h"
 #include "recomp_runtime.h"
+#include "nps5_thunk.h"
+#include "nps5_libkernel_hle.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -19,34 +22,91 @@
 #include <unistd.h>
 
 #include "ps4_threading.h"
+#include "nps5_kio.h"
 
 static void guest_dir_cache_drop_fd(int fd);
 
+// Host (macOS) errno -> FreeBSD/Orbis errno. The two agree below 90 except for the entries
+// below; unmapped values pass through.
+static inline int bsd_errno_from_host(int err) {
+  switch (err) {
+  case 93: return 87;  // ENOATTR
+  default: break;
+  }
+  return err;
+}
+
+// SCE kernel error convention: 0x80020000 | FreeBSD errno (AnyPS5 KernelErrors.hpp SceKernelError).
 static inline uint64_t sce_kernel_error(int err) {
-  return (uint64_t)(int64_t)(int32_t)(0x80020000 | (uint32_t)err);
+  return (uint64_t)(int64_t)(int32_t)(0x80020000 | (uint32_t)bsd_errno_from_host(err));
+}
+
+// Remember the last errno handed to set_guest_errno so the sceKernel* wrappers of POSIX shims
+// can turn the -1/errno result into an SCE error code. libc keeps -1/errno.
+static __thread int t_last_errno;
+#define set_guest_errno(ctx_, err_)                                            \
+  do {                                                                         \
+    int e__ = (err_);                                                          \
+    t_last_errno = e__;                                                        \
+    (set_guest_errno)((ctx_), e__);                                            \
+  } while (0)
+
+static void sce_wrap(GuestContext *ctx, void (*posix)(GuestContext *)) {
+  t_last_errno = 0;
+  posix(ctx);
+  if ((int64_t)ctx->rax == -1 && t_last_errno)
+    ctx->rax = sce_kernel_error(t_last_errno);
 }
 
 // PS4 specific: sceKernelUsleep sleeps for microseconds
 void shim_sceKernelUsleep(GuestContext *ctx) {
-  uint32_t usec = (uint32_t)ctx->rdi;
-  usleep(usec);
+  uint64_t ns = (uint64_t)(uint32_t)ctx->rdi * 1000ull;
+  uint64_t rem = 0;
+  // NPS5_TRACE_CONDWAIT=<ms> also reports sleeps of at least that long (requested and actual), same clock as the [condwait] lines.
+  static int trace_ms = -1;
+  if (trace_ms < 0) {
+    const char *e = getenv("NPS5_TRACE_CONDWAIT");
+    trace_ms = e ? (atoi(e) > 0 ? atoi(e) : 1) : 0;
+  }
+  const uint64_t t0 = trace_ms ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
+  const uint32_t req_usec = (uint32_t)ctx->rdi;
+  // sceKernelUsleep is not interrupted: after a signal sleep the remaining time (not 0).
+  while (ns && nps5_sleep_ns(ns, &rem) != 0 && errno == EINTR) ns = rem;
+  if (trace_ms) {
+    const uint64_t t1 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if ((t1 - t0) / 1000000ull >= (uint64_t)trace_ms) {
+      uint64_t ret_addr = 0;
+      (void)nps5_mem_safe_read(ctx->mem_base + ctx->rsp, &ret_addr, sizeof ret_addr);
+      fprintf(stderr, "[usleep] req_ms=%.0f ms=%.0f end=%.0f tid=%llu ret=0x%llx\n", req_usec / 1e3, (double)(t1 - t0) / 1e6, (double)t1 / 1e6, (unsigned long long)(uintptr_t)pthread_self(), (unsigned long long)ret_addr);
+      // guest frame-pointer chain (UE is built with frame pointers): the callers of the sleeping function.
+      // Only for sleeps that pass the threshold (this block used to run for every sleep), and every read is checked.
+      uint64_t fp = ctx->rbp;
+      fprintf(stderr, "[usleep]   callers:");
+      for (int i = 0; i < 8 && fp > 0x10000 && fp < (1ull << 44); i++) {
+        uint64_t pair[2];
+        if (!nps5_mem_safe_read(ctx->mem_base + fp, pair, sizeof pair)) break; // a bad rbp must not fault the runtime
+        fprintf(stderr, " 0x%llx", (unsigned long long)pair[1]);
+        fp = pair[0];
+      }
+      fprintf(stderr, "\n");
+    }
+  }
   ctx->rax = 0;
   SHIM_RETURN();
 }
 
 // POSIX write(fd, buf, count)
-void shim_write(GuestContext *ctx) {
-  int fd = (int)ctx->rdi;
-  uint64_t buf_addr = ctx->rsi;
-  size_t count = (size_t)ctx->rdx;
+// The functions below named hle_* are native functions with host pointers; the guest reaches
+// them through the generated thunks of nps5_libkernel_thunks.c (pkg/thunkgen), which do all
+// guest<->host pointer translation.
 
-  const void *host_ptr = ctx->mem_base + buf_addr;
-  ssize_t ret = write(fd, host_ptr, count);
+// POSIX write(fd, buf, count)
+ssize_t hle_write(GuestContext *ctx, int fd, const void *buf, size_t count) {
+  ssize_t ret = nps5_kwrite(fd, buf, count);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
-  ctx->rax = (uint64_t)ret;
-  SHIM_RETURN();
+  return ret;
 }
 
 // PS4 / FreeBSD 64-bit iovec
@@ -55,90 +115,62 @@ struct guest_iovec {
   uint64_t iov_len;
 };
 
-// POSIX writev(fd, iov, iovcnt)
-void shim_writev(GuestContext *ctx) {
-  int fd = (int)ctx->rdi;
-  uint64_t iov_addr = ctx->rsi;
-  int iovcnt = (int)ctx->rdx;
-
-  if (iovcnt <= 0 || iovcnt > 1024) {
+// POSIX writev(fd, iov, iovcnt). iov is the host view of the guest's iovec array (the thunk
+// translates each iov_base); NULL when the count was out of range.
+ssize_t hle_writev(GuestContext *ctx, int fd, const struct iovec *iov, int iovcnt) {
+  if (iov == NPS5_BAD_GUEST_ARRAY) { // the thunk could not read the guest's iovec array
+    set_guest_errno(ctx, EFAULT);
+    return -1;
+  }
+  if (iovcnt <= 0 || iovcnt > 1024 || !iov) {
     set_guest_errno(ctx, EINVAL);
-    ctx->rax = (uint64_t)-1;
-    SHIM_RETURN();
+    return -1;
   }
-
-  struct guest_iovec *guest_iov =
-      (struct guest_iovec *)(ctx->mem_base + iov_addr);
-  struct iovec host_iov[iovcnt];
-
-  for (int i = 0; i < iovcnt; i++) {
-    host_iov[i].iov_base = ctx->mem_base + guest_iov[i].iov_base;
-    host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
-  }
-
-  ssize_t ret = writev(fd, host_iov, iovcnt);
+  ssize_t ret = nps5_kwritev(fd, iov, iovcnt);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
-  ctx->rax = (uint64_t)ret;
-  SHIM_RETURN();
+  return ret;
 }
 
 // sceKernelWrite
-void shim_sceKernelWrite(GuestContext *ctx) {
-  int fd = (int)ctx->rdi;
-  uint64_t buf_addr = ctx->rsi;
-  size_t count = (size_t)ctx->rdx;
-
-  const void *host_ptr = ctx->mem_base + buf_addr;
-  ssize_t ret = write(fd, host_ptr, count);
+int64_t hle_sceKernelWrite(GuestContext *ctx, int fd, const void *buf, size_t count) {
+  ssize_t ret = nps5_kwrite(fd, buf, count);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
-    ctx->rax = sce_kernel_error(err);
-  } else {
-    ctx->rax = (uint64_t)ret;
+    return (int64_t)sce_kernel_error(err);
   }
-  SHIM_RETURN();
+  return ret;
 }
 
 // sceKernelWritev
-void shim_sceKernelWritev(GuestContext *ctx) {
-  int fd = (int)ctx->rdi;
-  uint64_t iov_addr = ctx->rsi;
-  int iovcnt = (int)ctx->rdx;
-
-  if (iovcnt <= 0 || iovcnt > 1024) {
+int64_t hle_sceKernelWritev(GuestContext *ctx, int fd, const struct iovec *iov, int iovcnt) {
+  if (iov == NPS5_BAD_GUEST_ARRAY) {
+    set_guest_errno(ctx, EFAULT);
+    return (int64_t)sce_kernel_error(EFAULT);
+  }
+  if (iovcnt <= 0 || iovcnt > 1024 || !iov) {
     set_guest_errno(ctx, EINVAL);
-    ctx->rax = sce_kernel_error(EINVAL);
-    SHIM_RETURN();
+    return (int64_t)sce_kernel_error(EINVAL);
   }
-
-  struct guest_iovec *guest_iov =
-      (struct guest_iovec *)(ctx->mem_base + iov_addr);
-  struct iovec host_iov[iovcnt];
-
-  for (int i = 0; i < iovcnt; i++) {
-    host_iov[i].iov_base = ctx->mem_base + guest_iov[i].iov_base;
-    host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
-  }
-
-  ssize_t ret = writev(fd, host_iov, iovcnt);
+  ssize_t ret = nps5_kwritev(fd, iov, iovcnt);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
-    ctx->rax = sce_kernel_error(err);
-  } else {
-    ctx->rax = (uint64_t)ret;
+    return (int64_t)sce_kernel_error(err);
   }
-  SHIM_RETURN();
+  return ret;
 }
 
 // Exit (does not return). Through ps4_host_quit, as the host's own quit paths:
 // the pipeline archive is saved and the log drained, and no static destructors
 // run while game threads and Metal completion handlers still use global state.
-void shim_exit(GuestContext *ctx) {
-  int status = (int)ctx->rdi;
+// Overridden by modules/libc/nps5_libc_stdlib.c (strong definition).
+__attribute__((weak)) void nps5_libc_run_atexit(GuestContext *ctx) { (void)ctx; }
+
+void hle_exit(GuestContext *ctx, int status) {
+  nps5_libc_run_atexit(ctx); // atexit / __cxa_atexit handlers (modules/libc)
   ps4_host_quit(status);
 }
 
@@ -201,7 +233,18 @@ void shim_nanosleep(GuestContext *ctx) {
   req.tv_sec = (time_t)guest_req[0];
   req.tv_nsec = (long)guest_req[1];
 
-  int ret = nanosleep(&req, rem_addr ? &rem : NULL);
+  int ret;
+  if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000L) {
+    ret = -1;
+    errno = EINVAL;
+    rem.tv_sec = 0;
+    rem.tv_nsec = 0;
+  } else {
+    uint64_t left = 0;
+    ret = nps5_sleep_ns((uint64_t)req.tv_sec * 1000000000ull + (uint64_t)req.tv_nsec, &left);
+    rem.tv_sec = (time_t)(left / 1000000000ull);
+    rem.tv_nsec = (long)(left % 1000000000ull);
+  }
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
@@ -215,146 +258,87 @@ void shim_nanosleep(GuestContext *ctx) {
 }
 
 // sched_yield
+void nps5_yield_adaptive(void);
 void shim_sched_yield(GuestContext *ctx) {
-  int ret = sched_yield();
-  ctx->rax = (uint64_t)ret;
+  nps5_yield_adaptive();
+  ctx->rax = 0;
   SHIM_RETURN();
 }
 
 // mmap
-void shim_mmap(GuestContext *ctx) {
-  uint64_t addr = ctx->rdi;
-  size_t len = (size_t)ctx->rsi;
-  int prot = (int)ctx->rdx;
-  int flags = (int)ctx->rcx;
-  int fd = (int)ctx->r8;
-  off_t offset = (off_t)ctx->r9;
-  printf("[ps4-sys] mmap: addr=0x%llx len=%zu (%.2f MB) prot=0x%x flags=0x%x "
-         "fd=%d offset=%lld\n",
-         (unsigned long long)addr, len, (double)len / (1024.0 * 1024.0), prot,
-         flags, fd, (long long)offset);
-  fflush(stdout);
-
+// One guest mmap request. addr is a guest address (0: none). Returns the guest address or -1
+// with *err set.
+static uint64_t guest_mmap(GuestContext *ctx, uint64_t addr, size_t len, int prot, int flags, int fd, off_t offset,
+                           const char *name, int *err) {
   if (len == 0) {
-    set_guest_errno(ctx, EINVAL);
-    ctx->rax = (uint64_t)-1;
-    SHIM_RETURN();
+    *err = EINVAL;
+    return (uint64_t)-1;
   }
-
   size_t align = 65536;
   size_t aligned_len = (len + align - 1) & ~(align - 1);
+  // A fixed request covers exactly the pages named (16 KiB granularity); only the placement of
+  // unhinted mappings uses the 64 KiB allocation granule.
+  if (addr != 0 && (flags & 0x10)) aligned_len = (len + NPS5_PAGE_MASK) & ~NPS5_PAGE_MASK;
 
-  uint64_t alloc_addr = (uint64_t)-1;
-  if (addr != 0) {
-    alloc_addr =
-        recomp_vm_alloc_fixed(ctx, addr, aligned_len, prot, flags, "mmap");
-  }
+  int merr = 0;
+  uint64_t alloc_addr = recomp_vm_map_ex(ctx, addr, aligned_len, align, prot, flags, name, NPS5_EXT_MAPPED, &merr);
   if (alloc_addr == (uint64_t)-1) {
-    alloc_addr = recomp_vm_alloc_named_aligned(ctx, aligned_len, align, prot,
-                                               flags, "mmap");
+    PS4_LOGF(NPS5_S_SYS, NPS5_L_WARN, "ps4-sys", "%s FAILED: addr=0x%llx len=%zu flags=0x%x\n", name,
+             (unsigned long long)addr, len, flags);
+    *err = merr == EINVAL ? EINVAL : ENOMEM;
+    return (uint64_t)-1;
   }
-
-  if (alloc_addr == (uint64_t)-1) {
-    fprintf(stderr, "[ps4-sys] mmap FAILED! len=%zu\n", len);
-    set_guest_errno(ctx, ENOMEM);
-    ctx->rax = (uint64_t)-1;
-  } else {
-    // If not anonymous and valid fd, read file data into the mapped memory
-    if (!(flags & 0x1000) && fd >= 0) {
-      ssize_t nread;
-      PS4_HITCH_TIMED(
-          PS4_HITCH_IO,
-          nread = ps4_vfs_pread(fd, ctx->mem_base + alloc_addr, len, offset));
-      if (nread < 0) {
-        fprintf(stderr,
-                "[ps4-sys] mmap file read FAILED: fd=%d offset=%lld len=%zu "
-                "errno=%d (%s)\n",
-                fd, (long long)offset, len, errno, strerror(errno));
-        set_guest_errno(ctx, errno);
-        recomp_vm_free(ctx, alloc_addr, aligned_len);
-        ctx->rax = (uint64_t)-1;
-        SHIM_RETURN();
-      }
-      printf("[ps4-sys] mmap file read SUCCESS: read=%zd bytes into 0x%llx\n",
-             nread, (unsigned long long)alloc_addr);
-      fflush(stdout);
+  // Not anonymous and a valid fd: read the file data into the mapping.
+  if (!(flags & 0x1000) && fd >= 0) {
+    ssize_t nread;
+    PS4_HITCH_TIMED(PS4_HITCH_IO, nread = ps4_vfs_pread(fd, ctx->mem_base + alloc_addr, len, offset));
+    if (nread < 0) {
+      *err = errno;
+      PS4_LOGF(NPS5_S_SYS, NPS5_L_WARN, "ps4-sys", "%s file read FAILED: fd=%d offset=%lld len=%zu errno=%d (%s)\n",
+               name, fd, (long long)offset, len, errno, strerror(errno));
+      recomp_vm_free(ctx, alloc_addr, aligned_len);
+      return (uint64_t)-1;
     }
-    printf("[ps4-sys] mmap SUCCESS: out=0x%llx\n",
-           (unsigned long long)alloc_addr);
-    fflush(stdout);
-    ctx->rax = alloc_addr;
   }
-  SHIM_RETURN();
+  PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "%s: addr=0x%llx len=%zu prot=0x%x flags=0x%x fd=%d -> 0x%llx\n", name,
+           (unsigned long long)addr, len, prot, flags, fd, (unsigned long long)alloc_addr);
+  return alloc_addr;
+}
+
+// mmap. addr and the result are host pointers into the guest arena (the VM manager itself
+// works in guest addresses, hence the conversions at this edge).
+void *hle_mmap(GuestContext *ctx, void *addr, size_t len, int prot, int flags, int fd, off_t offset) {
+  int err = 0;
+  uint64_t g = guest_mmap(ctx, NPS5_H2G(ctx, addr), len, prot, flags, fd, offset, "mmap", &err);
+  if (g == (uint64_t)-1) {
+    set_guest_errno(ctx, err);
+    return MAP_FAILED;
+  }
+  return NPS5_G2H(ctx, g);
 }
 
 // sceKernelMmap
-void shim_sceKernelMmap(GuestContext *ctx) {
-  uint64_t addr = ctx->rdi;
-  size_t len = (size_t)ctx->rsi;
-  int prot = (int)ctx->rdx;
-  int flags = (int)ctx->rcx;
-  int fd = (int)ctx->r8;
-  off_t offset = (off_t)ctx->r9;
-  uint64_t res_out = 0;
-  if (ctx->rsp && ctx->mem_base && ctx->rsp + 8 <= ctx->mem_size) {
-    res_out = *(uint64_t *)(ctx->mem_base + ctx->rsp + 8);
+// sceKernelMmap(addr, len, prot, flags, fd, offset, void **res)
+int hle_sceKernelMmap(GuestContext *ctx, void *addr, size_t len, int prot, int flags, int fd, off_t offset, void **res) {
+  if (len == 0 || !res) {
+    return (int)0x80020016; // SCE_KERNEL_ERROR_EINVAL
   }
-
-  printf("[ps4-sys] sceKernelMmap: addr=0x%llx len=%zu prot=0x%x flags=0x%x "
-         "fd=%d offset=%lld res_out=0x%llx\n",
-         (unsigned long long)addr, len, prot, flags, fd, (long long)offset,
-         (unsigned long long)res_out);
-  fflush(stdout);
-
-  if (len == 0 || !res_out) {
-    ctx->rax = 0x80020016; // SCE_KERNEL_ERROR_EINVAL
-    SHIM_RETURN();
+  int err = 0;
+  uint64_t g = guest_mmap(ctx, NPS5_H2G(ctx, addr), len, prot, flags, fd, offset, "sceKernelMmap", &err);
+  if (g == (uint64_t)-1) {
+    return err == ENOMEM ? (int)0x8002000c /* SCE_KERNEL_ERROR_ENOMEM */ : (int)sce_kernel_error(err);
   }
-
-  size_t align = 65536;
-  size_t aligned_len = (len + align - 1) & ~(align - 1);
-
-  uint64_t alloc_addr = (uint64_t)-1;
-  if (addr != 0) {
-    alloc_addr = recomp_vm_alloc_fixed(ctx, addr, aligned_len, prot, flags,
-                                       "sceKernelMmap");
-  }
-  if (alloc_addr == (uint64_t)-1) {
-    alloc_addr = recomp_vm_alloc_named_aligned(ctx, aligned_len, align, prot,
-                                               flags, "sceKernelMmap");
-  }
-
-  if (alloc_addr == (uint64_t)-1) {
-    ctx->rax = 0x8002000c; // SCE_KERNEL_ERROR_ENOMEM
-  } else {
-    if (!(flags & 0x1000) && fd >= 0) { // Not MAP_ANONYMOUS
-      ssize_t nread =
-          ps4_vfs_pread(fd, ctx->mem_base + alloc_addr, len, offset);
-      if (nread < 0) {
-        int err = errno;
-        recomp_vm_free(ctx, alloc_addr, aligned_len);
-        ctx->rax = sce_kernel_error(err);
-        SHIM_RETURN();
-      }
-    }
-    *(uint64_t *)(ctx->mem_base + res_out) = alloc_addr;
-    ctx->rax = 0;
-  }
-  SHIM_RETURN();
+  *res = NPS5_G2H(ctx, g);
+  return 0;
 }
 
 // munmap
-void shim_munmap(GuestContext *ctx) {
-  uint64_t addr = ctx->rdi;
-  size_t len = (size_t)ctx->rsi;
-  int ret = recomp_vm_free(ctx, addr, len);
-  if (ret != 0) {
+int hle_munmap(GuestContext *ctx, void *addr, size_t len) {
+  if (recomp_vm_free(ctx, NPS5_H2G(ctx, addr), len) != 0) {
     set_guest_errno(ctx, EINVAL);
-    ctx->rax = (uint64_t)-1;
-  } else {
-    ctx->rax = 0;
+    return -1;
   }
-  SHIM_RETURN();
+  return 0;
 }
 
 // madvise
@@ -413,7 +397,7 @@ void shim_readv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  ssize_t ret = readv(fd, host_iov, iovcnt);
+  ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
@@ -460,7 +444,7 @@ void shim_sceKernelReadv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  ssize_t ret = readv(fd, host_iov, iovcnt);
+  ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
@@ -515,7 +499,7 @@ void shim_sceKernelPreadv(GuestContext *ctx) {
   }
 
   ssize_t ret;
-  PS4_HITCH_TIMED(PS4_HITCH_IO, ret = preadv(fd, host_iov, iovcnt, offset));
+  PS4_HITCH_TIMED(PS4_HITCH_IO, ret = nps5_kpreadv(fd, host_iov, iovcnt, offset));
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
@@ -654,7 +638,7 @@ void shim_open(GuestContext *ctx) {
     }
 #endif
   }
-  printf("[ps4-sys] open: '%s' (flags=0x%x, host_flags=0x%x) -> fd=%d\n",
+  PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "open: '%s' (flags=0x%x, host_flags=0x%x) -> fd=%d\n",
          path ? path : "(null)", flags, host_flags, ret);
   fflush(stdout);
   ctx->rax = (uint64_t)ret;
@@ -709,7 +693,7 @@ void shim_sceKernelOpen(GuestContext *ctx) {
     }
     ctx->rax = (uint64_t)ret;
   }
-  printf("[ps4-sys] sceKernelOpen: '%s' (flags=0x%x, host_flags=0x%x) -> fd=%d "
+  PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "sceKernelOpen: '%s' (flags=0x%x, host_flags=0x%x) -> fd=%d "
          "(ret=0x%llx)\n",
          path ? path : "(null)", flags, host_flags, ret,
          (unsigned long long)ctx->rax);
@@ -720,7 +704,7 @@ void shim_sceKernelOpen(GuestContext *ctx) {
 // sceKernelCheckReachability
 void shim_sceKernelCheckReachability(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
-  if (!path_addr || !ctx->mem_base) {
+  if (!path_addr || !RECOMP_MEM_OK(ctx)) {
     ctx->rax = 0x8002000e; // SCE_KERNEL_ERROR_EFAULT
     SHIM_RETURN();
   }
@@ -868,6 +852,8 @@ void shim_fstat(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
+void nps5_fill_guest_stat(void *gst, const struct stat *st) { fill_ps4_stat((struct ps4_stat *)gst, st); }
+
 // sceKernelStat
 void shim_sceKernelStat(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
@@ -875,6 +861,8 @@ void shim_sceKernelStat(GuestContext *ctx) {
   const char *path = (const char *)(ctx->mem_base + path_addr);
   struct stat st;
   int ret = ps4_vfs_stat(path, &st);
+  { const char *e = getenv("NPS5_VFS_TRACE_INI"); size_t n = strlen(path); // see docs/m3/uecvar.md
+    if (e && *e == '1' && n > 4 && !strcasecmp(path + n - 4, ".ini") && ret == 0) fprintf(stderr, "[ps4-vfs] ini stat ok: %s size=%lld\n", path, (long long)st.st_size); }
   if (ret == 0) {
     struct ps4_stat *gst = (struct ps4_stat *)(ctx->mem_base + statbuf_addr);
     fill_ps4_stat(gst, &st);
@@ -910,11 +898,7 @@ void shim_chmod(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   mode_t mode = (mode_t)ctx->rsi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = chmod(path, mode);
+  int ret = ps4_vfs_chmod(path, mode);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -928,7 +912,7 @@ void shim_chmod(GuestContext *ctx) {
 void shim_fchmod(GuestContext *ctx) {
   int fd = (int)ctx->rdi;
   mode_t mode = (mode_t)ctx->rsi;
-  int ret = fchmod(fd, mode);
+  int ret = ps4_vfs_fchmod(fd, mode);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -943,13 +927,9 @@ void shim_utimes(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   uint64_t times_addr = ctx->rsi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
   const struct timeval *host_times = NULL;
   struct timeval tv[2];
-  if (times_addr && ctx->mem_base) {
+  if (times_addr && RECOMP_MEM_OK(ctx)) {
     const int64_t *guest_tv = (const int64_t *)(ctx->mem_base + times_addr);
     tv[0].tv_sec = (time_t)guest_tv[0];
     tv[0].tv_usec = (suseconds_t)guest_tv[1];
@@ -957,7 +937,7 @@ void shim_utimes(GuestContext *ctx) {
     tv[1].tv_usec = (suseconds_t)guest_tv[3];
     host_times = tv;
   }
-  int ret = utimes(path, host_times);
+  int ret = ps4_vfs_utimes(path, host_times);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -973,7 +953,7 @@ void shim_futimes(GuestContext *ctx) {
   uint64_t times_addr = ctx->rsi;
   const struct timeval *host_times = NULL;
   struct timeval tv[2];
-  if (times_addr && ctx->mem_base) {
+  if (times_addr && RECOMP_MEM_OK(ctx)) {
     const int64_t *guest_tv = (const int64_t *)(ctx->mem_base + times_addr);
     tv[0].tv_sec = (time_t)guest_tv[0];
     tv[0].tv_usec = (suseconds_t)guest_tv[1];
@@ -981,7 +961,7 @@ void shim_futimes(GuestContext *ctx) {
     tv[1].tv_usec = (suseconds_t)guest_tv[3];
     host_times = tv;
   }
-  int ret = futimes(fd, host_times);
+  int ret = ps4_vfs_futimes(fd, host_times);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1008,7 +988,7 @@ void shim_sceKernelFsync(GuestContext *ctx) {
   int fd = (int)ctx->rdi;
   int ret = fsync(fd);
   if (ret < 0) {
-    ctx->rax = 0x80020000 | (uint32_t)errno;
+    ctx->rax = sce_kernel_error(errno);
   } else {
     ctx->rax = 0;
   }
@@ -1019,7 +999,7 @@ void shim_sceKernelFsync(GuestContext *ctx) {
 void shim_ftruncate(GuestContext *ctx) {
   int fd = (int)ctx->rdi;
   off_t length = (off_t)ctx->rsi;
-  int ret = ftruncate(fd, length);
+  int ret = ps4_vfs_ftruncate(fd, length);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1032,9 +1012,9 @@ void shim_ftruncate(GuestContext *ctx) {
 void shim_sceKernelFtruncate(GuestContext *ctx) {
   int fd = (int)ctx->rdi;
   off_t length = (off_t)ctx->rsi;
-  int ret = ftruncate(fd, length);
+  int ret = ps4_vfs_ftruncate(fd, length);
   if (ret < 0) {
-    ctx->rax = 0x80020000 | (uint32_t)errno;
+    ctx->rax = sce_kernel_error(errno);
   } else {
     ctx->rax = 0;
   }
@@ -1047,7 +1027,7 @@ void shim_msync(GuestContext *ctx) {
   size_t len = (size_t)ctx->rsi;
   int flags = (int)ctx->rdx;
   void *host_addr =
-      (addr && ctx->mem_base) ? (void *)(ctx->mem_base + addr) : NULL;
+      (addr && RECOMP_MEM_OK(ctx)) ? (void *)(ctx->mem_base + addr) : NULL;
   int ret = msync(host_addr, len, flags);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
@@ -1064,10 +1044,10 @@ void shim_pwrite(GuestContext *ctx) {
   uint64_t buf_addr = ctx->rsi;
   size_t nbyte = (size_t)ctx->rdx;
   off_t offset = (off_t)ctx->rcx;
-  const void *buf = (buf_addr && ctx->mem_base)
+  const void *buf = (buf_addr && RECOMP_MEM_OK(ctx))
                         ? (const void *)(ctx->mem_base + buf_addr)
                         : NULL;
-  ssize_t ret = pwrite(fd, buf, nbyte, offset);
+  ssize_t ret = nps5_kpwrite(fd, buf, nbyte, offset);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1082,12 +1062,12 @@ void shim_sceKernelPwrite(GuestContext *ctx) {
   uint64_t buf_addr = ctx->rsi;
   size_t nbyte = (size_t)ctx->rdx;
   off_t offset = (off_t)ctx->rcx;
-  const void *buf = (buf_addr && ctx->mem_base)
+  const void *buf = (buf_addr && RECOMP_MEM_OK(ctx))
                         ? (const void *)(ctx->mem_base + buf_addr)
                         : NULL;
-  ssize_t ret = pwrite(fd, buf, nbyte, offset);
+  ssize_t ret = nps5_kpwrite(fd, buf, nbyte, offset);
   if (ret < 0) {
-    ctx->rax = 0x80020000 | (uint32_t)errno;
+    ctx->rax = sce_kernel_error(errno);
   } else {
     ctx->rax = (uint64_t)ret;
   }
@@ -1098,11 +1078,7 @@ void shim_sceKernelPwrite(GuestContext *ctx) {
 void shim_unlink(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = unlink(path);
+  int ret = ps4_vfs_unlink(path);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1117,11 +1093,7 @@ void shim_mkdir(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   mode_t mode = (mode_t)ctx->rsi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = mkdir(path, mode);
+  int ret = ps4_vfs_mkdir(path, mode);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1135,11 +1107,7 @@ void shim_mkdir(GuestContext *ctx) {
 void shim_rmdir(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = rmdir(path);
+  int ret = ps4_vfs_rmdir(path);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1152,13 +1120,9 @@ void shim_rmdir(GuestContext *ctx) {
 void shim_sceKernelRmdir(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = rmdir(path);
+  int ret = ps4_vfs_rmdir(path);
   if (ret < 0) {
-    ctx->rax = 0x80020000 | (uint32_t)errno;
+    ctx->rax = sce_kernel_error(errno);
   } else {
     ctx->rax = 0;
   }
@@ -1171,12 +1135,7 @@ void shim_rename(GuestContext *ctx) {
   uint64_t new_addr = ctx->rsi;
   const char *oldpath = (const char *)(ctx->mem_base + old_addr);
   const char *newpath = (const char *)(ctx->mem_base + new_addr);
-  char res_old[1024], res_new[1024];
-  if (ps4_vfs_resolve(oldpath, res_old, sizeof(res_old)) == 0)
-    oldpath = res_old;
-  if (ps4_vfs_resolve(newpath, res_new, sizeof(res_new)) == 0)
-    newpath = res_new;
-  int ret = rename(oldpath, newpath);
+  int ret = ps4_vfs_rename(oldpath, newpath);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1191,11 +1150,7 @@ void shim_truncate(GuestContext *ctx) {
   uint64_t path_addr = ctx->rdi;
   off_t length = (off_t)ctx->rsi;
   const char *path = (const char *)(ctx->mem_base + path_addr);
-  char resolved_path[1024];
-  if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-    path = resolved_path;
-  }
-  int ret = truncate(path, length);
+  int ret = ps4_vfs_truncate(path, length);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)-1;
@@ -1412,7 +1367,7 @@ void shim_sceKernelGetdirentries(GuestContext *ctx) {
     *(int64_t *)(ctx->mem_base + basep_addr) = base;
   }
   if (ret < 0) {
-    ctx->rax = 0x80020000 | (uint32_t)errno;
+    ctx->rax = sce_kernel_error(errno);
   } else {
     ctx->rax = (uint64_t)ret;
   }
@@ -1539,6 +1494,14 @@ void shim_sigprocmask(GuestContext *ctx) {
     p_set = &host_set;
   }
 
+  if (p_set && how != SIG_UNBLOCK) {
+    // Synchronous faults are how the runtime works (shadow-stack guard, host-call bridge, the AGC write watch): a
+    // blocked SIGSEGV or SIGBUS would kill the process at the next one. The guest's own handlers are not host handlers.
+    sigdelset(&host_set, SIGSEGV);
+    sigdelset(&host_set, SIGBUS);
+    sigdelset(&host_set, SIGILL);
+    sigdelset(&host_set, SIGTRAP);
+  }
   int ret = sigprocmask(how, p_set, p_old);
   if (ret == 0) {
     if (oldset_addr) {
@@ -1566,6 +1529,52 @@ void shim_raise(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
+// Raw SYSCALL instruction entry (lifted by the lifter's liftSyscall through _recomp_call_shim).
+// Kernel convention: rax = number, args rdi, rsi, rdx, r10, r8, r9; result in rax; on error
+// CF is set and rax = errno (FreeBSD). The instruction also clobbers rcx and r11 (r11 = rflags,
+// so r11 bit 0 carries CF back to the lowering, which loads it into the C flag).
+// The numbers are served by shim_syscall (libc syscall() convention: rdi = number, args
+// rsi, rdx, rcx, r8, r9, 7th on the stack at [rsp+8]), after remapping the registers.
+void shim_raw_syscall(GuestContext *ctx) {
+  uint64_t num = ctx->rax, a1 = ctx->rdi, a2 = ctx->rsi, a3 = ctx->rdx;
+  uint64_t a4 = ctx->r10, a5 = ctx->r8, a6 = ctx->r9;
+  uint64_t rsp0 = ctx->rsp;
+  // A fake call frame below the red zone: [rsp] = return slot (popped by SHIM_RETURN),
+  // [rsp+8] = the sixth argument (mmap's offset).
+  uint64_t fake = (rsp0 - 128 - 16) & ~0xfULL;
+  uint64_t *frame = (uint64_t *)NPS5_G2H(ctx, fake); // guest stack: always mapped below rsp
+  frame[0] = 0;
+  frame[1] = a6;
+  ctx->rsp = fake;
+  ctx->rdi = num;
+  ctx->rsi = a1;
+  ctx->rdx = a2;
+  ctx->rcx = a3;
+  ctx->r8 = a4;
+  ctx->r9 = a5;
+  int *errp = ctx->fs_base ? (int *)NPS5_G2H(ctx, ctx->fs_base + 0x100ULL) : NULL; // set_guest_errno's slot
+  if (errp)
+    *errp = 0;
+  shim_syscall(ctx);
+  ctx->rsp = rsp0;
+  uint64_t cf = 0;
+  if (ctx->rax == (uint64_t)-1) {
+    int e = errp ? *errp : 0;
+    ctx->rax = (uint64_t)(e ? e : EINVAL);
+    cf = 1;
+  }
+  ctx->rcx = 0;
+  ctx->r11 = 0x202 | cf;
+}
+
+// The SYSCALL instruction in the flat call model (liftSyscall): the lowering pushes the guest
+// return address and a shadow entry and goes through the shim bridge like a call of a shim stub,
+// so the bridge expects the shim to pop the return address (SHIM_RETURN).
+void shim_raw_syscall_flat(GuestContext *ctx) {
+  shim_raw_syscall(ctx);
+  ctx->rsp += 8;
+}
+
 // syscall — numbers must match emitter.ImplementedSyscalls.
 void shim_syscall(GuestContext *ctx) {
   int num = (int)ctx->rdi;
@@ -1580,7 +1589,8 @@ void shim_syscall(GuestContext *ctx) {
     uint64_t buf = ctx->rdx;
     size_t count = (size_t)ctx->rcx;
     ssize_t ret;
-    PS4_HITCH_TIMED(PS4_HITCH_IO, ret = read(fd, ctx->mem_base + buf, count));
+    // through the VFS fd table like shim_read: a pak virtual fd (>= PS4_VFS_VIRTUAL_FD_BASE) is not a host descriptor
+    PS4_HITCH_TIMED(PS4_HITCH_IO, ret = ps4_vfs_read(fd, ctx->mem_base + buf, count));
     if (ret < 0)
       set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)ret;
@@ -1590,7 +1600,9 @@ void shim_syscall(GuestContext *ctx) {
     int fd = (int)ctx->rsi;
     uint64_t buf = ctx->rdx;
     size_t count = (size_t)ctx->rcx;
-    ssize_t ret = write(fd, ctx->mem_base + buf, count);
+    ssize_t ret;
+    if (ps4_vfs_is_virtual_fd(fd)) { errno = EBADF; ret = -1; } // pak files are read-only; never write a host fd by a virtual number
+    else ret = nps5_kwrite(fd, ctx->mem_base + buf, count);
     if (ret < 0)
       set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)ret;
@@ -1601,14 +1613,10 @@ void shim_syscall(GuestContext *ctx) {
     int flags = (int)ctx->rdx;
     mode_t mode = (mode_t)ctx->rcx;
     const char *path = (const char *)(ctx->mem_base + path_addr);
-    char resolved_path[1024];
     const char *actual_path = path;
-    if (ps4_vfs_resolve(path, resolved_path, sizeof(resolved_path)) == 0) {
-      actual_path = resolved_path;
-    }
     bool is_direct = false;
     int host_flags = ps4_open_flags_to_host(flags, &is_direct);
-    int ret = open(actual_path, host_flags, mode);
+    int ret = ps4_vfs_open(path, host_flags, mode); // the same gate as shim_open (EROFS for the application image)
     if (ret < 0) {
       set_guest_errno(ctx, errno);
     } else {
@@ -1618,7 +1626,7 @@ void shim_syscall(GuestContext *ctx) {
       }
 #endif
     }
-    printf("[ps4-sys] syscall 5 (SYS_open): '%s' (resolved='%s', flags=0x%x, "
+    PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "syscall 5 (SYS_open): '%s' (resolved='%s', flags=0x%x, "
            "host_flags=0x%x) -> fd=%d\n",
            path ? path : "(null)", actual_path ? actual_path : "(null)", flags,
            host_flags, ret);
@@ -1628,7 +1636,8 @@ void shim_syscall(GuestContext *ctx) {
   }
   case 6: { // SYS_close
     int fd = (int)ctx->rsi;
-    int ret = close(fd);
+    guest_dir_cache_drop_fd(fd);
+    int ret = ps4_vfs_close(fd); // never close(2) a host fd by a virtual number
     if (ret < 0)
       set_guest_errno(ctx, errno);
     ctx->rax = (uint64_t)ret;
@@ -1658,10 +1667,9 @@ void shim_syscall(GuestContext *ctx) {
     uint64_t addr = ctx->rsi;
     size_t len = (size_t)ctx->rdx;
     int prot = (int)ctx->rcx;
-    GuestVMExtent *ext = recomp_vm_find(ctx, addr);
-    if (ext) {
-      ext->prot = prot;
-    }
+    // Under vm_mutex, splitting at the range edges (a bare write through a looked-up extent pointer
+    // raced with unmap and covered the whole extent). Best effort, as before: the result is 0.
+    (void)recomp_vm_protect(ctx, addr, len, prot, -1);
     ctx->rax = 0;
     SHIM_RETURN();
   }
@@ -1676,11 +1684,11 @@ void shim_syscall(GuestContext *ctx) {
     int flags = (int)ctx->r8;
     int fd = (int)ctx->r9;
     off_t offset = 0;
-    if (ctx->rsp && ctx->mem_base && ctx->rsp + 16 <= ctx->mem_size) {
+    if (ctx->rsp && RECOMP_MEM_OK(ctx) && ctx->rsp + 16 <= ctx->mem_size) {
       offset = (off_t) * (uint64_t *)(ctx->mem_base + ctx->rsp + 8);
     }
 
-    printf("[ps4-sys] syscall 477 (SYS_mmap): addr=0x%llx len=%zu (%.2f MB) "
+    PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "syscall 477 (SYS_mmap): addr=0x%llx len=%zu (%.2f MB) "
            "prot=0x%x flags=0x%x fd=%d offset=%lld\n",
            (unsigned long long)addr, len, (double)len / (1024.0 * 1024.0), prot,
            flags, fd, (long long)offset);
@@ -1695,32 +1703,29 @@ void shim_syscall(GuestContext *ctx) {
     size_t align = 65536;
     size_t aligned_len = (len + align - 1) & ~(align - 1);
 
-    uint64_t alloc_addr = (uint64_t)-1;
-    if (addr != 0) {
-      alloc_addr = recomp_vm_alloc_fixed(ctx, addr, aligned_len, prot, flags,
-                                         "mmap_sys");
-    }
-    if (alloc_addr == (uint64_t)-1) {
-      alloc_addr = recomp_vm_alloc_named_aligned(ctx, aligned_len, align, prot,
-                                                 flags, "mmap_sys");
-    }
+    // A fixed request covers exactly the pages named (16 KiB granularity); only the placement of
+
+    // unhinted mappings uses the 64 KiB allocation granule.
+
+    if (addr != 0 && (flags & 0x10)) aligned_len = (len + NPS5_PAGE_MASK) & ~NPS5_PAGE_MASK;
+
+    int merr = 0;
+    uint64_t alloc_addr = recomp_vm_map_ex(ctx, addr, aligned_len, align, prot, flags, "mmap_sys", NPS5_EXT_MAPPED, &merr);
 
     if (alloc_addr == (uint64_t)-1) {
-      fprintf(stderr,
-              "[ps4-sys] ERROR: syscall 477 (SYS_mmap) FAILED: addr=0x%llx "
+      PS4_LOGF(NPS5_S_SYS, NPS5_L_WARN, "ps4-sys", "ERROR: syscall 477 (SYS_mmap) FAILED: addr=0x%llx "
               "len=%zu\n",
               (unsigned long long)addr, len);
-      set_guest_errno(ctx, ENOMEM);
+      set_guest_errno(ctx, merr == EINVAL ? EINVAL : ENOMEM);
       ctx->rax = (uint64_t)-1;
     } else {
       if (!(flags & 0x1000) && fd >= 0) {
         ssize_t nread;
         PS4_HITCH_TIMED(PS4_HITCH_IO,
                         nread =
-                            pread(fd, ctx->mem_base + alloc_addr, len, offset));
+                            nps5_kpread(fd, ctx->mem_base + alloc_addr, len, offset));
         if (nread < 0) {
-          fprintf(stderr,
-                  "[ps4-sys] syscall 477 file read FAILED: fd=%d offset=%lld "
+          PS4_LOGF(NPS5_S_SYS, NPS5_L_WARN, "ps4-sys", "syscall 477 file read FAILED: fd=%d offset=%lld "
                   "len=%zu errno=%d (%s)\n",
                   fd, (long long)offset, len, errno, strerror(errno));
           set_guest_errno(ctx, errno);
@@ -1728,12 +1733,12 @@ void shim_syscall(GuestContext *ctx) {
           ctx->rax = (uint64_t)-1;
           SHIM_RETURN();
         }
-        printf("[ps4-sys] syscall 477 file read SUCCESS: read=%zd bytes into "
+        PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "syscall 477 file read SUCCESS: read=%zd bytes into "
                "0x%llx\n",
                nread, (unsigned long long)alloc_addr);
         fflush(stdout);
       }
-      printf("[ps4-sys] syscall 477 SUCCESS: out=0x%llx\n",
+      PS4_LOGF(NPS5_S_SYS, NPS5_L_DEBUG, "ps4-sys", "syscall 477 SUCCESS: out=0x%llx\n",
              (unsigned long long)alloc_addr);
       fflush(stdout);
       ctx->rax = alloc_addr;
@@ -1753,8 +1758,7 @@ void shim_syscall(GuestContext *ctx) {
     return;
   }
   default:
-    fprintf(stderr,
-            "[ps4-sys] WARN: Unsupported syscall num=%d (rsi=0x%llx, "
+    PS4_LOGF(NPS5_S_SYS, NPS5_L_WARN, "ps4-sys", "WARN: Unsupported syscall num=%d (rsi=0x%llx, "
             "rdx=0x%llx, rcx=0x%llx, r8=0x%llx)\n",
             num, (unsigned long long)ctx->rsi, (unsigned long long)ctx->rdx,
             (unsigned long long)ctx->rcx, (unsigned long long)ctx->r8);
@@ -1766,17 +1770,17 @@ void shim_syscall(GuestContext *ctx) {
 
 // Stack protector canary check failure
 void shim___stack_chk_fail(GuestContext *ctx) {
-  uint64_t ret_addr = (ctx && ctx->mem_base && ctx->rsp + 8 <= ctx->mem_size)
+  uint64_t ret_addr = (ctx && RECOMP_MEM_OK(ctx) && ctx->rsp + 8 <= ctx->mem_size)
                           ? MEM_U64(ctx->rsp)
                           : 0;
-  uint64_t r14_val = (ctx && ctx->mem_base && ctx->r14 + 8 <= ctx->mem_size)
+  uint64_t r14_val = (ctx && RECOMP_MEM_OK(ctx) && ctx->r14 + 8 <= ctx->mem_size)
                          ? MEM_U64(ctx->r14)
                          : 0;
-  uint64_t stack_canary_30 = (ctx && ctx->mem_base && ctx->rbp >= 0x30 &&
+  uint64_t stack_canary_30 = (ctx && RECOMP_MEM_OK(ctx) && ctx->rbp >= 0x30 &&
                               ctx->rbp - 0x30 + 8 <= ctx->mem_size)
                                  ? MEM_U64(ctx->rbp - 0x30)
                                  : 0;
-  uint64_t stack_canary_28 = (ctx && ctx->mem_base && ctx->rbp >= 0x28 &&
+  uint64_t stack_canary_28 = (ctx && RECOMP_MEM_OK(ctx) && ctx->rbp >= 0x28 &&
                               ctx->rbp - 0x28 + 8 <= ctx->mem_size)
                                  ? MEM_U64(ctx->rbp - 0x28)
                                  : 0;
@@ -2062,3 +2066,13 @@ void shim_strcmp(GuestContext *ctx) {
   ctx->rax = (uint64_t)(uint32_t)(int32_t)strcmp(a, b);
   SHIM_RETURN();
 }
+
+
+// sceKernel* file calls: same operations as the POSIX shims, SCE error codes instead of -1.
+void shim_sceKernelMkdir(GuestContext *ctx) { sce_wrap(ctx, shim_mkdir); }
+void shim_sceKernelUnlink(GuestContext *ctx) { sce_wrap(ctx, shim_unlink); }
+void shim_sceKernelRename(GuestContext *ctx) { sce_wrap(ctx, shim_rename); }
+void shim_sceKernelTruncate(GuestContext *ctx) { sce_wrap(ctx, shim_truncate); }
+void shim_sceKernelChmod(GuestContext *ctx) { sce_wrap(ctx, shim_chmod); }
+void shim_sceKernelUtimes(GuestContext *ctx) { sce_wrap(ctx, shim_utimes); }
+void shim_sceKernelGetdents(GuestContext *ctx) { sce_wrap(ctx, shim_getdents); }

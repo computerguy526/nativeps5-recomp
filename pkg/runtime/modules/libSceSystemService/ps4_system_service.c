@@ -104,8 +104,13 @@ int32_t sceSystemServicePowerTick(void) {
 }
 
 int32_t sceSystemServiceGetHdrToneMapLuminance(void *luminance) {
+    // SceSystemServiceHdrToneMapLuminance = 3 floats {maxFullFrameToneMapLuminance,
+    // maxToneMapLuminance, minToneMapLuminance} in nits. An SDR display: 100 / 100 / 0, as AnyPS5
+    // reports without host HDR. All-zero made ASTRO BOT tone-map every frame to ~1/12 brightness
+    // (peak luminance 0), and 32 bytes were written into a 12-byte struct.
     if (luminance) {
-        memset(luminance, 0, 32);
+        const float nits[3] = {100.0f, 100.0f, 0.0f};
+        memcpy(luminance, nits, sizeof(nits));
     }
     return 0;
 }
@@ -231,7 +236,7 @@ void shim_sceSystemServiceParamGetInt(GuestContext *ctx) {
     uint64_t valGuestPtr = ctx->rsi;
     if (valGuestPtr == 0) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_SYSTEM_SERVICE_ERROR_PARAMETER;
-    } else if (ctx->mem_base && valGuestPtr + sizeof(int32_t) <= ctx->mem_size) {
+    } else if (RECOMP_MEM_OK(ctx) && valGuestPtr + sizeof(int32_t) <= ctx->mem_size) {
         int32_t val = 0;
         int32_t rc = sceSystemServiceParamGetInt(paramId, &val);
         if (rc == 0) {
@@ -250,7 +255,7 @@ void shim_sceSystemServiceParamGetString(GuestContext *ctx) {
     size_t bufSize = (size_t)ctx->rdx;
     if (bufGuestPtr == 0 || bufSize == 0) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_SYSTEM_SERVICE_ERROR_PARAMETER;
-    } else if (ctx->mem_base && bufGuestPtr + bufSize <= ctx->mem_size) {
+    } else if (RECOMP_MEM_OK(ctx) && bufGuestPtr + bufSize <= ctx->mem_size) {
         char *hostBuf = (char *)(ctx->mem_base + bufGuestPtr);
         int32_t rc = sceSystemServiceParamGetString(paramId, hostBuf, bufSize);
         ctx->rax = (uint64_t)(int64_t)rc;
@@ -267,7 +272,7 @@ void shim_sceSystemServiceHideSplashScreen(GuestContext *ctx) {
 
 void shim_sceSystemServiceGetStatus(GuestContext *ctx) {
     uint64_t p = ctx->rdi;
-    if (p == 0 || !ctx->mem_base || p + sizeof(OrbisSystemServiceStatus) > ctx->mem_size) {
+    if (p == 0 || !RECOMP_MEM_OK(ctx) || p + sizeof(OrbisSystemServiceStatus) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_SYSTEM_SERVICE_ERROR_PARAMETER;
         SHIM_RETURN();
     }
@@ -280,7 +285,7 @@ void shim_sceSystemServiceGetDisplaySafeAreaInfo(GuestContext *ctx) {
     uint64_t infoGuestPtr = ctx->rdi;
     if (infoGuestPtr == 0) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_SYSTEM_SERVICE_ERROR_PARAMETER;
-    } else if (ctx->mem_base && infoGuestPtr + sizeof(OrbisSystemServiceDisplaySafeAreaInfo) <= ctx->mem_size) {
+    } else if (RECOMP_MEM_OK(ctx) && infoGuestPtr + sizeof(OrbisSystemServiceDisplaySafeAreaInfo) <= ctx->mem_size) {
         OrbisSystemServiceDisplaySafeAreaInfo *infoHost =
             (OrbisSystemServiceDisplaySafeAreaInfo *)(ctx->mem_base + infoGuestPtr);
         ctx->rax = (uint64_t)(int64_t)sceSystemServiceGetDisplaySafeAreaInfo(infoHost);
@@ -294,7 +299,7 @@ void shim_sceSystemServiceReceiveEvent(GuestContext *ctx) {
     uint64_t eventGuestPtr = ctx->rdi;
     if (eventGuestPtr == 0) {
         ctx->rax = (uint64_t)(int64_t)(int32_t)ORBIS_SYSTEM_SERVICE_ERROR_PARAMETER;
-    } else if (ctx->mem_base && eventGuestPtr + sizeof(OrbisSystemServiceEvent) <= ctx->mem_size) {
+    } else if (RECOMP_MEM_OK(ctx) && eventGuestPtr + sizeof(OrbisSystemServiceEvent) <= ctx->mem_size) {
         OrbisSystemServiceEvent *eventHost = (OrbisSystemServiceEvent *)(ctx->mem_base + eventGuestPtr);
         ctx->rax = (uint64_t)(int64_t)sceSystemServiceReceiveEvent(eventHost);
     } else {

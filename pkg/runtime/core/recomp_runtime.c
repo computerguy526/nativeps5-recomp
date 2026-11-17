@@ -3,6 +3,8 @@
 #include "ps4_sysmodule.h"
 #include "ps4_vfs.h"
 #include "ps4_log.h"
+#include "nps5_diag.h"
+#include "nps5_mem.h"
 
 #include <errno.h>
 #include <stdatomic.h>
@@ -21,6 +23,14 @@
 recomp_fn_t **g_dispatch_l1[DISPATCH_LEVEL_SIZE] = {0};
 _Thread_local GuestContext *g_current_ctx = NULL;
 pthread_mutex_t g_heap_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// NPS5_DUMP_MAP=1: the guest arena map (reservation, images, fixed ranges, guest mappings) on
+// stderr when the process ends through the runtime (SPEC §8.2).
+static void dump_map_if_asked(void) {
+  const char *v = getenv("NPS5_DUMP_MAP");
+  if (v && v[0] == '1') nps5_mem_dump_map(STDERR_FILENO);
+}
+
 
 GuestContext *recomp_get_current_ctx(void) {
   return g_current_ctx;
@@ -101,7 +111,13 @@ static void crash_report_host_registers(const void *ucontext) {
 #endif
 }
 
+// One guest word for the crash report, read without faulting: rsp may be in a stack guard page
+// (stack overflow), and a fault inside the handler (signal blocked) would spin the thread forever.
+static bool crash_read_u64(uint64_t g, uint64_t *v) { return nps5_guest_safe_read(g, v, sizeof *v); }
+
 static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
+  // A shadow stack push into its guard page (flat call model) is handled and retried.
+  if ((sig == SIGSEGV || sig == SIGBUS) && si && recomp_shadow_handle_fault(ucontext, (uint64_t)(uintptr_t)si->si_addr)) return;
   g_crashing = 1; // before exit(1): the exit handlers it runs skip their waits
   ps4_log_drain_sync(1.0); // pending output first, so the FATAL report below is not lost
   if (g_current_ctx) {
@@ -129,24 +145,27 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
             (unsigned long long)g_current_ctx->r13,
             (unsigned long long)g_current_ctx->r14,
             (unsigned long long)g_current_ctx->r15);
-    if (g_current_ctx->mem_base && g_current_ctx->rsp < g_current_ctx->mem_size) {
+    if (RECOMP_MEM_OK(g_current_ctx) && g_current_ctx->rsp < g_current_ctx->mem_size) {
       fprintf(stderr, "Guest Stack at RSP=0x%llx (96 words):\n", (unsigned long long)g_current_ctx->rsp);
-      uint64_t *sp = (uint64_t *)(g_current_ctx->mem_base + g_current_ctx->rsp);
       for (int i = 0; i < 96; i++) {
-        if ((uint64_t)(g_current_ctx->rsp + i * 8 + 8) <= g_current_ctx->mem_size) {
-          fprintf(stderr, "  [RSP+0x%03x] = 0x%016llx\n", i * 8, (unsigned long long)sp[i]);
+        uint64_t w;
+        if ((uint64_t)(g_current_ctx->rsp + i * 8 + 8) > g_current_ctx->mem_size) break;
+        if (!crash_read_u64(g_current_ctx->rsp + (uint64_t)i * 8, &w)) {
+          fprintf(stderr, "  [RSP+0x%03x] = (unreadable: guard page or unmapped)\n", i * 8);
+          break;
         }
+        fprintf(stderr, "  [RSP+0x%03x] = 0x%016llx\n", i * 8, (unsigned long long)w);
       }
     }
-    if (g_current_ctx->mem_base) {
+    if (RECOMP_MEM_OK(g_current_ctx)) {
       // Guest backtrace: likely return addresses found on the stack, plus the
       // frame-pointer chain.
       fprintf(stderr, "Guest thread_id=%llu; code addresses on stack:", (unsigned long long)g_current_ctx->thread_id);
-      uint64_t *sp = (uint64_t *)(g_current_ctx->mem_base + g_current_ctx->rsp);
       int shown = 0;
       for (int i = 0; i < 512 && shown < 24; i++) {
         if ((uint64_t)(g_current_ctx->rsp + i * 8 + 8) > g_current_ctx->mem_size) break;
-        uint64_t v = sp[i];
+        uint64_t v;
+        if (!crash_read_u64(g_current_ctx->rsp + (uint64_t)i * 8, &v)) break;
         if (recomp_module_text_contains(v)) {
           // Return addresses point into the middle of a function.
           fprintf(stderr, " %llx", (unsigned long long)v);
@@ -156,8 +175,10 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
       fprintf(stderr, "\nGuest RBP chain:");
       uint64_t bp = g_current_ctx->rbp;
       for (int k = 0; k < 16 && bp && bp + 16 <= g_current_ctx->mem_size; k++) {
-        fprintf(stderr, " %llx", (unsigned long long)*(uint64_t *)(g_current_ctx->mem_base + bp + 8));
-        bp = *(uint64_t *)(g_current_ctx->mem_base + bp);
+        uint64_t ret, next;
+        if (!crash_read_u64(bp + 8, &ret) || !crash_read_u64(bp, &next)) break;
+        fprintf(stderr, " %llx", (unsigned long long)ret);
+        bp = next;
       }
       fprintf(stderr, "\n");
     }
@@ -181,10 +202,11 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
               (unsigned long long)x[27]);
       if (x[28] == (uint64_t)(uintptr_t)g_current_ctx->mem_base && x[26] < g_current_ctx->mem_size) {
         fprintf(stderr, "Guest code addresses on the live stack:");
-        const uint64_t *sp = (const uint64_t *)(g_current_ctx->mem_base + x[26]);
         for (int i = 0, shown = 0; i < 512 && shown < 24 && x[26] + (uint64_t)i * 8 + 8 <= g_current_ctx->mem_size; i++) {
-          if (recomp_module_text_contains(sp[i])) {
-            fprintf(stderr, " %llx", (unsigned long long)sp[i]);
+          uint64_t v;
+          if (!crash_read_u64(x[26] + (uint64_t)i * 8, &v)) break; // a stack overflow leaves rsp in the guard page
+          if (recomp_module_text_contains(v)) {
+            fprintf(stderr, " %llx", (unsigned long long)v);
             shown++;
           }
         }
@@ -214,6 +236,11 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
 }
 
 #define UNRESOLVED_BUCKETS 1024
+// Overridden by modules/libc/nps5_libc_core.c (strong definition).
+__attribute__((weak)) bool nps5_libc_bind_data_import(GuestContext *ctx, uint64_t slot_addr, const char *name) {
+  (void)ctx; (void)slot_addr; (void)name;
+  return false;
+}
 static RecompUnresolvedSym *g_unresolved_table[UNRESOLVED_BUCKETS];
 static pthread_mutex_t g_unresolved_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -259,10 +286,23 @@ __attribute__((weak)) bool ps4_nptoolkit2_dispatch(GuestContext *ctx, const char
 
 void shim_unresolved_stub(GuestContext *ctx) {
   uint64_t caller_rip = 0;
-  if (ctx && ctx->mem_base && ctx->rsp + 8 <= ctx->mem_size) {
+  if (ctx && RECOMP_MEM_OK(ctx) && ctx->rsp + 8 <= ctx->mem_size) {
     caller_rip = *(uint64_t *)(ctx->mem_base + ctx->rsp);
   }
   const RecompUnresolvedSym *sym = recomp_lookup_unresolved(ctx ? ctx->rip : 0);
+  nps5_diag_unresolved_hit(sym ? sym->sym_name : NULL, sym ? sym->nid : NULL, sym ? sym->lib_name : NULL, ctx ? ctx->rip : 0, caller_rip);
+  nps5_diag_set_note("unresolved import %s (NID %s, lib %s) called from guest 0x%llx",
+                     sym && sym->sym_name && sym->sym_name[0] ? sym->sym_name : (sym && sym->nid ? sym->nid : "?"), sym && sym->nid ? sym->nid : "?",
+                     sym && sym->lib_name ? sym->lib_name : "?", (unsigned long long)caller_rip);
+  if (sym && sym->lib_name && strncmp(sym->lib_name, "excluded:", 9) == 0) {
+    // Import of a module left out of the translation (-exclude-module): the hit was logged once
+    // and counted above; return 0 (NULL / success) to the caller.
+    if (ctx) {
+      ctx->rax = 0;
+      ctx->rsp += 8;
+    }
+    return;
+  }
   if (sym && sym->lib_name) {
     if (strcmp(sym->lib_name, "libSceNpToolkit2") == 0) {
       extern bool ps4_nptoolkit2_dispatch(GuestContext *ctx, const char *nid);
@@ -323,7 +363,7 @@ void shim_unresolved_stub(GuestContext *ctx) {
 
 void recomp_unimplemented_shim(GuestContext *ctx, const char *shim_name) {
   uint64_t caller_rip = 0;
-  if (ctx && ctx->mem_base && ctx->rsp + 8 <= ctx->mem_size) {
+  if (ctx && RECOMP_MEM_OK(ctx) && ctx->rsp + 8 <= ctx->mem_size) {
     caller_rip = *(uint64_t *)(ctx->mem_base + ctx->rsp);
   }
   fprintf(stderr,
@@ -340,9 +380,130 @@ void recomp_unimplemented_shim(GuestContext *ctx, const char *shim_name) {
   }
 }
 
+extern void recomp_ic_flush_all(void) __attribute__((weak));
+
+// ---- lazy dispatch table (NPS5_LAZY_DISPATCH=1) -------------------------------------------------
+// The 3-level table spends 8 bytes per guest code BYTE (a 64 Ki-entry level-3 table per 64 KiB of
+// code, 16 KiB host pages that hold a function pointer every few hundred bytes are all dirtied by
+// the boot-time registration): ~700 MB of dirty host memory for a 260 MB eboot, most of it for
+// functions that are only ever reached by direct calls. With the flag, the registrations made
+// before the first slow-path lookup go into a compact sorted array (24 B per function) and a
+// function is published into the table the first time something misses on it (recomp_lazy_resolve,
+// called by every table consumer that gets NULL: the continuation slow paths, tier 1, the miss
+// entry). The registration order semantics are kept (the last registration of an address wins) and
+// registrations after the first lookup go straight to the table as before.
+typedef struct { uint64_t guest; recomp_fn_t fn; uint64_t seq; } LazyEnt;
+static LazyEnt *g_lazy;
+static size_t g_lazy_n, g_lazy_cap;
+static int g_lazy_mode = -1; // -1 unread, 0 off, 1 collecting, 2 sealed
+static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_lazy_log; // NPS5_LAZY_DISPATCH=2: log every published address (measurement)
+
+static int lazy_cmp(const void *a, const void *b) {
+  const LazyEnt *x = (const LazyEnt *)a, *y = (const LazyEnt *)b;
+  if (x->guest != y->guest) return x->guest < y->guest ? -1 : 1;
+  return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+// Publishes fn into the table slot of a if it is empty (compare-and-swap at every level, so it
+// races safely with other publishers). Returns 1 when stored, 0 when the slot was taken, -1 on OOM.
+int recomp_dispatch_publish(uint64_t a, recomp_fn_t fn) {
+  if (a == 0 || a >= (1ULL << 48)) return 0;
+  recomp_fn_t ***s1 = &g_dispatch_l1[(a >> DISPATCH_L1_SHIFT) & DISPATCH_LEVEL_MASK];
+  recomp_fn_t **l2 = __atomic_load_n(s1, __ATOMIC_ACQUIRE);
+  if (!l2) {
+    recomp_fn_t **n = (recomp_fn_t **)calloc(DISPATCH_LEVEL_SIZE, sizeof(recomp_fn_t *));
+    if (!n) return -1;
+    recomp_fn_t **exp = NULL;
+    if (__atomic_compare_exchange_n(s1, &exp, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) l2 = n;
+    else { free(n); l2 = exp; }
+  }
+  recomp_fn_t ***s2 = (recomp_fn_t ***)&l2[(a >> DISPATCH_L2_SHIFT) & DISPATCH_LEVEL_MASK];
+  recomp_fn_t *l3 = __atomic_load_n((recomp_fn_t **)s2, __ATOMIC_ACQUIRE);
+  if (!l3) {
+    recomp_fn_t *n = (recomp_fn_t *)calloc(DISPATCH_LEVEL_SIZE, sizeof(recomp_fn_t));
+    if (!n) return -1;
+    recomp_fn_t *exp = NULL;
+    if (__atomic_compare_exchange_n((recomp_fn_t **)s2, &exp, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) l3 = n;
+    else { free(n); l3 = exp; }
+  }
+  recomp_fn_t exp = NULL;
+  return __atomic_compare_exchange_n(&l3[a & DISPATCH_LEVEL_MASK], &exp, fn, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+
+static void lazy_seal(void) {
+  pthread_mutex_lock(&g_lazy_mu);
+  if (g_lazy_mode == 1) {
+    qsort(g_lazy, g_lazy_n, sizeof(LazyEnt), lazy_cmp);
+    size_t k = 0; // keep the last registration of each address
+    for (size_t i = 0; i < g_lazy_n; i++) {
+      if (i + 1 < g_lazy_n && g_lazy[i + 1].guest == g_lazy[i].guest) continue;
+      g_lazy[k++] = g_lazy[i];
+    }
+    g_lazy_n = k;
+    LazyEnt *t = (LazyEnt *)realloc(g_lazy, (k ? k : 1) * sizeof(LazyEnt));
+    if (t) g_lazy = t;
+    g_lazy_cap = k;
+    __atomic_store_n(&g_lazy_mode, 2, __ATOMIC_RELEASE);
+  }
+  pthread_mutex_unlock(&g_lazy_mu);
+}
+
+// The registered function of guest address a that is not in the table yet: publishes it and returns
+// it (NULL when the address was never registered, or the mode is off). Cheap when off.
+recomp_fn_t recomp_lazy_resolve(uint64_t a) {
+  int m = __atomic_load_n(&g_lazy_mode, __ATOMIC_ACQUIRE);
+  if (m < 1) return NULL;
+  if (m == 1) { lazy_seal(); }
+  size_t lo = 0, hi = g_lazy_n;
+  while (lo < hi) {
+    size_t mid = (lo + hi) / 2;
+    if (g_lazy[mid].guest < a) lo = mid + 1; else hi = mid;
+  }
+  if (lo >= g_lazy_n || g_lazy[lo].guest != a) return NULL;
+  recomp_fn_t fn = g_lazy[lo].fn;
+  if (recomp_dispatch_publish(a, fn) == 1 && g_lazy_log) fprintf(stderr, "[lazy-dispatch] 0x%llx\n", (unsigned long long)a);
+  return fn;
+}
+
+static void lazy_free(void) {
+  pthread_mutex_lock(&g_lazy_mu);
+  free(g_lazy);
+  g_lazy = NULL;
+  g_lazy_n = g_lazy_cap = 0;
+  pthread_mutex_unlock(&g_lazy_mu);
+}
+
 void recomp_register_fn(uint64_t guest_addr, recomp_fn_t fn) {
   if (guest_addr >= (1ULL << 48)) {
     return;
+  }
+  int m = __atomic_load_n(&g_lazy_mode, __ATOMIC_ACQUIRE);
+  if (m == -1) {
+    const char *e = getenv("NPS5_LAZY_DISPATCH");
+    int want = e && e[0] && e[0] != '0';
+    g_lazy_log = e && e[0] == '2';
+    pthread_mutex_lock(&g_lazy_mu);
+    if (g_lazy_mode == -1) __atomic_store_n(&g_lazy_mode, want ? 1 : 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_lazy_mu);
+    m = __atomic_load_n(&g_lazy_mode, __ATOMIC_ACQUIRE);
+  }
+  if (m == 1) {
+    pthread_mutex_lock(&g_lazy_mu);
+    if (g_lazy_mode == 1) {
+      if (g_lazy_n == g_lazy_cap) {
+        size_t nc = g_lazy_cap ? g_lazy_cap * 2 : 65536;
+        LazyEnt *t = (LazyEnt *)realloc(g_lazy, nc * sizeof(LazyEnt));
+        if (!t) { perror("realloc lazy dispatch"); abort(); }
+        g_lazy = t;
+        g_lazy_cap = nc;
+      }
+      g_lazy[g_lazy_n] = (LazyEnt){guest_addr, fn, g_lazy_n};
+      g_lazy_n++;
+      pthread_mutex_unlock(&g_lazy_mu);
+      return;
+    }
+    pthread_mutex_unlock(&g_lazy_mu);
   }
   uint64_t l1_idx = (guest_addr >> DISPATCH_L1_SHIFT) & DISPATCH_LEVEL_MASK;
   if (!g_dispatch_l1[l1_idx]) {
@@ -362,7 +523,13 @@ void recomp_register_fn(uint64_t guest_addr, recomp_fn_t fn) {
       abort();
     }
   }
-  g_dispatch_l1[l1_idx][l2_idx][guest_addr & DISPATCH_LEVEL_MASK] = fn;
+  recomp_fn_t *slot = &g_dispatch_l1[l1_idx][l2_idx][guest_addr & DISPATCH_LEVEL_MASK];
+  recomp_fn_t old = *slot;
+  *slot = fn;
+  // A replaced entry (function replacement, HLE override) may be cached by call-site inline
+  // caches (docs/m3/callic.md): drop them. First registrations need nothing: caches only
+  // hold targets the dispatch table resolved.
+  if (old && old != fn && recomp_ic_flush_all) recomp_ic_flush_all();
 }
 
 static size_t parse_mem_size_str(const char *str) {
@@ -389,7 +556,86 @@ void recomp_install_crash_handler(void) {
   sigaction(SIGBUS, &sa, NULL);
   sigaction(SIGTRAP, &sa, NULL);
   sigaction(SIGILL, &sa, NULL);
+  nps5_diag_install_crash_handlers(); // writes crash.txt, then chains to the handler above
 }
+
+// Inserts a new extent after `after` (NULL: at the head). Only used while building the
+// initial list, before any other thread exists.
+static GuestVMExtent *vm_init_append(GuestContext *ctx, GuestVMExtent *after, uint64_t addr, uint64_t size,
+                                     bool is_free, const char *name) {
+  if (size == 0) return after;
+  GuestVMExtent *e = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
+  if (!e) {
+    perror("calloc GuestVMExtent");
+    abort();
+  }
+  e->addr = addr;
+  e->size = size;
+  e->is_free = is_free;
+  e->prot = is_free ? 0 : (PROT_READ | PROT_WRITE);
+  if (name) strncpy(e->name, name, sizeof(e->name) - 1);
+  e->prev = after;
+  if (after) after->next = e;
+  else ctx->vm_extents = e;
+  return e;
+}
+
+// Guest layout (docs/m1/memory.md), relative to the layout origin (0 in base mode,
+// 0x70_0000_0000 in identity mode):
+//
+//   [0, 4 MiB)              null guard, never mapped
+//   0x40_0000 ...           executable, then the bundled modules (placed at translate time)
+//   image_end ...           system block: main thread static TLS (64 KiB), TCB (64 KiB),
+//                           process arguments (64 KiB)
+//   ... 0x2_0000_0000       system zone: thread stacks and TLS, runtime-owned guest objects
+//   0x2_0000_0000 ...       user zone: mappings the guest asks for without an address
+//   0x7_EAFF_8000           guard page, then the 64 MiB main stack up to 0x7_EEFF_C000
+//   0x10_0000_0000 ...      memory pools; fixed mappings may be anywhere that is free
+//   0xFC_0000_0000          end of the application area
+//
+// guest_mem_sz != 0 (host unit tests, PS4_RECOMP_MEM) selects the flat arena instead: guest
+// [0, guest_mem_sz) is committed read-write up front and nothing is ever made inaccessible,
+// which is the memory PS4Recomp's own tests were written against.
+// ---- AnyPS5 AGC driver binding (docs/m1/memory.md "AnyPS5 integration") ----
+// The driver (core/libs/prx/libSceAgcDriver, AgcGuestMemory.h) translates every GPU-visible guest
+// address through host = guest + bias. A build that links it defines NPS5_HAVE_ANYPS5_AGC=1; the
+// runtime then configures it once, before any guest code runs: the bias of this arena, the guest
+// window, and a scratch window for driver-owned memory that needs a guest address (kept
+// inaccessible and mapped in the extent list, so the guest can never be handed it; the driver maps
+// pages into it itself). Without the define nothing is referenced (an undefined symbol would fail
+// the link of every other build, weak or not).
+#if NPS5_HAVE_ANYPS5_AGC
+void AgcSetGuestBias(int64_t bias);
+void AgcSetGuestArena(uint64_t guest_lo, uint64_t guest_hi);
+void AgcSetGuestScratch(uint64_t guest_lo, uint64_t bytes);
+
+#define NPS5_AGC_SCRATCH_OFFSET 0xF000000000ULL // guest 0xF0_0000_0000 relative to the layout origin
+#define NPS5_AGC_SCRATCH_BYTES 0x10000000ULL    // 256 MiB
+
+void nps5_anyps5_startup(GuestContext *ctx); // modules/libSceAnyPS5: driver page claim, host environment
+
+static void nps5_agc_bind_guest_memory(GuestContext *ctx) {
+  const Nps5Arena *a = &g_nps5_arena;
+  nps5_anyps5_startup(ctx);
+  AgcSetGuestBias((int64_t)(uintptr_t)a->bias); // 0 in identity mode: guest == host
+  AgcSetGuestArena(a->guest_lo, a->guest_hi);
+  // Identity mode has bias 0: the driver's scratch memory is ordinary heap memory there (its guest
+  // address is its host address), so nothing is reserved.
+  if (!a->flat && a->mode == NPS5_ADDR_BASE) {
+    const uint64_t lo = a->guest_org + NPS5_AGC_SCRATCH_OFFSET;
+    if (nps5_guest_range_ok(lo, NPS5_AGC_SCRATCH_BYTES) &&
+        recomp_vm_alloc_fixed(ctx, lo, NPS5_AGC_SCRATCH_BYTES, 0, 0, "agc_scratch") == lo) {
+      nps5_mem_decommit(lo, NPS5_AGC_SCRATCH_BYTES); // address space only: the driver maps pages into it
+      AgcSetGuestScratch(lo, NPS5_AGC_SCRATCH_BYTES);
+    } else {
+      fprintf(stderr, "[ps4-recomp] WARNING: cannot reserve the AGC driver scratch window at guest 0x%llx\n",
+              (unsigned long long)lo);
+    }
+  }
+}
+#else
+static void nps5_agc_bind_guest_memory(GuestContext *ctx) { (void)ctx; }
+#endif
 
 GuestContext *recomp_init_runtime(size_t guest_mem_sz, const uint8_t *elf_image,
                                   size_t image_size, const char *prog_name) {
@@ -402,59 +648,89 @@ GuestContext *recomp_init_runtime(size_t guest_mem_sz, const uint8_t *elf_image,
   g_current_ctx = ctx;
   recomp_install_crash_handler();
 
-  // Dynamic memory size calculation without hardcoded limits
   if (guest_mem_sz == 0) {
     const char *env_mem = getenv("PS4_RECOMP_MEM");
     if (env_mem) {
       guest_mem_sz = parse_mem_size_str(env_mem);
     }
   }
-
-  if (guest_mem_sz == 0) {
-    // PS4 virtual address space:
-    // System managed / flexible memory covers 0 - 32GB (0x800000000ULL).
-    // User memory pools (sceKernelMemoryPoolReserve) are located in the user
-    // area at 0x1000000000 (64 GB), 0x2000000000 (128 GB), 0x3000000000 (192
-    // GB) up to 0x7000000000. Allocate a 512 GB (0x8000000000ULL) virtual
-    // address space. On modern 64-bit OS (macOS/Linux), demand paging ensures
-    // uncommitted address space consumes zero physical RAM until pages are
-    // touched.
-    guest_mem_sz = 0x8000000000ULL; // 512 GB virtual address space
-  }
-
-  if (image_size > 0 && guest_mem_sz < image_size + 0x20000ULL) {
+  if (guest_mem_sz != 0 && image_size > 0 && guest_mem_sz < image_size + 0x20000ULL) {
     guest_mem_sz = image_size + 0x20000ULL;
   }
 
-  uint8_t *mem = (uint8_t *)mmap(NULL, guest_mem_sz, PROT_READ | PROT_WRITE,
-                                 MAP_ANON | MAP_PRIVATE, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap guest memory");
+  const Nps5MemConfig *cfg = &nps5_mem_config;
+  char err[2048];
+  if (nps5_mem_reserve(cfg, guest_mem_sz, err, sizeof(err)) != 0) {
+    fprintf(stderr, "[ps4-recomp] FATAL: guest memory: %s\n", err);
+    NPS5_LOG(NPS5_S_MEM, NPS5_L_ERROR, "arena reservation failed: %s", err);
     free(ctx);
     return NULL;
   }
+  const Nps5Arena *arena = &g_nps5_arena;
 
-  ctx->mem_base = mem;
-  ctx->mem_size = guest_mem_sz;
-  fprintf(stderr, "[ps4-recomp] guest memory at host %p (0x%llx bytes)\n", (void *)mem,
-          (unsigned long long)guest_mem_sz);
+  // host = mem_base + guest for every guest address (mem_base is NULL in identity mode);
+  // mem_size is the end of the guest address space, the bound HLE range checks use.
+  ctx->mem_base = arena->bias;
+  ctx->mem_size = arena->guest_hi;
+  fprintf(stderr, "[ps4-recomp] guest memory: %s mode, host 0x%llx-0x%llx, bias 0x%llx, guest 0x%llx-0x%llx%s\n",
+          arena->mode == NPS5_ADDR_IDENTITY ? "identity" : "base", (unsigned long long)arena->host_lo,
+          (unsigned long long)(arena->host_lo + arena->host_len), (unsigned long long)(uintptr_t)arena->bias,
+          (unsigned long long)arena->guest_lo, (unsigned long long)arena->guest_hi, arena->flat ? " (flat test arena)" : "");
+  NPS5_LOG(NPS5_S_MEM, NPS5_L_INFO, "arena mode=%s host_lo=0x%llx host_len=0x%llx bias=0x%llx guest_lo=0x%llx guest_hi=0x%llx flat=%d",
+           arena->mode == NPS5_ADDR_IDENTITY ? "identity" : "base", (unsigned long long)arena->host_lo,
+           (unsigned long long)arena->host_len, (unsigned long long)(uintptr_t)arena->bias,
+           (unsigned long long)arena->guest_lo, (unsigned long long)arena->guest_hi, (int)arena->flat);
 
   ctx->fpu_cw = 0x037F; // Standard x87 control word default
 
-  // Copy initial ELF memory image if provided
+  // Dense image passed in memory: host tests only (flat arena, guest address 0 upwards).
   if (elf_image && image_size > 0) {
+    if (!arena->flat || image_size > arena->guest_hi) {
+      fprintf(stderr, "[ps4-recomp] FATAL: an in-memory dense image needs the flat test arena\n");
+      free(ctx);
+      return NULL;
+    }
     memcpy(ctx->mem_base, elf_image, image_size);
   }
 
-  // Dynamic memory layout positioning relative to image boundary:
-  uint64_t image_end = (image_size + 0xFFFFULL) & ~0xFFFFULL;
-  if (image_end < 0x10000ULL) {
-    image_end = 0x10000ULL;
+  // System block right after the images.
+  uint64_t image_end = cfg->image_end;
+  if (arena->flat) {
+    image_end = (image_size + 0xFFFFULL) & ~0xFFFFULL;
+    if (image_end < 0x10000ULL) image_end = 0x10000ULL;
   }
-
-  // Reserve 64KB for Static TLS block immediately before TCB
+  if (image_end < arena->guest_lo) image_end = arena->guest_lo;
   uint64_t tls_area = image_end;
   uint64_t tcb_addr = tls_area + 0x10000ULL;
+  uint64_t args_addr = tcb_addr + 0x10000ULL;
+  uint64_t sys_end = args_addr + 0x10000ULL;
+
+  // Main stack. The flat arena puts it at the top of its window, as before.
+  uint64_t stack_top = cfg->stack_top, stack_len = cfg->stack_len;
+  if (arena->flat) {
+    stack_top = arena->guest_hi < 0x800000000ULL ? arena->guest_hi : 0x800000000ULL;
+    if (stack_len > stack_top / 4) stack_len = (stack_top / 4) & ~NPS5_PAGE_MASK;
+  }
+  uint64_t stack_lo = stack_top - stack_len;
+  uint64_t guard_lo = stack_lo - NPS5_PAGE;
+  if (stack_top > arena->guest_hi || stack_len == 0 || guard_lo < sys_end) {
+    fprintf(stderr, "[ps4-recomp] FATAL: guest layout does not fit: images end 0x%llx, stack 0x%llx-0x%llx, space ends 0x%llx\n",
+            (unsigned long long)image_end, (unsigned long long)stack_lo, (unsigned long long)stack_top,
+            (unsigned long long)arena->guest_hi);
+    nps5_mem_release();
+    free(ctx);
+    return NULL;
+  }
+  if (nps5_mem_commit(tls_area, sys_end - tls_area) != 0 || nps5_mem_commit(stack_lo, stack_len) != 0) {
+    fprintf(stderr, "[ps4-recomp] FATAL: cannot commit the guest system block or main stack: %s\n", strerror(errno));
+    nps5_mem_release();
+    free(ctx);
+    return NULL;
+  }
+  nps5_mem_note_range(NPS5_FA_SYSTEM, tls_area, sys_end, "system block");
+  nps5_mem_note_range(NPS5_FA_STACK_GUARD, guard_lo, stack_lo, "main stack guard");
+  nps5_mem_note_range(NPS5_FA_STACK, stack_lo, stack_top, "main stack");
+
   ctx->fs_base = tcb_addr;
   MEM_U64(tcb_addr) = tcb_addr;
   MEM_U64(tcb_addr + 0x28ULL) = 0x595e9fbd94fda766ULL;
@@ -462,8 +738,7 @@ GuestContext *recomp_init_runtime(size_t guest_mem_sz, const uint8_t *elf_image,
   ctx->mxcsr = 0x1f80;
   ctx->fpu_cw = 0x037f;
 
-  // Set up process arguments at tcb_addr + 0x10000 for _start_ps4_c
-  uint64_t args_addr = tcb_addr + 0x10000ULL;
+  // Process arguments for _start_ps4_c
   ctx->args_addr = args_addr;
   uint64_t prog_name_addr = args_addr + 0x100ULL;
   const char *pname = "/app0/eboot.bin";
@@ -487,79 +762,32 @@ GuestContext *recomp_init_runtime(size_t guest_mem_sz, const uint8_t *elf_image,
   // RDI points to the argument structure
   ctx->rdi = args_addr;
 
-  // Initialize guest heap pointer after args area
-  ctx->heap_ptr = (args_addr + 0x10000ULL + 0xFFFULL) & ~0xFFFULL;
+  ctx->heap_ptr = sys_end;
 
-  // Set up process root context and VM extent manager
+  // Process root context and VM extent manager. The extent list is sorted by address and
+  // covers [sys_end, guest_hi): free space below and above the main stack, the stack and its
+  // guard page. Images and the system block are outside it (they are never unmapped).
   ctx->process_ctx = ctx;
+  g_nps5_vm_root = ctx;
   pthread_mutex_init(&ctx->vm_mutex, NULL);
+  GuestVMExtent *tail = NULL;
+  tail = vm_init_append(ctx, tail, sys_end, guard_lo - sys_end, true, NULL);
+  tail = vm_init_append(ctx, tail, guard_lo, NPS5_PAGE, false, "stack_guard");
+  tail->prot = 0;
+  tail->kind = NPS5_EXT_STACK_GUARD;
+  tail = vm_init_append(ctx, tail, stack_lo, stack_len, false, "main_stack");
+  tail->kind = NPS5_EXT_MAIN_STACK;
+  tail = vm_init_append(ctx, tail, stack_top, arena->guest_hi - stack_top, true, NULL);
 
-  // Set up initial free VM extent for heap
-  // In PS4, system managed / flexible memory is below 32 GB (0x800000000ULL),
-  // and user memory pools start at 64 GB (0x1000000000ULL).
-  // Keep dynamic heap and main thread stack inside the lower 32 GB window.
-  uint64_t low_mem_limit = 0x800000000ULL; // 32 GB PS4 system memory boundary
-  if (low_mem_limit > guest_mem_sz) {
-    low_mem_limit = guest_mem_sz;
-  }
-  uint64_t stack_floor = (low_mem_limit > (64ULL * 1024 * 1024))
-                             ? (low_mem_limit - (64ULL * 1024 * 1024))
-                             : low_mem_limit;
-  uint64_t heap_start = (ctx->heap_ptr + 4095ULL) & ~4095ULL;
-  if (heap_start < stack_floor) {
-    GuestVMExtent *root = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    root->addr = heap_start;
-    root->size = stack_floor - heap_start;
-    root->is_free = true;
-    ctx->vm_extents = root;
-  }
-
-  // Also register the user pool area [0x1000000000 .. guest_mem_sz) as free
-  // extents
-  if (guest_mem_sz > 0x1000000000ULL) {
-    GuestVMExtent *pool_extent =
-        (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    pool_extent->addr = 0x1000000000ULL;
-    pool_extent->size = guest_mem_sz - 0x1000000000ULL;
-    pool_extent->is_free = true;
-    GuestVMExtent *tail = ctx->vm_extents;
-    while (tail && tail->next)
-      tail = tail->next;
-    if (tail) {
-      tail->next = pool_extent;
-      pool_extent->prev = tail;
-    } else {
-      ctx->vm_extents = pool_extent;
-    }
-  }
-
-  // Set up guest stack at top of low memory region (growing downwards)
-  ctx->stack_base = stack_floor;
-  ctx->stack_alloc_size = low_mem_limit - stack_floor;
-  ctx->rsp = (low_mem_limit - 0x1000ULL) & ~0xFFULL;
+  ctx->stack_base = stack_lo;
+  ctx->stack_alloc_size = stack_len;
+  ctx->rsp = (stack_top - 0x1000ULL) & ~0xFFULL;
   ctx->rbp = ctx->rsp;
-
-  // Register main thread stack extent in VM extents
-  GuestVMExtent *stack_extent = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-  if (stack_extent) {
-    stack_extent->addr = stack_floor;
-    stack_extent->size = low_mem_limit - stack_floor;
-    stack_extent->is_free = false;
-    stack_extent->prot = PROT_READ | PROT_WRITE;
-    strncpy(stack_extent->name, "main_stack", sizeof(stack_extent->name) - 1);
-    GuestVMExtent *tail = ctx->vm_extents;
-    while (tail && tail->next)
-      tail = tail->next;
-    if (tail) {
-      tail->next = stack_extent;
-      stack_extent->prev = tail;
-    } else {
-      ctx->vm_extents = stack_extent;
-    }
-  }
+  recomp_vm_note_change();
 
   ctx->thread_id = 1000;
   recomp_init_main_thread(ctx);
+  nps5_agc_bind_guest_memory(ctx);
 
   return ctx;
 }
@@ -592,7 +820,7 @@ static void *watch_thread(void *arg) {
 }
 static void start_watch(GuestContext *ctx) {
   const char *w = getenv("PS4_WATCH");
-  if (!w || !ctx || !ctx->mem_base) return;
+  if (!w || !ctx || !RECOMP_MEM_OK(ctx)) return;
   char *end;
   uint64_t addr = strtoull(w, &end, 16);
   size_t len = 16;
@@ -605,6 +833,84 @@ static void start_watch(GuestContext *ctx) {
   pthread_t t;
   pthread_create(&t, NULL, watch_thread, NULL);
   fprintf(stderr, "[watch] watching guest 0x%llx len %zu\n", (unsigned long long)addr, len);
+}
+
+// guest_image.bin (emitter.EncodeGuestImage): magic, region table {guest addr, size, file
+// offset}, segment table {guest addr, memsz, ELF PF_* flags}, region bytes. Regions are
+// committed and filled; guest code segments are then made read-only (to the host they are
+// data: jump tables and constants are read from them, nothing executes or writes them).
+static int load_guest_image(GuestContext *ctx, FILE *fp, const char *path) {
+  static const char magic[8] = {'N', 'P', 'S', '5', 'I', 'M', 'G', 1};
+  struct {
+    char magic[8];
+    uint32_t nregions, nsegments;
+  } hdr;
+  if (fread(&hdr, sizeof(hdr), 1, fp) != 1 || memcmp(hdr.magic, magic, sizeof(magic)) != 0) {
+    fprintf(stderr, "[ps4-recomp] FATAL: %s is not a sparse guest image (NPS5IMG v1); retranslate the title\n", path);
+    return -1;
+  }
+  if (hdr.nregions == 0 || hdr.nregions > 4096 || hdr.nsegments > 65536) {
+    fprintf(stderr, "[ps4-recomp] FATAL: %s: implausible table sizes (%u regions, %u segments)\n", path, hdr.nregions,
+            hdr.nsegments);
+    return -1;
+  }
+  typedef struct {
+    uint64_t addr, size, off;
+  } Region;
+  typedef struct {
+    uint64_t addr, memsz;
+    uint32_t flags, reserved;
+  } Seg;
+  Region *regions = (Region *)calloc(hdr.nregions, sizeof(Region));
+  Seg *segs = (Seg *)calloc(hdr.nsegments ? hdr.nsegments : 1, sizeof(Seg));
+  int rc = -1;
+  if (!regions || !segs || fread(regions, sizeof(Region), hdr.nregions, fp) != hdr.nregions ||
+      fread(segs, sizeof(Seg), hdr.nsegments, fp) != hdr.nsegments) {
+    fprintf(stderr, "[ps4-recomp] FATAL: %s: truncated image tables\n", path);
+    goto out;
+  }
+  const uint64_t image_end = g_nps5_arena.flat ? g_nps5_arena.guest_hi : nps5_mem_config.image_end;
+  size_t total = 0;
+  for (uint32_t i = 0; i < hdr.nregions; i++) {
+    const Region *r = &regions[i];
+    if (!nps5_guest_range_ok(r->addr, r->size) || r->addr + r->size > image_end) {
+      fprintf(stderr,
+              "[ps4-recomp] FATAL: %s: image region 0x%llx-0x%llx is outside the image area 0x%llx-0x%llx of this "
+              "title's memory layout\n",
+              path, (unsigned long long)r->addr, (unsigned long long)(r->addr + r->size),
+              (unsigned long long)g_nps5_arena.guest_lo, (unsigned long long)image_end);
+      goto out;
+    }
+    if (nps5_mem_commit(r->addr, r->size) != 0) {
+      fprintf(stderr, "[ps4-recomp] FATAL: cannot commit image region 0x%llx (+0x%llx): %s\n", (unsigned long long)r->addr,
+              (unsigned long long)r->size, strerror(errno));
+      goto out;
+    }
+    if (fseeko(fp, (off_t)r->off, SEEK_SET) != 0 || fread(ctx->mem_base + r->addr, 1, r->size, fp) != r->size) {
+      fprintf(stderr, "[ps4-recomp] FATAL: %s: short read of image region 0x%llx (+0x%llx)\n", path,
+              (unsigned long long)r->addr, (unsigned long long)r->size);
+      goto out;
+    }
+    nps5_mem_note_range(NPS5_FA_IMAGE, r->addr & ~NPS5_PAGE_MASK, (r->addr + r->size + NPS5_PAGE_MASK) & ~NPS5_PAGE_MASK,
+                        "image");
+    total += r->size;
+  }
+  size_t ro = 0;
+  for (uint32_t i = 0; i < hdr.nsegments; i++) {
+    const Seg *sg = &segs[i];
+    // PF_X = 1, PF_W = 2. Only whole pages inside an executable, non-writable segment.
+    if ((sg->flags & 1) && !(sg->flags & 2) && nps5_guest_range_ok(sg->addr, sg->memsz) &&
+        nps5_mem_protect_inner(sg->addr, sg->memsz, PROT_READ) == 0)
+      ro += sg->memsz;
+  }
+  printf("[ps4-recomp] Loaded guest image: %u regions, %zu bytes at guest 0x%llx-0x%llx; %zu bytes of guest code read-only\n",
+         hdr.nregions, total, (unsigned long long)regions[0].addr,
+         (unsigned long long)(regions[hdr.nregions - 1].addr + regions[hdr.nregions - 1].size), ro);
+  rc = 0;
+out:
+  free(regions);
+  free(segs);
+  return rc;
 }
 
 GuestContext *recomp_init_runtime_file(const char *image_filename,
@@ -667,80 +973,28 @@ GuestContext *recomp_init_runtime_file(const char *image_filename,
     return NULL;
   }
 
-  fseek(fp, 0, SEEK_END);
-  long sz = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
-
-  size_t image_sz = (sz > 0) ? (size_t)sz : 0;
-  GuestContext *ctx =
-      recomp_init_runtime(requested_mem_sz, NULL, image_sz, prog_name);
+  GuestContext *ctx = recomp_init_runtime(requested_mem_sz, NULL, 0, prog_name);
   if (!ctx) {
     fclose(fp);
     return NULL;
   }
-
-  printf("[ps4-recomp] Loading guest memory image (%zu bytes), allocated "
-         "dynamic address space (%.1f MB)\n",
-         image_sz, (double)ctx->mem_size / (1024.0 * 1024.0));
-
-  if (sz > 0) {
-    size_t nread = fread(ctx->mem_base, 1, sz, fp);
-    if (nread != (size_t)sz) {
-      fprintf(stderr,
-              "[ps4-recomp] Warning: only read %zu of %ld bytes from %s\n",
-              nread, sz, path);
-    }
+  if (load_guest_image(ctx, fp, path) != 0) {
+    fclose(fp);
+    return NULL;
   }
   fclose(fp);
 
-  // PS4_NULL_GUARD=1 makes guest [0, 0x10000) inaccessible, so NULL dereferences fault.
-  // Off by default: the C build read zeros there and the acceptance bar is "no worse than
-  // the C build"; the eboot's first segment also starts at guest address 0 in some games.
-  // GPU windows never cover this range (ps4_gnm_guest_window.h), so Metal works either way.
-  const char *null_guard = getenv("PS4_NULL_GUARD");
-  if (null_guard && null_guard[0] == '1') {
-    if (mprotect(ctx->mem_base, 0x10000, PROT_NONE) == 0) {
-      fprintf(stderr, "[ps4-recomp] PS4_NULL_GUARD: guest [0, 0x10000) is PROT_NONE\n");
-    } else {
-      fprintf(stderr, "[ps4-recomp] PS4_NULL_GUARD: mprotect failed: %s\n", strerror(errno));
-    }
-  }
-
-  // Universal non-local jump registration:
-  // Dynamically resolve sigsetjmp / setjmp by PS4 standard NID or symbol name
-  static const char *const s_setjmp_names[] = {
-      "gNQ1V2vfXDE", // PS4 libc sigsetjmp NID
-      "sigsetjmp",
-      "_setjmp",
-      "setjmp",
-  };
-  for (size_t i = 0; i < sizeof(s_setjmp_names) / sizeof(s_setjmp_names[0]); i++) {
-    uint64_t addr = recomp_resolve_symbol("libc.prx", s_setjmp_names[i]);
-    if (!addr) {
-      addr = recomp_resolve_symbol(NULL, s_setjmp_names[i]);
-    }
-    if (addr) {
-      recomp_register_fn(addr, (recomp_fn_t)recomp_guest_setjmp);
-      fprintf(stderr, "[recomp-jmp] Hooked universal setjmp into dispatch table at 0x%llx (%s)\n",
-              (unsigned long long)addr, s_setjmp_names[i]);
-    }
-  }
-
-  pthread_mutex_lock(&g_unresolved_mutex);
-  for (int b = 0; b < UNRESOLVED_BUCKETS; b++) {
-    for (RecompUnresolvedSym *curr = g_unresolved_table[b]; curr; curr = curr->next) {
-      for (size_t i = 0; i < sizeof(s_setjmp_names) / sizeof(s_setjmp_names[0]); i++) {
-        if ((curr->nid && strcmp(curr->nid, s_setjmp_names[i]) == 0) ||
-            (curr->sym_name && strcmp(curr->sym_name, s_setjmp_names[i]) == 0)) {
-          recomp_register_fn(curr->addr, (recomp_fn_t)recomp_guest_setjmp);
-          fprintf(stderr, "[recomp-jmp] Hooked unresolved setjmp stub at 0x%llx (%s)\n",
-                  (unsigned long long)curr->addr, s_setjmp_names[i]);
-          break;
-        }
+  // HLE libc data imports (__stdoutp, __isthreaded, ...): a data import's GOT slot must hold the
+  // address of the variable, so give each one a guest cell (modules/libc/nps5_libc_core.c).
+  {
+    pthread_mutex_lock(&g_unresolved_mutex);
+    for (int b = 0; b < UNRESOLVED_BUCKETS; b++)
+      for (RecompUnresolvedSym *curr = g_unresolved_table[b]; curr; curr = curr->next) {
+        const char *nm = curr->sym_name && *curr->sym_name ? curr->sym_name : curr->nid;
+        if (nm) nps5_libc_bind_data_import(ctx, curr->addr, nm);
       }
-    }
+    pthread_mutex_unlock(&g_unresolved_mutex);
   }
-  pthread_mutex_unlock(&g_unresolved_mutex);
 
   start_watch(ctx);
   return ctx;
@@ -756,7 +1010,7 @@ void recomp_init_process_param(GuestContext *ctx, uint64_t proc_param_addr) {
   // The kernel sizes direct memory from the process's memory parameters at process start,
   // before the game's malloc init below allocates any.
   ps4_direct_mem_configure(ctx, proc_param_addr);
-  if (!ctx->mem_base || proc_param_addr == 0)
+  if (!RECOMP_MEM_OK(ctx) || proc_param_addr == 0)
     return;
   if (proc_param_addr + 0x40 > ctx->mem_size)
     return;
@@ -772,7 +1026,7 @@ void recomp_init_process_param(GuestContext *ctx, uint64_t proc_param_addr) {
         *(uint64_t *)(ctx->mem_base + libc_param_addr + 0x30ULL);
     uint64_t new_replace_addr =
         *(uint64_t *)(ctx->mem_base + libc_param_addr + 0x38ULL);
-    printf("[ps4-mem] SceLibcParam at 0x%llx: size=0x%llx ver=%u.%u malloc_replace=0x%llx new_replace=0x%llx\n",
+    PS4_LOGF(NPS5_S_MEM, NPS5_L_DEBUG, "ps4-mem", "SceLibcParam at 0x%llx: size=0x%llx ver=%u.%u malloc_replace=0x%llx new_replace=0x%llx\n",
            (unsigned long long)libc_param_addr, (unsigned long long)lp_size, lp_maj, lp_min,
            (unsigned long long)malloc_replace_addr, (unsigned long long)new_replace_addr);
 
@@ -795,7 +1049,7 @@ void recomp_init_process_param(GuestContext *ctx, uint64_t proc_param_addr) {
         uint64_t init_func =
             *(uint64_t *)(ctx->mem_base + malloc_replace_addr + 0x10ULL);
         uint64_t malloc_func = *(uint64_t *)(ctx->mem_base + malloc_replace_addr + 0x20ULL);
-        printf("[ps4-mem] SceLibcMallocReplace at 0x%llx: size=0x%llx init=0x%llx malloc=0x%llx\n",
+        PS4_LOGF(NPS5_S_MEM, NPS5_L_DEBUG, "ps4-mem", "SceLibcMallocReplace at 0x%llx: size=0x%llx init=0x%llx malloc=0x%llx\n",
                (unsigned long long)malloc_replace_addr, (unsigned long long)mr_size,
                (unsigned long long)init_func, (unsigned long long)malloc_func);
         if (init_func != 0 && init_func < ctx->mem_size) {
@@ -878,7 +1132,7 @@ void recomp_init_tls_modules(GuestContext *ctx, const RecompTlsModule *mods, siz
             (unsigned long long)static_tls_size);
     abort();
   }
-  if (ctx->mem_base && ctx->fs_base >= static_tls_size) {
+  if (RECOMP_MEM_OK(ctx) && ctx->fs_base >= static_tls_size) {
     tls_init_area(ctx->mem_base, ctx->fs_base, static_tls_size);
     for (size_t i = 0; i < count; i++)
       printf("[ps4-recomp] TLS module %llu: vaddr=0x%llx filesz=0x%llx memsz=0x%llx align=%llu at fs-0x%llx\n",
@@ -890,7 +1144,7 @@ void recomp_init_tls_modules(GuestContext *ctx, const RecompTlsModule *mods, siz
 }
 
 void recomp_setup_entry_args(GuestContext *ctx, int argc, char **argv, uint64_t entry_addr) {
-  if (!ctx || !ctx->mem_base) return;
+  if (!ctx || !RECOMP_MEM_OK(ctx)) return;
 
   uint64_t args_addr = ctx->args_addr;
   if (!args_addr) {
@@ -969,7 +1223,8 @@ extern const char g_recomp_guest_text_start[] __asm("section$start$__TEXT$__reco
 extern const char g_recomp_guest_text_end[] __asm("section$end$__TEXT$__recomp_guest");
 
 bool recomp_pc_in_guest_code(uint64_t pc) {
-  return pc >= (uint64_t)(uintptr_t)g_recomp_guest_text_start && pc < (uint64_t)(uintptr_t)g_recomp_guest_text_end;
+  if (pc >= (uint64_t)(uintptr_t)g_recomp_guest_text_start && pc < (uint64_t)(uintptr_t)g_recomp_guest_text_end) return true;
+  return nps5_diag_pc_in_fragment(pc) != 0; // tier-1 fragment dylibs (nps5_tier1.c)
 }
 #else
 bool recomp_pc_in_guest_code(uint64_t pc) {
@@ -994,9 +1249,9 @@ void recomp_free_runtime(GuestContext *ctx) {
   ps4_gnmdriver_destroy();
   ps4_ajm_destroy();
 
-  if (ctx->mem_base) {
-    munmap(ctx->mem_base, ctx->mem_size);
-  }
+  dump_map_if_asked();
+  nps5_mem_release();
+  g_nps5_vm_root = NULL;
   GuestVMExtent *ext = ctx->vm_extents;
   while (ext) {
     GuestVMExtent *next = ext->next;
@@ -1015,91 +1270,11 @@ void recomp_free_runtime(GuestContext *ctx) {
       g_dispatch_l1[i] = NULL;
     }
   }
+  lazy_free();
   free(ctx);
 }
 
-// Guest non-local control transfers (longjmp, C++ exception unwinding: libunwind's jumpto)
-// restore the target frame's registers and RET to an address that is not the caller's. The
-// ARM64 assembly backend returns through the host return address of each guest call (contract
-// at recomp_enter_guest), so such a RET would continue after the call that started the
-// transfer. Neither TLOU nor Uncharted 4 imports longjmp, setjmp, __cxa_throw or _Unwind_*;
-// libc.prx reaches them only on error paths. These shims stop there with a report.
-static uint64_t guest_return_address(GuestContext *ctx) {
-  return ctx->rsp + 8 <= ctx->mem_size ? *(uint64_t *)(ctx->mem_base + ctx->rsp) : 0;
-}
-
-static _Thread_local GuestJmpRecord s_jmp_records[RECOMP_MAX_JMP_RECORDS];
-static _Thread_local int s_jmp_record_count = 0;
-
-void recomp_save_jmp_record(GuestContext *ctx, const GuestJmpRecord *rec) {
-  (void)ctx;
-  if (!rec) return;
-  for (int i = 0; i < s_jmp_record_count; i++) {
-    if (s_jmp_records[i].env == rec->env) {
-      s_jmp_records[i] = *rec;
-      return;
-    }
-  }
-  if (s_jmp_record_count < RECOMP_MAX_JMP_RECORDS) {
-    s_jmp_records[s_jmp_record_count++] = *rec;
-  } else {
-    memmove(&s_jmp_records[0], &s_jmp_records[1], sizeof(GuestJmpRecord) * (RECOMP_MAX_JMP_RECORDS - 1));
-    s_jmp_records[RECOMP_MAX_JMP_RECORDS - 1] = *rec;
-  }
-}
-
-void shim_guest_nonlocal_jump(GuestContext *ctx) {
-  uint64_t env = ctx->rdi;
-  int val = ctx->rsi ? (int)ctx->rsi : 1;
-
-  GuestJmpRecord *rec = NULL;
-  int found_idx = -1;
-  for (int i = s_jmp_record_count - 1; i >= 0; i--) {
-    if (s_jmp_records[i].env == env) {
-      rec = &s_jmp_records[i];
-      found_idx = i;
-      break;
-    }
-  }
-
-  if (!rec) {
-    fprintf(stderr,
-            "\nFATAL: guest longjmp(env=0x%llx, val=%d) called from 0x%llx: non-local jumps are not "
-            "supported without matching setjmp (no matching setjmp frame found)\n",
-            (unsigned long long)env, val, (unsigned long long)guest_return_address(ctx));
-    recomp_dump_guest_context(ctx);
-    fflush(stderr);
-    abort();
-  }
-
-  GuestJmpRecord target = *rec;
-  s_jmp_record_count = found_idx;
-
-  fprintf(stderr,
-          "[recomp-jmp] guest longjmp(env=0x%llx, val=%d) -> unwinding to host_sp=0x%lx host_x30=0x%lx guest_rip=0x%llx\n",
-          (unsigned long long)env, val, (unsigned long)target.host_sp, (unsigned long)target.host_x30,
-          (unsigned long long)target.guest_rip);
-  fflush(stderr);
-
-  recomp_guest_do_longjmp(ctx, &target, val);
-}
-
-// __cxa_throw(void *object, std::type_info *type, void (*dtor)(void *)); __cxa_rethrow(void).
-void shim_guest_cxa_throw(GuestContext *ctx) {
-  const char *type = "?";
-  const uint64_t ti = ctx->rdi && ctx->rsi ? ctx->rsi : 0; // __cxa_rethrow has no type argument
-  if (ti && ti + 16 <= ctx->mem_size) {
-    const uint64_t name = *(uint64_t *)(ctx->mem_base + ti + 8); // Itanium type_info::__name
-    if (name && name < ctx->mem_size) type = (const char *)(ctx->mem_base + name);
-  }
-  fprintf(stderr,
-          "\nFATAL: guest C++ exception (type %.80s) thrown from 0x%llx: exception unwinding is not "
-          "supported by the ARM64 assembly backend\n",
-          type, (unsigned long long)guest_return_address(ctx));
-  recomp_dump_guest_context(ctx);
-  fflush(stderr);
-  abort();
-}
+// Guest non-local control transfers (setjmp/longjmp, C++ landing pads) live in nps5_eh.c.
 
 // C backend only: recompiled C functions push UnwindFrames; assembly code never does.
 void recomp_unwind_to(GuestContext *ctx, uint64_t target_ip) {
@@ -1118,442 +1293,6 @@ void recomp_unwind_to(GuestContext *ctx, uint64_t target_ip) {
   abort();
 }
 
-uint64_t recomp_vm_alloc_named_aligned(GuestContext *ctx, size_t size,
-                                       size_t alignment, int prot, int flags,
-                                       const char *name) {
-  if (!ctx || size == 0)
-    return (uint64_t)-1;
-  if (alignment < 4096)
-    alignment = 4096;
-  GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-  size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
-
-  printf("[ps4-vm] recomp_vm_alloc_named_aligned (%s): size=%zu (%.2f MB) "
-         "align=%zu flags=0x%x\n",
-         name ? name : "null", size, (double)size / (1024.0 * 1024.0),
-         alignment, flags);
-  fflush(stdout);
-
-  pthread_mutex_lock(&proc->vm_mutex);
-
-  GuestVMExtent *curr = proc->vm_extents;
-  GuestVMExtent *best = NULL;
-  uint64_t best_aligned_addr = 0;
-
-  // Pass 1: search in preferred region
-  while (curr) {
-    if (curr->is_free) {
-      uint64_t cand_addr = (curr->addr + alignment - 1) & ~(alignment - 1);
-      if (cand_addr >= curr->addr &&
-          (cand_addr + aligned_size) <= (curr->addr + curr->size)) {
-        if (curr->addr < 0x800000000ULL || (flags & 0x80) ||
-            (name && strstr(name, "pool"))) {
-          if (!best || curr->size < best->size) {
-            best = curr;
-            best_aligned_addr = cand_addr;
-            if (curr->size == aligned_size && cand_addr == curr->addr)
-              break;
-          }
-        }
-      }
-    }
-    curr = curr->next;
-  }
-
-  // Pass 2: if preferred region is exhausted, allow any free extent in virtual
-  // space
-  if (!best) {
-    curr = proc->vm_extents;
-    while (curr) {
-      if (curr->is_free) {
-        uint64_t cand_addr = (curr->addr + alignment - 1) & ~(alignment - 1);
-        if (cand_addr >= curr->addr &&
-            (cand_addr + aligned_size) <= (curr->addr + curr->size)) {
-          if (!best || curr->size < best->size) {
-            best = curr;
-            best_aligned_addr = cand_addr;
-            if (curr->size == aligned_size && cand_addr == curr->addr)
-              break;
-          }
-        }
-      }
-      curr = curr->next;
-    }
-  }
-
-  if (!best) {
-    fprintf(stderr,
-            "[vmm] ERROR: recomp_vm_alloc_named_aligned failed to find extent "
-            "for size=%zu (0x%zx), align=%zu, name=%s\n",
-            size, size, alignment, name ? name : "(null)");
-    curr = proc->vm_extents;
-    while (curr) {
-      if (curr->is_free) {
-        fprintf(stderr, "  [free extent] addr=0x%llx size=%zu (0x%zx)\n",
-                (unsigned long long)curr->addr, curr->size, curr->size);
-      }
-      curr = curr->next;
-    }
-    pthread_mutex_unlock(&proc->vm_mutex);
-    return (uint64_t)-1;
-  }
-
-  // Split leading padding if best_aligned_addr > best->addr
-  if (best_aligned_addr > best->addr) {
-    GuestVMExtent *prefix = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    if (!prefix) {
-      pthread_mutex_unlock(&proc->vm_mutex);
-      return (uint64_t)-1;
-    }
-    prefix->addr = best->addr;
-    prefix->size = best_aligned_addr - best->addr;
-    prefix->is_free = true;
-    prefix->prev = best->prev;
-    prefix->next = best;
-    if (best->prev) {
-      best->prev->next = prefix;
-    } else {
-      proc->vm_extents = prefix;
-    }
-    best->prev = prefix;
-    best->addr = best_aligned_addr;
-    best->size -= prefix->size;
-  }
-
-  // Split trailing remainder
-  if (best->size > aligned_size) {
-    GuestVMExtent *split = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    if (split) {
-      split->addr = best->addr + aligned_size;
-      split->size = best->size - aligned_size;
-      split->is_free = true;
-      split->prev = best;
-      split->next = best->next;
-      if (best->next) {
-        best->next->prev = split;
-      }
-      best->next = split;
-      best->size = aligned_size;
-    }
-  }
-
-  best->is_free = false;
-  best->prot = prot;
-  best->flags = flags;
-  if (name) {
-    strncpy(best->name, name, sizeof(best->name) - 1);
-    best->name[sizeof(best->name) - 1] = '\0';
-  } else {
-    best->name[0] = '\0';
-  }
-  uint64_t res = best->addr;
-  recomp_vm_note_change();
-  pthread_mutex_unlock(&proc->vm_mutex);
-  // printed after the unlock: stdout may block, and vm_mutex is also taken by the renderer
-  printf("[ps4-vm] recomp_vm_alloc_named_aligned SUCCESS: addr=0x%llx\n",
-         (unsigned long long)res);
-  fflush(stdout);
-  return res;
-}
-
-uint64_t recomp_vm_alloc_named(GuestContext *ctx, size_t size, int prot,
-                               int flags, const char *name) {
-  return recomp_vm_alloc_named_aligned(ctx, size, 4096, prot, flags, name);
-}
-
-uint64_t recomp_vm_alloc(GuestContext *ctx, size_t size) {
-  return recomp_vm_alloc_named(ctx, size, PROT_READ | PROT_WRITE, 0, "anon");
-}
-
-uint64_t recomp_vm_alloc_fixed(GuestContext *ctx, uint64_t desired_addr,
-                               size_t size, int prot, int flags,
-                               const char *name) {
-  if (!ctx || size == 0)
-    return (uint64_t)-1;
-  GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-  uint64_t aligned_addr = desired_addr & ~4095ULL;
-  size_t aligned_size = (size + 4095ULL) & ~4095ULL;
-
-  printf("[ps4-vm] recomp_vm_alloc_fixed (%s): desired=0x%llx size=%zu (%.2f "
-         "MB)\n",
-         name ? name : "null", (unsigned long long)desired_addr, size,
-         (double)size / (1024.0 * 1024.0));
-  fflush(stdout);
-  if (aligned_addr + aligned_size > proc->mem_size ||
-      aligned_addr + aligned_size < aligned_addr) {
-    return (uint64_t)-1;
-  }
-
-  pthread_mutex_lock(&proc->vm_mutex);
-
-  GuestVMExtent *curr = proc->vm_extents;
-  while (curr) {
-    if ((curr->is_free || (curr->name[0] && strstr(curr->name, "reserved"))) &&
-        curr->addr <= aligned_addr &&
-        (curr->addr + curr->size) >= (aligned_addr + aligned_size)) {
-      break;
-    }
-    curr = curr->next;
-  }
-
-  if (!curr) {
-    pthread_mutex_unlock(&proc->vm_mutex);
-    return (uint64_t)-1;
-  }
-
-  // Split leading part if desired_addr > curr->addr
-  if (aligned_addr > curr->addr) {
-    GuestVMExtent *prefix = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    if (!prefix) {
-      pthread_mutex_unlock(&proc->vm_mutex);
-      return (uint64_t)-1;
-    }
-    prefix->addr = curr->addr;
-    prefix->size = aligned_addr - curr->addr;
-    prefix->is_free = true;
-    prefix->prev = curr->prev;
-    prefix->next = curr;
-    if (curr->prev) {
-      curr->prev->next = prefix;
-    } else {
-      proc->vm_extents = prefix;
-    }
-    curr->prev = prefix;
-    curr->addr = aligned_addr;
-    curr->size -= prefix->size;
-  }
-
-  // Split trailing part if curr->size > aligned_size
-  if (curr->size > aligned_size) {
-    GuestVMExtent *suffix = (GuestVMExtent *)calloc(1, sizeof(GuestVMExtent));
-    if (suffix) {
-      suffix->addr = curr->addr + aligned_size;
-      suffix->size = curr->size - aligned_size;
-      suffix->is_free = true;
-      suffix->prev = curr;
-      suffix->next = curr->next;
-      if (curr->next) {
-        curr->next->prev = suffix;
-      }
-      curr->next = suffix;
-      curr->size = aligned_size;
-    }
-  }
-
-  curr->is_free = false;
-  curr->prot = prot;
-  curr->flags = flags;
-  if (name) {
-    strncpy(curr->name, name, sizeof(curr->name) - 1);
-    curr->name[sizeof(curr->name) - 1] = '\0';
-  } else {
-    curr->name[0] = '\0';
-  }
-  recomp_vm_note_change();
-
-  pthread_mutex_unlock(&proc->vm_mutex);
-  return aligned_addr;
-}
-
-GuestVMExtent *recomp_vm_find(GuestContext *ctx, uint64_t addr) {
-  if (!ctx)
-    return NULL;
-  GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-  pthread_mutex_lock(&proc->vm_mutex);
-  GuestVMExtent *curr = proc->vm_extents;
-  while (curr) {
-    if (addr >= curr->addr && addr < (curr->addr + curr->size)) {
-      pthread_mutex_unlock(&proc->vm_mutex);
-      return curr;
-    }
-    curr = curr->next;
-  }
-  pthread_mutex_unlock(&proc->vm_mutex);
-  return NULL;
-}
-
-// ---- Provably unmapped guest ranges, for readers that must not take vm_mutex per query ----
-// The GPU renderer treats a T# table entry whose T# starts in such a range as unbound. A range is
-// provably unmapped when it is inside a free extent or inside a reservation that nothing was
-// mapped into (an extent named "reserved": sceKernelReserveVirtualRange; mapping into it splits it
-// and renames the mapped part). Everything else is mapped as far as this classification goes:
-// module images and the other memory the runtime places outside the extent windows have no extent
-// at all, and the protection of an extent (sceKernelMprotect may set PROT_NONE on a whole extent
-// for one guard page) says nothing about whether memory is there.
-// g_vm_generation changes, with vm_mutex held, whenever an extent becomes free or mapped or is
-// renamed, so a reader can keep a copy of the ranges and refresh it only when it changed.
-static _Atomic uint64_t g_vm_generation = 1;
-
-void recomp_vm_note_change(void) {
-  atomic_fetch_add_explicit(&g_vm_generation, 1, memory_order_release);
-}
-
-uint64_t recomp_vm_generation(void) {
-  return atomic_load_explicit(&g_vm_generation, memory_order_acquire);
-}
-
-static bool vm_extent_unmapped(const GuestVMExtent *e) {
-  return e->is_free || strcmp(e->name, "reserved") == 0;
-}
-
-size_t recomp_vm_unmapped_ranges(GuestContext *ctx, uint64_t (*out)[2], size_t max, uint64_t *gen) {
-  if (!ctx)
-    return 0;
-  GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-  size_t n = 0;
-  uint64_t cur_start = 0, cur_end = 0;
-  bool open = false;
-  pthread_mutex_lock(&proc->vm_mutex);
-  if (gen)
-    *gen = atomic_load_explicit(&g_vm_generation, memory_order_acquire);
-  for (const GuestVMExtent *e = proc->vm_extents; e; e = e->next) {
-    if (!vm_extent_unmapped(e) || e->size == 0)
-      continue;
-    if (open && e->addr == cur_end) {
-      cur_end = e->addr + e->size; // adjacent: merge
-      continue;
-    }
-    if (open) {
-      if (n < max) {
-        out[n][0] = cur_start;
-        out[n][1] = cur_end;
-      }
-      n++;
-    }
-    cur_start = e->addr;
-    cur_end = e->addr + e->size;
-    open = true;
-  }
-  if (open) {
-    if (n < max) {
-      out[n][0] = cur_start;
-      out[n][1] = cur_end;
-    }
-    n++;
-  }
-  pthread_mutex_unlock(&proc->vm_mutex);
-  return n;
-}
-
-void ps4_direct_mem_on_unmap(GuestContext *ctx, uint64_t addr, size_t size);
-
-// Splits the non-free extent that strictly contains `at` into [addr, at) and [at, end); both
-// halves keep every attribute (name, prot, flags, mtype). Caller holds vm_mutex. Returns false
-// only when memory for the second half is unavailable (nothing is changed then).
-bool recomp_vm_split_extent_at(GuestContext *proc, uint64_t at) {
-  for (GuestVMExtent *e = proc->vm_extents; e; e = e->next) {
-    if (e->is_free || at <= e->addr || at >= e->addr + e->size)
-      continue;
-    GuestVMExtent *tail = (GuestVMExtent *)calloc(1, sizeof(*tail));
-    if (!tail)
-      return false;
-    *tail = *e;
-    tail->addr = at;
-    tail->size = e->addr + e->size - at;
-    tail->prev = e;
-    e->size = at - e->addr;
-    e->next = tail;
-    if (tail->next)
-      tail->next->prev = tail;
-    return true;
-  }
-  return true; // no extent to split: the boundary already exists (or is in a hole)
-}
-
-// Merges free extents that touch, for the extents overlapping [start, end] plus one neighbour
-// on each side. Caller holds vm_mutex.
-static void vm_coalesce_free(GuestContext *proc, uint64_t start, uint64_t end) {
-  GuestVMExtent *e = proc->vm_extents;
-  while (e && e->addr + e->size < start)
-    e = e->next;
-  if (e && e->prev)
-    e = e->prev;
-  while (e && e->next && e->addr <= end) {
-    GuestVMExtent *n = e->next;
-    if (e->is_free && n->is_free && e->addr + e->size == n->addr) {
-      e->size += n->size;
-      e->next = n->next;
-      if (n->next)
-        n->next->prev = e;
-      free(n);
-    } else {
-      e = n;
-    }
-  }
-}
-
-// munmap over [addr, addr+size) (page-widened). Every mapped extent in the range is freed,
-// also when the range spans several extents (a mapping that was split, e.g. by
-// sceKernelMtypeprotect, is several) or crosses a hole; the parts of extents outside the range
-// stay as they were with all their attributes; unmapped parts are skipped. The whole change is
-// made under one vm_mutex hold per phase and no range is ever freed by address twice:
-//  1. (locked) split the extents at both ends, note the mapped ranges inside;
-//  2. (unlocked, the ranges are still allocated so nobody can take them) detach direct-memory
-//     aliases and release the host pages, once per mapped range (ps4_direct_mem_on_unmap takes
-//     the direct-memory lock, which is held while mapping calls into the allocator, so it must
-//     not run under vm_mutex);
-//  3. (locked) mark the ranges free and merge neighbours.
-// Returns 0, or -1 for bad arguments or when memory for the bookkeeping is unavailable (the
-// extents are then unchanged apart from harmless splits).
-int recomp_vm_free(GuestContext *ctx, uint64_t addr, size_t size) {
-  if (!ctx || addr == 0 || size == 0)
-    return -1;
-  GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-  const uint64_t start = addr & ~4095ULL;
-  const uint64_t end = start + ((size + 4095ULL) & ~4095ULL);
-  if (end < start)
-    return -1;
-
-  pthread_mutex_lock(&proc->vm_mutex);
-  if (!recomp_vm_split_extent_at(proc, start) || !recomp_vm_split_extent_at(proc, end)) {
-    pthread_mutex_unlock(&proc->vm_mutex);
-    return -1;
-  }
-  size_t n = 0;
-  for (GuestVMExtent *e = proc->vm_extents; e; e = e->next)
-    if (!e->is_free && e->addr >= start && e->addr + e->size <= end)
-      n++;
-  if (n == 0) {
-    pthread_mutex_unlock(&proc->vm_mutex);
-    return 0;
-  }
-  struct Range {
-    uint64_t addr, size;
-  } *ranges = (struct Range *)malloc(n * sizeof(*ranges));
-  if (!ranges) {
-    pthread_mutex_unlock(&proc->vm_mutex);
-    return -1;
-  }
-  size_t k = 0;
-  for (GuestVMExtent *e = proc->vm_extents; e && k < n; e = e->next)
-    if (!e->is_free && e->addr >= start && e->addr + e->size <= end) {
-      ranges[k].addr = e->addr;
-      ranges[k].size = e->size;
-      k++;
-    }
-  pthread_mutex_unlock(&proc->vm_mutex);
-
-  for (size_t i = 0; i < k; i++) {
-    ps4_direct_mem_on_unmap(proc, ranges[i].addr, ranges[i].size);
-    if (proc->mem_base && ranges[i].addr + ranges[i].size <= proc->mem_size) {
-#if defined(__APPLE__) || defined(__linux__)
-      madvise(proc->mem_base + ranges[i].addr, ranges[i].size, MADV_DONTNEED);
-#endif
-    }
-  }
-
-  pthread_mutex_lock(&proc->vm_mutex);
-  for (size_t i = 0; i < k; i++)
-    for (GuestVMExtent *e = proc->vm_extents; e; e = e->next)
-      if (!e->is_free && e->addr >= ranges[i].addr && e->addr + e->size <= ranges[i].addr + ranges[i].size)
-        e->is_free = true;
-  vm_coalesce_free(proc, start, end);
-  recomp_vm_note_change();
-  pthread_mutex_unlock(&proc->vm_mutex);
-  free(ranges);
-  return 0;
-}
-
 GuestContext *recomp_create_thread_context(GuestContext *parent,
                                            uint64_t stack_size) {
   if (!parent)
@@ -1565,14 +1304,26 @@ GuestContext *recomp_create_thread_context(GuestContext *parent,
   uint64_t tls_size = proc->static_tls_size ? proc->static_tls_size : 0x1000ULL;
   tls_size = (tls_size + 0xFFFULL) & ~0xFFFULL;
 
-  // Allocate stack, TLS area and TCB (64KB) via VM extent allocator
-  size_t alloc_total = stack_size + tls_size + 0x10000ULL;
-  uint64_t stack_base = recomp_vm_alloc(proc, alloc_total);
-  if (stack_base == (uint64_t)-1) {
+  // Allocate guard page, stack, TLS area and TCB (64KB) via the VM extent allocator. The
+  // lowest page is given back to the host as PROT_NONE: a stack overflow faults there and the
+  // crash report names it instead of the thread silently writing into its neighbour.
+  // A size that does not fit the guest window must fail, not wrap (rounding ~0 up gave 0).
+  const uint64_t limit = g_nps5_arena.guest_hi ? g_nps5_arena.guest_hi : (1ULL << 40);
+  if (stack_size > limit || tls_size > limit) {
+    fprintf(stderr, "[ps4-recomp] thread stack of 0x%llx bytes does not fit the guest address space\n",
+            (unsigned long long)stack_size);
+    return NULL;
+  }
+  stack_size = (stack_size + NPS5_PAGE_MASK) & ~NPS5_PAGE_MASK;
+  size_t alloc_total = NPS5_PAGE + stack_size + tls_size + 0x10000ULL;
+  uint64_t alloc_base = recomp_vm_alloc_named(proc, alloc_total, PROT_READ | PROT_WRITE, 0, "thread_stack");
+  if (alloc_base == (uint64_t)-1) {
     fprintf(stderr,
             "[ps4-recomp] FATAL: out of guest memory for new thread stack\n");
     return NULL;
   }
+  if (!g_nps5_arena.flat) nps5_mem_protect_inner(alloc_base, NPS5_PAGE, PROT_NONE);
+  uint64_t stack_base = alloc_base + NPS5_PAGE;
   uint64_t tcb_base = stack_base + stack_size + tls_size;
 
   // Static TLS area for the new thread [tcb_base - tls_size, tcb_base): zeroed, with every
@@ -1594,7 +1345,7 @@ GuestContext *recomp_create_thread_context(GuestContext *parent,
   t_ctx->heap_ptr = parent->heap_ptr;
   t_ctx->fs_base = tcb_base;
   t_ctx->process_ctx = proc;
-  t_ctx->stack_base = stack_base;
+  t_ctx->stack_base = alloc_base;
   t_ctx->stack_alloc_size = alloc_total;
   t_ctx->rsp = (stack_base + stack_size - 0x100ULL) & ~0xFFULL;
   t_ctx->rbp = t_ctx->rsp;
@@ -1614,381 +1365,12 @@ void recomp_free_thread_context(GuestContext *ctx) {
   if (ctx->stack_base && ctx->stack_alloc_size > 0 && ctx != proc) {
     recomp_vm_free(proc, ctx->stack_base, ctx->stack_alloc_size);
   }
+  recomp_shadow_release(ctx);
   free(ctx);
 }
 
-void recomp_vpcmpistri_impl(GuestContext *ctx, const void *src2_ptr,
-                       const void *src1_ptr, uint8_t imm8) {
-  const uint8_t *s2_bytes = (const uint8_t *)src2_ptr;
-  const uint8_t *s1_bytes = (const uint8_t *)src1_ptr;
 
-  int is_word = (imm8 & 1);
-  int is_signed = ((imm8 >> 1) & 1);
-  int agg = ((imm8 >> 2) & 3);
-  int pol = ((imm8 >> 4) & 3);
-  int msb_index = ((imm8 >> 6) & 1);
-
-  int sz = is_word ? 8 : 16;
-  int len1 = sz, len2 = sz;
-
-  if (!is_word) {
-    for (int i = 0; i < sz; i++) {
-      if (s2_bytes[i] == 0) {
-        len2 = i;
-        break;
-      }
-    }
-    for (int i = 0; i < sz; i++) {
-      if (s1_bytes[i] == 0) {
-        len1 = i;
-        break;
-      }
-    }
-  } else {
-    const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-    const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-    for (int i = 0; i < sz; i++) {
-      if (s2_w[i] == 0) {
-        len2 = i;
-        break;
-      }
-    }
-    for (int i = 0; i < sz; i++) {
-      if (s1_w[i] == 0) {
-        len1 = i;
-        break;
-      }
-    }
-  }
-
-  uint32_t int_res1 = 0;
-
-  for (int i = 0; i < sz; i++) {
-    int match = 0;
-    switch (agg) {
-    case 0: // Equal Any
-      if (i < len1) {
-        for (int j = 0; j < len2; j++) {
-          if (!is_word) {
-            if (s1_bytes[i] == s2_bytes[j]) {
-              match = 1;
-              break;
-            }
-          } else {
-            const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-            const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-            if (s1_w[i] == s2_w[j]) {
-              match = 1;
-              break;
-            }
-          }
-        }
-      }
-      break;
-    case 1: // Ranges
-      if (i < len1) {
-        for (int j = 0; j < sz; j += 2) {
-          if (j < len2) {
-            if (!is_word) {
-              if (!is_signed) {
-                uint8_t lo = s2_bytes[j];
-                uint8_t hi = (j + 1 < len2) ? s2_bytes[j + 1] : 0xFF;
-                if (s1_bytes[i] >= lo && s1_bytes[i] <= hi) {
-                  match = 1;
-                  break;
-                }
-              } else {
-                int8_t lo = (int8_t)s2_bytes[j];
-                int8_t hi =
-                    (j + 1 < len2) ? (int8_t)s2_bytes[j + 1] : (int8_t)0x7F;
-                int8_t v = (int8_t)s1_bytes[i];
-                if (v >= lo && v <= hi) {
-                  match = 1;
-                  break;
-                }
-              }
-            } else {
-              const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-              const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-              if (!is_signed) {
-                uint16_t lo = s2_w[j];
-                uint16_t hi = (j + 1 < len2) ? s2_w[j + 1] : 0xFFFF;
-                if (s1_w[i] >= lo && s1_w[i] <= hi) {
-                  match = 1;
-                  break;
-                }
-              } else {
-                int16_t lo = (int16_t)s2_w[j];
-                int16_t hi =
-                    (j + 1 < len2) ? (int16_t)s2_w[j + 1] : (int16_t)0x7FFF;
-                int16_t v = (int16_t)s1_w[i];
-                if (v >= lo && v <= hi) {
-                  match = 1;
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-      break;
-    case 2: // Equal Each
-      if (i < len1 && i < len2) {
-        if (!is_word) {
-          match = (s1_bytes[i] == s2_bytes[i]);
-        } else {
-          const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-          const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-          match = (s1_w[i] == s2_w[i]);
-        }
-      } else if (i >= len1 && i >= len2) {
-        match = 1;
-      }
-      break;
-    case 3: // Equal Ordered (Substring search)
-      match = 1;
-      for (int k = 0; k < sz - i; k++) {
-        if (k < len2) {
-          if (i + k >= len1) {
-            match = 0;
-            break;
-          }
-          if (!is_word) {
-            if (s1_bytes[i + k] != s2_bytes[k]) {
-              match = 0;
-              break;
-            }
-          } else {
-            const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-            const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-            if (s1_w[i + k] != s2_w[k]) {
-              match = 0;
-              break;
-            }
-          }
-        }
-      }
-      break;
-    }
-    if (match) {
-      int_res1 |= (1U << i);
-    }
-  }
-
-  uint32_t int_res2 = 0;
-  switch (pol) {
-  case 0: // Positive
-    int_res2 = int_res1;
-    break;
-  case 1: // Negative
-    int_res2 = (~int_res1) & ((1U << sz) - 1);
-    break;
-  case 2: // Masked positive
-    int_res2 = int_res1;
-    break;
-  case 3: // Masked negative
-    for (int i = 0; i < len1; i++) {
-      if (!((int_res1 >> i) & 1)) {
-        int_res2 |= (1U << i);
-      }
-    }
-    break;
-  }
-
-  int index = sz;
-  if (int_res2 != 0) {
-    if (!msb_index) {
-      index = __builtin_ctz(int_res2);
-    } else {
-      index = 31 - __builtin_clz(int_res2);
-    }
-  }
-
-  ctx->rcx = (uint64_t)index;
-
-  // Update EFLAGS: CF, ZF, SF, OF, clear AF & PF
-  ctx->cf = (int_res2 != 0);
-  ctx->zf = (len2 < sz);
-  ctx->sf = (len1 < sz);
-  ctx->of = (int_res2 & 1);
-  ctx->af = 0;
-  ctx->pf = 0;
-}
-
-void recomp_vpcmpe_stri_impl(GuestContext *ctx, const void *src2_ptr,
-                        const void *src1_ptr, uint8_t imm8) {
-  int is_word = (imm8 & 1);
-  int is_signed = ((imm8 >> 1) & 1);
-  int agg = ((imm8 >> 2) & 3);
-  int pol = ((imm8 >> 4) & 3);
-  int msb_index = ((imm8 >> 6) & 1);
-
-  int sz = is_word ? 8 : 16;
-  int len1 = (int)(int32_t)ctx->rax;
-  int len2 = (int)(int32_t)ctx->rdx;
-  if (len1 < 0)
-    len1 = 0;
-  else if (len1 > sz)
-    len1 = sz;
-  if (len2 < 0)
-    len2 = 0;
-  else if (len2 > sz)
-    len2 = sz;
-
-  const uint8_t *s2_bytes = (const uint8_t *)src2_ptr;
-  const uint8_t *s1_bytes = (const uint8_t *)src1_ptr;
-
-  uint32_t int_res1 = 0;
-
-  for (int i = 0; i < sz; i++) {
-    int match = 0;
-    switch (agg) {
-    case 0: // Equal Any
-      if (i < len1) {
-        for (int j = 0; j < len2; j++) {
-          if (!is_word) {
-            if (s1_bytes[i] == s2_bytes[j]) {
-              match = 1;
-              break;
-            }
-          } else {
-            const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-            const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-            if (s1_w[i] == s2_w[j]) {
-              match = 1;
-              break;
-            }
-          }
-        }
-      }
-      break;
-    case 1: // Ranges
-      if (i < len1) {
-        for (int j = 0; j < sz; j += 2) {
-          if (j < len2) {
-            if (!is_word) {
-              if (!is_signed) {
-                uint8_t lo = s2_bytes[j];
-                uint8_t hi = (j + 1 < len2) ? s2_bytes[j + 1] : 0xFF;
-                if (s1_bytes[i] >= lo && s1_bytes[i] <= hi) {
-                  match = 1;
-                  break;
-                }
-              } else {
-                int8_t lo = (int8_t)s2_bytes[j];
-                int8_t hi =
-                    (j + 1 < len2) ? (int8_t)s2_bytes[j + 1] : (int8_t)0x7F;
-                int8_t v = (int8_t)s1_bytes[i];
-                if (v >= lo && v <= hi) {
-                  match = 1;
-                  break;
-                }
-              }
-            } else {
-              const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-              const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-              if (!is_signed) {
-                uint16_t lo = s2_w[j];
-                uint16_t hi = (j + 1 < len2) ? s2_w[j + 1] : 0xFFFF;
-                if (s1_w[i] >= lo && s1_w[i] <= hi) {
-                  match = 1;
-                  break;
-                }
-              } else {
-                int16_t lo = (int16_t)s2_w[j];
-                int16_t hi =
-                    (j + 1 < len2) ? (int16_t)s2_w[j + 1] : (int16_t)0x7FFF;
-                int16_t v = (int16_t)s1_w[i];
-                if (v >= lo && v <= hi) {
-                  match = 1;
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-      break;
-    case 2: // Equal Each
-      if (i < len1 && i < len2) {
-        if (!is_word) {
-          match = (s1_bytes[i] == s2_bytes[i]);
-        } else {
-          const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-          const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-          match = (s1_w[i] == s2_w[i]);
-        }
-      } else if (i >= len1 && i >= len2) {
-        match = 1;
-      }
-      break;
-    case 3: // Equal Ordered
-      match = 1;
-      for (int k = 0; k < sz - i; k++) {
-        if (k < len2) {
-          if (i + k >= len1) {
-            match = 0;
-            break;
-          }
-          if (!is_word) {
-            if (s1_bytes[i + k] != s2_bytes[k]) {
-              match = 0;
-              break;
-            }
-          } else {
-            const uint16_t *s2_w = (const uint16_t *)src2_ptr;
-            const uint16_t *s1_w = (const uint16_t *)src1_ptr;
-            if (s1_w[i + k] != s2_w[k]) {
-              match = 0;
-              break;
-            }
-          }
-        }
-      }
-      break;
-    }
-    if (match) {
-      int_res1 |= (1U << i);
-    }
-  }
-
-  uint32_t int_res2 = 0;
-  switch (pol) {
-  case 0:
-    int_res2 = int_res1;
-    break;
-  case 1:
-    int_res2 = (~int_res1) & ((1U << sz) - 1);
-    break;
-  case 2:
-    int_res2 = int_res1;
-    break;
-  case 3:
-    for (int i = 0; i < len1; i++) {
-      if (!((int_res1 >> i) & 1)) {
-        int_res2 |= (1U << i);
-      }
-    }
-    break;
-  }
-
-  int index = sz;
-  if (int_res2 != 0) {
-    if (!msb_index) {
-      index = __builtin_ctz(int_res2);
-    } else {
-      index = 31 - __builtin_clz(int_res2);
-    }
-  }
-
-  ctx->rcx = (uint64_t)index;
-  ctx->cf = (int_res2 != 0);
-  ctx->zf = (len2 < sz);
-  ctx->sf = (len1 < sz);
-  ctx->of = (int_res2 & 1);
-  ctx->af = 0;
-  ctx->pf = 0;
-}
+// recomp_vpcmpistri_impl / recomp_vpcmpe_stri_impl ((V)PCMPISTRI, (V)PCMPESTRI): nps5_pcmpstr.c.
 
 // ============================================================================
 // AES-NI and PCLMULQDQ Helpers
@@ -2239,6 +1621,7 @@ xmm_reg_t recomp_vaeskeygenassist_impl(xmm_reg_t s, uint8_t rcon) {
 }
 
 void recomp_unsupported_instruction(uint64_t rip, uint64_t fn_entry, const char *inst_str) {
+  nps5_diag_unsupported_hit(rip, fn_entry, inst_str);
   fprintf(stderr, "\n=======================================================\n");
   fprintf(stderr, "FATAL: Unsupported guest instruction executed!\n");
   fprintf(stderr, "  Guest RIP:   0x%llx\n", (unsigned long long)rip);
@@ -2283,6 +1666,7 @@ __attribute__((weak)) void ps4_gnm_pso_archive_save_for_quit(double timeout_s) {
 __attribute__((weak)) void ps4_gnm_capture_save_for_quit(double timeout_s) { (void)timeout_s; }
 
 void ps4_host_quit(int code) {
+  dump_map_if_asked();
   ps4_gnm_pso_archive_save_for_quit(2.0);
   ps4_gnm_capture_save_for_quit(2.0);
   fflush(NULL);

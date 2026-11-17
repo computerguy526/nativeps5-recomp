@@ -209,8 +209,8 @@ void ps4_gpumem_windows_read(const ps4_gpumem_windows *w, ps4_gpumem_sample *s) 
 #if defined(__APPLE__)
 // Walks the VM regions over [p, p + len): fn gets each readable piece. Returns the bytes passed
 // to fn; *hole is set when some part is unmapped or not readable.
-static uint64_t walk_regions(const void *p, uint64_t len, int *hole,
-                             void (*fn)(void *ctx, uint64_t offset, uint64_t n), void *ctx) {
+static uint64_t walk_regions_prot(const void *p, uint64_t len, int *hole, int need_write,
+                                  void (*fn)(void *ctx, uint64_t offset, uint64_t n), void *ctx) {
     const mach_vm_address_t start = (mach_vm_address_t)(uintptr_t)p, end = start + len;
     mach_vm_address_t cur = start;
     uint64_t good = 0;
@@ -229,7 +229,7 @@ static uint64_t walk_regions(const void *p, uint64_t len, int *hole,
         }
         if (addr > cur) *hole = 1; // unmapped gap before this region
         const mach_vm_address_t a = addr, b = addr + size < end ? addr + size : end;
-        if (info.protection & VM_PROT_READ) {
+        if ((info.protection & VM_PROT_READ) && (!need_write || (info.protection & VM_PROT_WRITE))) {
             if (fn) fn(ctx, a - start, b - a);
             good += b - a;
         } else {
@@ -239,7 +239,22 @@ static uint64_t walk_regions(const void *p, uint64_t len, int *hole,
     }
     return good;
 }
+static uint64_t walk_regions(const void *p, uint64_t len, int *hole,
+                             void (*fn)(void *ctx, uint64_t offset, uint64_t n), void *ctx) {
+    return walk_regions_prot(p, len, hole, 0, fn, ctx);
+}
 #endif
+
+int ps4_gpumem_range_accessible(const void *p, uint64_t len, int need_write) {
+    if (!p || len == 0) return 0;
+#if defined(__APPLE__)
+    int hole = 0;
+    walk_regions_prot(p, len, &hole, need_write != 0, NULL, NULL);
+    return !hole;
+#else
+    return 1;
+#endif
+}
 
 int ps4_gpumem_range_has_holes(const void *p, uint64_t len) {
 #if defined(__APPLE__)

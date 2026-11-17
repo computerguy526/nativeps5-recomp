@@ -66,7 +66,7 @@ int ps4_ft_init_freetype(GuestContext *ctx, uint64_t alibGuest) {
             return error;
         }
     }
-    if (alibGuest && ctx && ctx->mem_base) {
+    if (alibGuest && ctx && RECOMP_MEM_OK(ctx)) {
         *(uint64_t *)(ctx->mem_base + alibGuest) = 0x1000;
     }
     pthread_mutex_unlock(&g_ft_mutex);
@@ -75,7 +75,7 @@ int ps4_ft_init_freetype(GuestContext *ctx, uint64_t alibGuest) {
 
 int ps4_ft_new_face(GuestContext *ctx, uint64_t libGuest, uint64_t pathGuest, int64_t faceIndex, uint64_t afaceGuest) {
     (void)libGuest;
-    if (!ctx || !ctx->mem_base || !pathGuest || !afaceGuest) return -EINVAL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || !pathGuest || !afaceGuest) return -EINVAL;
 
     const char *guestPath = (const char *)(ctx->mem_base + pathGuest);
     char resolvedPath[1024];
@@ -152,7 +152,7 @@ int ps4_ft_set_pixel_sizes(GuestContext *ctx, uint64_t faceGuest, uint32_t width
         return -EINVAL;
     }
     int error = FT_Set_Pixel_Sizes(hostFace, width, height);
-    if (!error && hostFace->size && ctx && ctx->mem_base) {
+    if (!error && hostFace->size && ctx && RECOMP_MEM_OK(ctx)) {
         GuestFaceSlot *slot = (GuestFaceSlot *)(ctx->mem_base + faceGuest);
         slot->guest_size = *(hostFace->size);
     }
@@ -182,7 +182,7 @@ int ps4_ft_load_glyph(GuestContext *ctx, uint64_t faceGuest, uint32_t glyphIndex
         return -EINVAL;
     }
     int error = FT_Load_Glyph(hostFace, glyphIndex, loadFlags);
-    if (!error && hostFace->glyph && ctx && ctx->mem_base) {
+    if (!error && hostFace->glyph && ctx && RECOMP_MEM_OK(ctx)) {
         GuestFaceSlot *slot = (GuestFaceSlot *)(ctx->mem_base + faceGuest);
         slot->guest_slot.metrics = hostFace->glyph->metrics;
         slot->guest_slot.advance = hostFace->glyph->advance;
@@ -192,7 +192,7 @@ int ps4_ft_load_glyph(GuestContext *ctx, uint64_t faceGuest, uint32_t glyphIndex
 }
 
 int ps4_ft_render_glyph(GuestContext *ctx, uint64_t slotGuest, int32_t renderMode) {
-    if (!ctx || !ctx->mem_base) return -EINVAL;
+    if (!ctx || !RECOMP_MEM_OK(ctx)) return -EINVAL;
 
     pthread_mutex_lock(&g_ft_mutex);
     FaceHandleEntry *entry = find_entry_by_slot_locked(slotGuest);

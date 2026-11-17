@@ -131,7 +131,7 @@ int32_t sceRtcSetTime_t(OrbisDateTime *out, int64_t time, uint32_t sdk_version) 
 // SceKernelProcParam: size u64, magic "ORBI" u32, entry count u32, SDK version u32 at +0x10.
 static uint32_t rtc_compiled_sdk_version(const GuestContext *ctx) {
     const GuestContext *proc = ctx->process_ctx ? ctx->process_ctx : ctx;
-    if (!proc->proc_param_addr || !proc->mem_base || proc->proc_param_addr + 0x14 > proc->mem_size)
+    if (!proc->proc_param_addr || !RECOMP_MEM_OK(proc) || proc->proc_param_addr + 0x14 > proc->mem_size)
         return 0xffffffffu; // unknown: the current behaviour
     return *(const uint32_t *)(proc->mem_base + proc->proc_param_addr + 0x10);
 }

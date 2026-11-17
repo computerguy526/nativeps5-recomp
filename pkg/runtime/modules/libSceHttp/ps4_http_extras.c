@@ -20,7 +20,7 @@ void shim_sceHttpParseResponseHeader(GuestContext *ctx) {
     uint64_t value_out_g = ctx->rcx;
     uint64_t len_out_g = ctx->r8;
 
-    if (!header_g || !field_g || !value_out_g || !len_out_g || !ctx->mem_base) {
+    if (!header_g || !field_g || !value_out_g || !len_out_g || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_HTTP_ERROR_INVALID_VALUE;
         SHIM_RETURN();
     }

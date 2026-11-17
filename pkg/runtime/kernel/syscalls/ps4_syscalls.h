@@ -54,6 +54,13 @@ void shim_unlink(GuestContext *ctx);
 void shim_mkdir(GuestContext *ctx);
 void shim_rmdir(GuestContext *ctx);
 void shim_sceKernelRmdir(GuestContext *ctx);
+void shim_sceKernelMkdir(GuestContext *ctx);
+void shim_sceKernelUnlink(GuestContext *ctx);
+void shim_sceKernelRename(GuestContext *ctx);
+void shim_sceKernelTruncate(GuestContext *ctx);
+void shim_sceKernelChmod(GuestContext *ctx);
+void shim_sceKernelUtimes(GuestContext *ctx);
+void shim_sceKernelGetdents(GuestContext *ctx);
 void shim_rename(GuestContext *ctx);
 void shim_truncate(GuestContext *ctx);
 void shim_mlock(GuestContext *ctx);
@@ -71,6 +78,8 @@ void shim_sigaction(GuestContext *ctx);
 void shim_sigprocmask(GuestContext *ctx);
 void shim_raise(GuestContext *ctx);
 void shim_syscall(GuestContext *ctx);
+void shim_raw_syscall_flat(GuestContext *ctx); // same, flat call model (pops the return address)
+void shim_raw_syscall(GuestContext *ctx); // the SYSCALL instruction (kernel convention, CF on error)
 void shim___stack_chk_fail(GuestContext *ctx);
 void shim_clock_gettime(GuestContext *ctx);
 void shim_gettimeofday(GuestContext *ctx);

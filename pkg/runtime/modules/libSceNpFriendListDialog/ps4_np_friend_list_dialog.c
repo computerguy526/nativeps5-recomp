@@ -97,7 +97,7 @@ void shim_sceNpFriendListDialogInitialize(GuestContext *ctx) {
 }
 
 void shim_sceNpFriendListDialogOpenA(GuestContext *ctx) {
-    const void *param = (ctx && ctx->rdi && ctx->mem_base && ctx->rdi < ctx->mem_size)
+    const void *param = (ctx && ctx->rdi && RECOMP_MEM_OK(ctx) && ctx->rdi < ctx->mem_size)
                             ? (const void *)(ctx->mem_base + ctx->rdi)
                             : NULL;
     ctx->rax = (uint64_t)(int64_t)sceNpFriendListDialogOpenA(param);
@@ -116,7 +116,7 @@ void shim_sceNpFriendListDialogGetStatus(GuestContext *ctx) {
 
 void shim_sceNpFriendListDialogGetResultA(GuestContext *ctx) {
     OrbisNpFriendListDialogResultA *result =
-        (ctx && ctx->rdi && ctx->mem_base && ctx->rdi + sizeof(OrbisNpFriendListDialogResultA) <= ctx->mem_size)
+        (ctx && ctx->rdi && RECOMP_MEM_OK(ctx) && ctx->rdi + sizeof(OrbisNpFriendListDialogResultA) <= ctx->mem_size)
             ? (OrbisNpFriendListDialogResultA *)(ctx->mem_base + ctx->rdi)
             : NULL;
     ctx->rax = (uint64_t)(int64_t)sceNpFriendListDialogGetResultA(result);

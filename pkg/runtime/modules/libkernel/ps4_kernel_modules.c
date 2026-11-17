@@ -35,7 +35,7 @@ void shim_sceKernelGetModuleList(GuestContext *ctx) {
     uint64_t arr_g = ctx->rdi;
     uint64_t num = ctx->rsi;
     uint64_t out_g = ctx->rdx;
-    if (!out_g || !ctx->mem_base || (num && !arr_g)) {
+    if (!out_g || !RECOMP_MEM_OK(ctx) || (num && !arr_g)) {
         ctx->rax = (uint64_t)(int64_t)KMOD_ERROR_EFAULT;
         SHIM_RETURN();
     }
@@ -56,7 +56,7 @@ void shim_sceKernelGetModuleList(GuestContext *ctx) {
     static int logged;
     if (!logged) {
         logged = 1;
-        fprintf(stderr, "[ps4-kernel] sceKernelGetModuleList: %d module(s)\n", n);
+        PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "sceKernelGetModuleList: %d module(s)\n", n);
     }
     free(mods);
     ctx->rax = (uint64_t)(int64_t)rc;
@@ -67,7 +67,7 @@ void shim_sceKernelGetModuleList(GuestContext *ctx) {
 void shim_sceKernelGetModuleInfo(GuestContext *ctx) {
     int32_t handle = (int32_t)ctx->rdi;
     uint64_t info_g = ctx->rsi;
-    if (!info_g || !ctx->mem_base) {
+    if (!info_g || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = (uint64_t)(int64_t)KMOD_ERROR_EFAULT;
         SHIM_RETURN();
     }
@@ -113,7 +113,7 @@ void shim_sceKernelReleaseFlexibleMemory(GuestContext *ctx) {
     static int logged;
     if (!logged) {
         logged = 1;
-        fprintf(stderr, "[ps4-kernel] sceKernelReleaseFlexibleMemory(0x%llx, 0x%llx)\n",
+        PS4_LOGF(NPS5_S_KERNEL, NPS5_L_WARN, "ps4-kernel", "sceKernelReleaseFlexibleMemory(0x%llx, 0x%llx)\n",
                 (unsigned long long)addr, (unsigned long long)len);
     }
     ctx->rax = 0;

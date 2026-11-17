@@ -416,6 +416,11 @@ bool ps4_pak_get_parent_locale_path(const char *path, char *out_path, size_t out
     return true;
 }
 
+bool ps4_pak_locale_fallback_enabled(void) {
+    const char *e = getenv("NPS5_PAK_LOCALE_FALLBACK");
+    return e && *e && *e != '0';
+}
+
 bool ps4_pak_lookup(const char *subpath, ps4_pak_entry_t *out_entry) {
     if (!subpath || !*subpath) return false;
     while (*subpath == '/') subpath++;
@@ -443,8 +448,13 @@ bool ps4_pak_lookup(const char *subpath, ps4_pak_entry_t *out_entry) {
         idx = (idx + 1) & (g_entry_capacity - 1);
     }
 
-    // 2. ICU / CLDR Resource Bundle locale inheritance fallback (.res)
-    // If <name>_<sublocale>.res is not in the archive, traverse up the locale inheritance chain (e.g. en_US -> en)
+    // 2. ICU / CLDR Resource Bundle locale inheritance fallback (.res). OFF by default: the console
+    // does not serve en.res for a missing en_US.res open (ICU walks the chain itself and handles
+    // ENOENT). NPS5_PAK_LOCALE_FALLBACK=1 re-enables it for a title found to depend on it.
+    if (!ps4_pak_locale_fallback_enabled()) {
+        pthread_mutex_unlock(&g_pak_mutex);
+        return false;
+    }
     char cur_path[1024];
     strncpy(cur_path, subpath, sizeof(cur_path) - 1);
     cur_path[sizeof(cur_path) - 1] = '\0';

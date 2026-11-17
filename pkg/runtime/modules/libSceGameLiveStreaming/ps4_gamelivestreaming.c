@@ -51,7 +51,7 @@ void shim_sceGameLiveStreamingPermitServerSideRecording(GuestContext *ctx) {
 }
 
 void shim_sceGameLiveStreamingGetCurrentStatus(GuestContext *ctx) {
-  if (ctx->rdi && ctx->mem_base) {
+  if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
     OrbisGameLiveStreamingStatus *status =
         (OrbisGameLiveStreamingStatus *)(ctx->mem_base + ctx->rdi);
     memset(status, 0, sizeof(*status));
@@ -62,7 +62,7 @@ void shim_sceGameLiveStreamingGetCurrentStatus(GuestContext *ctx) {
 }
 
 void shim_sceGameLiveStreamingGetCurrentStatus2(GuestContext *ctx) {
-  if (ctx->rdi && ctx->mem_base) {
+  if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
     OrbisGameLiveStreamingStatus2 *status =
         (OrbisGameLiveStreamingStatus2 *)(ctx->mem_base + ctx->rdi);
     memset(status, 0, sizeof(*status));

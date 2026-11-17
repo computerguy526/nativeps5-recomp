@@ -3,6 +3,7 @@
 #include "ps4_vfs.h"
 #include "ps4_threading.h"
 #include "recomp_runtime.h"
+extern "C" int nps5_guest_is_ps5(void); // kernel/memory/ps4_direct_mem.c
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,6 +21,7 @@ extern "C" {
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -38,7 +40,7 @@ static inline uint32_t align_up(uint32_t val, uint32_t alignment) {
 }
 
 static inline void *recomp_guest_to_host(const GuestContext *ctx, uint64_t gaddr) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) return nullptr;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) return nullptr;
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr < (uintptr_t)ctx->mem_base + ctx->mem_size) {
         return (void *)gaddr;
     }
@@ -49,7 +51,7 @@ static inline void *recomp_guest_to_host(const GuestContext *ctx, uint64_t gaddr
 }
 
 static inline uint64_t recomp_host_to_guest(const GuestContext *ctx, const void *hptr) {
-    if (!ctx || !ctx->mem_base || !hptr) return 0;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || !hptr) return 0;
     uintptr_t p = (uintptr_t)hptr;
     uintptr_t base = (uintptr_t)ctx->mem_base;
     if (p >= base && p < base + ctx->mem_size) {
@@ -93,38 +95,64 @@ static void call_guest_deallocate(GuestContext *ctx, uint64_t fn_addr, uint64_t 
     ctx->rax = saved_rax;
 }
 
-static void copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) {
-    const uint32_t dst_pitch = align_up((uint32_t)src->width, 64);
-    const uint32_t dst_height = align_up((uint32_t)src->height, 16);
+// Row pitch of the NV12 frame buffers handed to the guest.
+// PS5 images: a multiple of 256 (the row pitch of a linear R8 texture on the PS5 GPU; AnyPS5 and KytyPS5 use
+// the same rule). ASTRO BOT copies pitch * height * 3 / 2 bytes of each frame straight into the memory of a
+// linear texture as wide as the STREAM (880 for its tutorial clips): with the old 64-pixel pitch (896) every
+// row landed 128 bytes early and the picture was a horizontal smear. The columns between the picture and the
+// pitch are reported as crop_right_offset. PS4 images keep the 64-pixel pitch.
+// NPS5_AVPLAYER_PITCH_ALIGN=<power of two> overrides (64 = the old layout); NPS5_AVPLAYER_LOG=1 logs the
+// stream and the first frames of every source (sizes, pitch, crops, buffer address).
+static uint32_t video_pitch_alignment() {
+    static const uint32_t value = [] {
+        const char *text = getenv("NPS5_AVPLAYER_PITCH_ALIGN");
+        const unsigned long v = text ? strtoul(text, nullptr, 0) : 0;
+        if (v >= 16 && v <= 4096 && (v & (v - 1)) == 0) return (uint32_t)v;
+        return nps5_guest_is_ps5() ? 256u : 64u;
+    }();
+    return value;
+}
+static uint32_t video_pitch(uint32_t width) { return align_up(width, video_pitch_alignment()); }
+static bool avplayer_verbose() {
+    static const bool on = [] { const char *t = getenv("NPS5_AVPLAYER_LOG"); return t && t[0] && t[0] != '0'; }();
+    return on;
+}
 
-    if (((uint64_t)dst_pitch * dst_height * 3) / 2 > max_size) {
+static void copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) {
+    const uint32_t dst_pitch = video_pitch((uint32_t)src->width);
+    const uint32_t dst_height = align_up((uint32_t)src->height, 16);
+    const uint32_t width = (uint32_t)src->width;
+    const uint32_t chroma_rows = ((uint32_t)src->height + 1) / 2;
+    const uint32_t chroma_bytes = (width + 1) & ~1u;
+
+    if (width == 0 || src->height <= 0 || ((uint64_t)dst_pitch * dst_height * 3) / 2 > max_size) {
         return;
     }
 
     uint8_t *luma_dst = dst;
-    uint8_t *chroma_dst = dst + dst_pitch * dst_height;
+    uint8_t *chroma_dst = dst + (size_t)dst_pitch * dst_height;
 
-    if ((uint32_t)src->width != dst_pitch) {
-        for (int y = 0; y < src->height; ++y) {
-            std::memcpy(luma_dst + y * dst_pitch, src->data[0] + y * src->linesize[0], src->width);
-        }
-        for (int y = 0; y < src->height / 2; ++y) {
-            std::memcpy(chroma_dst + y * dst_pitch, src->data[1] + y * src->linesize[1], src->width);
-        }
-    } else {
-        std::memcpy(luma_dst, src->data[0], src->width * src->height);
-        std::memcpy(chroma_dst, src->data[1], (src->width * src->height) / 2);
+    // Picture rows, each padded to the pitch with its last pixel (a bilinear tap at the right edge then reads
+    // picture colour, not old buffer contents).
+    for (uint32_t y = 0; y < (uint32_t)src->height; ++y) {
+        uint8_t *row = luma_dst + (size_t)y * dst_pitch;
+        std::memcpy(row, src->data[0] + (size_t)y * src->linesize[0], width);
+        if (dst_pitch > width) std::memset(row + width, row[width - 1], dst_pitch - width);
     }
-
-    if ((uint32_t)src->height != dst_height) {
-        const int ly = src->height - 1;
-        for (uint32_t y = (uint32_t)src->height; y < dst_height; ++y) {
-            std::memcpy(luma_dst + y * dst_pitch, src->data[0] + ly * src->linesize[0], src->width);
+    for (uint32_t y = 0; y < chroma_rows; ++y) {
+        uint8_t *row = chroma_dst + (size_t)y * dst_pitch;
+        std::memcpy(row, src->data[1] + (size_t)y * src->linesize[1], chroma_bytes);
+        for (uint32_t x = chroma_bytes; x + 1 < dst_pitch; x += 2) {
+            row[x] = row[chroma_bytes - 2];
+            row[x + 1] = row[chroma_bytes - 1];
         }
-        const int cy = (src->height / 2) - 1;
-        for (uint32_t y = (uint32_t)(src->height / 2); y < dst_height / 2; ++y) {
-            std::memcpy(chroma_dst + y * dst_pitch, src->data[1] + cy * src->linesize[1], src->width);
-        }
+    }
+    // Rows below the picture repeat its last row.
+    for (uint32_t y = (uint32_t)src->height; y < dst_height; ++y) {
+        std::memcpy(luma_dst + (size_t)y * dst_pitch, luma_dst + (size_t)(src->height - 1) * dst_pitch, dst_pitch);
+    }
+    for (uint32_t y = chroma_rows; y < dst_height / 2; ++y) {
+        std::memcpy(chroma_dst + (size_t)y * dst_pitch, chroma_dst + (size_t)(chroma_rows - 1) * dst_pitch, dst_pitch);
     }
 }
 
@@ -462,9 +490,15 @@ public:
                 return false;
             }
 
-            uint32_t pitch = align_up((uint32_t)m_video_codec_ctx->width, 64);
+            uint32_t pitch = video_pitch((uint32_t)m_video_codec_ctx->width);
             uint32_t height = align_up((uint32_t)m_video_codec_ctx->height, 16);
             uint32_t frame_size = (pitch * height * 3) / 2;
+            m_logged_video_frames = 0;
+            if (avplayer_verbose()) {
+                AVPLAYER_LOG("video stream: codec %s %dx%d pix_fmt %d -> stream info %ux%u, frame buffers %u x %u bytes (pitch %u, height %u, NV12), ps5 %d",
+                             decoder->name, m_video_codec_ctx->width, m_video_codec_ctx->height, (int)m_video_codec_ctx->pix_fmt,
+                             align_up((uint32_t)m_video_codec_ctx->width, 16), height, max_fb, frame_size, pitch, height, (int)nps5_guest_is_ps5());
+            }
 
             for (uint32_t i = 0; i < max_fb; ++i) {
                 GuestBuffer buf = allocate_buffer(ctx, 0x100, frame_size, true);
@@ -824,7 +858,7 @@ private:
                 if (!m_free_video_buffers.wait_pop(m_workers_stop, buf)) break;
 
                 uint32_t width = align_up((uint32_t)raw_frame->width, 16);
-                uint32_t pitch = align_up((uint32_t)raw_frame->width, 64);
+                uint32_t pitch = video_pitch((uint32_t)raw_frame->width);
                 uint32_t height = align_up((uint32_t)raw_frame->height, 16);
 
                 if (raw_frame->format != AV_PIX_FMT_NV12) {
@@ -855,6 +889,20 @@ private:
                 frame.info.details.video.width = width;
                 frame.info.details.video.height = height;
                 frame.info.details.video.pitch = pitch;
+                // What the buffer holds beyond the picture (the guest shows pitch - left - right by
+                // height - top - bottom).
+                frame.info.details.video.crop_left_offset = (uint32_t)raw_frame->crop_left;
+                frame.info.details.video.crop_right_offset = (uint32_t)raw_frame->crop_right + pitch - (uint32_t)raw_frame->width;
+                frame.info.details.video.crop_top_offset = (uint32_t)raw_frame->crop_top;
+                frame.info.details.video.crop_bottom_offset = (uint32_t)raw_frame->crop_bottom + height - (uint32_t)raw_frame->height;
+                if (avplayer_verbose() && m_logged_video_frames < 3) {
+                    m_logged_video_frames++;
+                    AVPLAYER_LOG("video frame: guest 0x%llx ts %llu ms, %ux%u pitch %u crop l%u r%u t%u b%u, source %dx%d fmt %d",
+                                 (unsigned long long)frame.info.p_data, (unsigned long long)ts, width, height, pitch,
+                                 frame.info.details.video.crop_left_offset, frame.info.details.video.crop_right_offset,
+                                 frame.info.details.video.crop_top_offset, frame.info.details.video.crop_bottom_offset,
+                                 raw_frame->width, raw_frame->height, raw_frame->format);
+                }
                 frame.info.details.video.aspect_ratio = (raw_frame->height > 0) ? ((float)raw_frame->width / (float)raw_frame->height) : 1.777f;
                 frame.info.details.video.luma_bit_depth = 8;
                 frame.info.details.video.chroma_bit_depth = 8;
@@ -1032,6 +1080,7 @@ private:
     AVCodecContext *m_video_codec_ctx = nullptr;
     AVCodecContext *m_audio_codec_ctx = nullptr;
     SwsContext *m_sws_ctx = nullptr;
+    uint32_t m_logged_video_frames = 0; // NPS5_AVPLAYER_LOG: frames logged for the current source
     SwrContext *m_swr_ctx = nullptr;
 
     SafeQueue<AVPacket *> m_video_packets;
@@ -1178,7 +1227,20 @@ void shim_sceAvPlayerGetStreamInfo(GuestContext *ctx) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
         SHIM_RETURN();
     }
-    if (player->get_stream_info(stream_id, info)) {
+    // The guest's SceAvPlayerStreamInfo is 32 bytes {type, reserved, details[16], duration}: ASTRO BOT
+    // keeps it right below its stack protector and AnyPS5 asserts the same size. Our struct has a
+    // trailing start_time (shadPS4's PS4 layout); never write it to the guest.
+    AvPlayerStreamInfo local;
+    if (player->get_stream_info(stream_id, &local)) {
+        // Stream type numbers differ by console: PS4 video 0 / audio 1 / timed text 2 (our
+        // internal values); a PS5 title sees video 1 / audio 2 (AnyPS5 Player.cpp; ASTRO BOT sizes
+        // its YUV buffers from the type-1 stream's width x height).
+        if (nps5_guest_is_ps5()) {
+            if (local.type == AVPLAYER_STREAM_TYPE_VIDEO) local.type = (AvPlayerStreamType)1;
+            else if (local.type == AVPLAYER_STREAM_TYPE_AUDIO) local.type = (AvPlayerStreamType)2;
+            else local.type = (AvPlayerStreamType)3;
+        }
+        memcpy(info, &local, 32);
         ctx->rax = 0;
     } else {
         ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;

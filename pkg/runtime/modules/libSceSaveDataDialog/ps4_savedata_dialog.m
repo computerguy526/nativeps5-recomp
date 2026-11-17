@@ -146,7 +146,7 @@ static void sdd_spec_free(SddSpec *s) {
 }
 
 static void *sdd_guest(const GuestContext *ctx, uint64_t gaddr, size_t bytes) {
-    if (!ctx || !ctx->mem_base || gaddr == 0) return NULL;
+    if (!ctx || !RECOMP_MEM_OK(ctx) || gaddr == 0) return NULL;
     if (gaddr >= (uintptr_t)ctx->mem_base && gaddr - (uintptr_t)ctx->mem_base + bytes <= ctx->mem_size)
         return (void *)gaddr;
     if (gaddr < ctx->mem_size && bytes <= ctx->mem_size - gaddr) return ctx->mem_base + gaddr;

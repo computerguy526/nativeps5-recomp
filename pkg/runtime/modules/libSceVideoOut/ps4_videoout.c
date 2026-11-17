@@ -520,7 +520,8 @@ int32_t ps4_videoout_submit_flip(GuestContext *ctx, int32_t handle, int32_t buff
             if (s_buf && ps4_gnm_read_display_cpu(ctx, guest_buf_vaddr, (uint32_t)width, (uint32_t)height, pitch_px,
                                                   (uint32_t)attr.tmode, (uint32_t)attr.format, s_buf)) {
                 ps4_metal_screen_present_frame(s_buf, (size_t)width * 4, width, height);
-            } else {
+            } else if (guest_buf_vaddr && guest_buf_vaddr < ctx->mem_size &&
+                       nps5_mem_range_readable(ctx->mem_base + guest_buf_vaddr, (size_t)pitch_px * 4 * (size_t)height)) { // m8
                 ps4_metal_screen_present_frame(ctx->mem_base + guest_buf_vaddr, (size_t)pitch_px * 4, width, height);
             }
         }
@@ -600,8 +601,25 @@ void shim_sceVideoOutRegisterBuffers(GuestContext *ctx) {
     int32_t bufferCount = (int32_t)ctx->rcx;
     uint64_t attrGuest = ctx->r8;
 
-    void * const *bufferArray = bufferArrayGuest ? (void * const *)(ctx->mem_base + bufferArrayGuest) : NULL;
-    const OrbisVideoOutBufferAttribute *attr = attrGuest ? (const OrbisVideoOutBufferAttribute *)(ctx->mem_base + attrGuest) : NULL;
+    // m8: the pointer array and the attribute are read with the non-faulting helper (a hole is an error, not a SIGSEGV)
+    void *bufcopy[64];
+    OrbisVideoOutBufferAttribute attrcopy;
+    void * const *bufferArray = NULL;
+    const OrbisVideoOutBufferAttribute *attr = NULL;
+    if (bufferArrayGuest) {
+        if (bufferCount < 0 || bufferCount > 64 || !nps5_guest_safe_read(bufferArrayGuest, bufcopy, (size_t)bufferCount * sizeof(void *))) {
+            ctx->rax = (uint64_t)(int64_t)(int32_t)0x80290002; // ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS
+            SHIM_RETURN();
+        }
+        bufferArray = bufcopy;
+    }
+    if (attrGuest) {
+        if (!nps5_guest_safe_read(attrGuest, &attrcopy, sizeof attrcopy)) {
+            ctx->rax = (uint64_t)(int64_t)(int32_t)0x80290002;
+            SHIM_RETURN();
+        }
+        attr = &attrcopy;
+    }
 
     int32_t rc = sceVideoOutRegisterBuffers(handle, startIndex, bufferArray, bufferCount, attr);
     ctx->rax = (uint64_t)(int64_t)rc;
@@ -625,6 +643,10 @@ void shim_sceVideoOutAddFlipEvent(GuestContext *ctx) {
     fprintf(stderr, "[videoout] AddFlipEvent(eq=%lld, handle=%d, udata=%p) -> %d\n", (long long)(intptr_t)eq, handle, flipArg, (int)ctx->rax);
     SHIM_RETURN();
 }
+
+// Frame boundary of the performance trace (core/nps5_perf.c).
+void nps5_perf_register_flip_fn(void *shim_fn);
+__attribute__((constructor)) static void videoout_perf_register(void) { nps5_perf_register_flip_fn((void *)shim_sceVideoOutSubmitFlip); }
 
 void shim_sceVideoOutSubmitFlip(GuestContext *ctx) {
     int32_t handle = (int32_t)ctx->rdi;

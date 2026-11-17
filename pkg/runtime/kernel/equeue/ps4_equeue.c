@@ -412,7 +412,7 @@ void shim_sceKernelDeleteUserEvent(GuestContext *ctx) {
 
 void shim_sceKernelGetEventId(GuestContext *ctx) {
     uint64_t ev_addr = ctx->rdi;
-    if (!ev_addr || !ctx->mem_base) {
+    if (!ev_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0;
         SHIM_RETURN();
     }
@@ -423,7 +423,7 @@ void shim_sceKernelGetEventId(GuestContext *ctx) {
 
 void shim_sceKernelGetEventFilter(GuestContext *ctx) {
     uint64_t ev_addr = ctx->rdi;
-    if (!ev_addr || !ctx->mem_base) {
+    if (!ev_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0;
         SHIM_RETURN();
     }
@@ -485,7 +485,7 @@ void shim_sceKernelTriggerUserEvent(GuestContext *ctx) {
 
 void shim_sceKernelGetEventUserData(GuestContext *ctx) {
     uint64_t ev_addr = ctx->rdi;
-    if (!ev_addr || !ctx->mem_base) {
+    if (!ev_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0;
         SHIM_RETURN();
     }
@@ -496,7 +496,7 @@ void shim_sceKernelGetEventUserData(GuestContext *ctx) {
 
 void shim_sceKernelGetEventData(GuestContext *ctx) {
     uint64_t ev_addr = ctx->rdi;
-    if (!ev_addr || !ctx->mem_base) {
+    if (!ev_addr || !RECOMP_MEM_OK(ctx)) {
         ctx->rax = 0;
         SHIM_RETURN();
     }

@@ -128,6 +128,10 @@ void ps4_gpumem_windows_read(const ps4_gpumem_windows *w, ps4_gpumem_sample *s);
 // Read-only pages are not reported: host guest memory is always read-write (guest mprotect only
 // changes bookkeeping), so a GPU-written binding over one cannot arise today.
 int ps4_gpumem_range_has_holes(const void *p, uint64_t len);
+// 1 when every byte of [p, p+len) is mapped and readable (and writable when need_write): the guard for host code that is
+// about to dereference a guest-supplied address with plain loads or stores. Unmapped guest ranges (decommitted extents are
+// PROT_NONE holes in the arena) otherwise SIGSEGV the host thread (memory-recheck.md, m8). 0 for len == 0 or p == NULL.
+int ps4_gpumem_range_accessible(const void *p, uint64_t len, int need_write);
 
 // Calls fn(ctx, offset, n) for each mapped readable piece of [p, p + len), in order; returns
 // the number of readable bytes. Used to copy a range with holes (the holes read as zero).

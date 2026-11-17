@@ -234,7 +234,8 @@ static uint64_t vdec_note_au(Vdec *d, const H264AuCensus *c) {
 }
 
 int ps4_videodec_stats(const void *mem_base, uint64_t ctrl_addr, Ps4VideodecStats *out) {
-    if (!mem_base || !ctrl_addr || !out) return -1;
+    // mem_base is NULL in identity mode (guest address == host address): only the address is checked.
+    if (!ctrl_addr || !out) return -1;
     const VideodecCtrl *c = (const VideodecCtrl *)((const uint8_t *)mem_base + ctrl_addr);
     Vdec *d = (Vdec *)(uintptr_t)c->handle;
     if (!d || d->magic != VDEC_MAGIC) return -1;

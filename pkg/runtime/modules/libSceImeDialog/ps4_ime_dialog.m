@@ -23,7 +23,7 @@ static size_t utf16_strlen(const uint16_t *s, size_t max_len) {
 static inline void *recomp_guest_to_host_ptr(GuestContext *ctx, void *guest_ptr) {
     uint64_t addr = (uint64_t)guest_ptr;
     if (!addr) return NULL;
-    if (ctx && ctx->mem_base && addr < ctx->mem_size) {
+    if (ctx && RECOMP_MEM_OK(ctx) && addr < ctx->mem_size) {
         return (void *)(ctx->mem_base + addr);
     }
     return guest_ptr;
@@ -42,7 +42,7 @@ int32_t sceImeDialogInit(GuestContext *ctx, const OrbisImeDialogParam *param, co
     }
 
     g_ime_param = *param;
-    if (ctx && ctx->mem_base) {
+    if (ctx && RECOMP_MEM_OK(ctx)) {
         g_ime_param.input_text_buffer = (uint16_t *)recomp_guest_to_host_ptr(ctx, (void *)param->input_text_buffer);
         if (param->title) {
             g_ime_param.title = (const uint16_t *)recomp_guest_to_host_ptr(ctx, (void *)param->title);

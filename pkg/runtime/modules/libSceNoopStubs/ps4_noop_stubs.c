@@ -53,7 +53,7 @@ NOOP_SHIM(sceNetSocketAbort)
 // sce::Toolkit::NP::V2::Core::Request::InitParams::InitParams() (NID: vbh-MWtjMh4)
 // C++ constructor: zeroes the structure instance and returns this (rdi).
 void shim_sceNpToolkit2InitParams(GuestContext *ctx) {
-  if (ctx->rdi && ctx->mem_base) {
+  if (ctx->rdi && RECOMP_MEM_OK(ctx)) {
     memset((void *)(ctx->mem_base + ctx->rdi), 0, 128);
   }
   ctx->rax = ctx->rdi;

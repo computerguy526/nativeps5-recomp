@@ -95,7 +95,7 @@ static VoiceQosEndpoint *vqos_find(VoiceQosEndpoint *arr, int32_t id) {
 }
 
 static int32_t vqos_create_ep(GuestContext *ctx, VoiceQosEndpoint *arr, int32_t *next_id) {
-    if (!ctx || !ctx->rdi || !ctx->mem_base || ctx->rdi + sizeof(int32_t) > ctx->mem_size) {
+    if (!ctx || !ctx->rdi || !RECOMP_MEM_OK(ctx) || ctx->rdi + sizeof(int32_t) > ctx->mem_size) {
         return VOICE_QOS_ERR_INVALID_PARAM;
     }
     pthread_mutex_lock(&g_vqos_mutex);
@@ -136,7 +136,7 @@ static int32_t vqos_set_attr(GuestContext *ctx, VoiceQosEndpoint *arr) {
     uint32_t attr_id = (uint32_t)ctx->rsi;
     uint64_t val_addr = ctx->rdx;
     uint32_t val_size = (uint32_t)ctx->rcx;
-    if (!val_addr || !ctx->mem_base || val_addr + val_size > ctx->mem_size) {
+    if (!val_addr || !RECOMP_MEM_OK(ctx) || val_addr + val_size > ctx->mem_size) {
         return VOICE_QOS_ERR_INVALID_PARAM;
     }
     pthread_mutex_lock(&g_vqos_mutex);
@@ -157,7 +157,7 @@ static int32_t vqos_get_attr(GuestContext *ctx, VoiceQosEndpoint *arr) {
     uint32_t attr_id = (uint32_t)ctx->rsi;
     uint64_t val_addr = ctx->rdx;
     uint32_t val_size = (uint32_t)ctx->rcx;
-    if (!val_addr || !ctx->mem_base || val_addr + val_size > ctx->mem_size) {
+    if (!val_addr || !RECOMP_MEM_OK(ctx) || val_addr + val_size > ctx->mem_size) {
         return VOICE_QOS_ERR_INVALID_PARAM;
     }
     pthread_mutex_lock(&g_vqos_mutex);
@@ -219,7 +219,7 @@ void shim_sceVoiceQoSGetRemoteEndpointAttribute(GuestContext *ctx) {
 void shim_sceVoiceQoSGetConnectionAttribute(GuestContext *ctx) {
     uint64_t val_addr = ctx->rdx;
     uint32_t val_size = (uint32_t)ctx->rcx;
-    if (!val_addr || !ctx->mem_base || val_addr + val_size > ctx->mem_size) {
+    if (!val_addr || !RECOMP_MEM_OK(ctx) || val_addr + val_size > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)VOICE_QOS_ERR_INVALID_PARAM;
         SHIM_RETURN();
     }
@@ -230,7 +230,7 @@ void shim_sceVoiceQoSGetConnectionAttribute(GuestContext *ctx) {
 
 void shim_sceVoiceQoSReadPacket(GuestContext *ctx) {
     uint64_t size_addr = ctx->rdx;
-    if (!size_addr || !ctx->mem_base || size_addr + sizeof(uint32_t) > ctx->mem_size) {
+    if (!size_addr || !RECOMP_MEM_OK(ctx) || size_addr + sizeof(uint32_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)VOICE_QOS_ERR_INVALID_PARAM;
         SHIM_RETURN();
     }
@@ -242,7 +242,7 @@ void shim_sceVoiceQoSReadPacket(GuestContext *ctx) {
 
 void shim_sceVoiceQoSWritePacket(GuestContext *ctx) {
     uint64_t size_addr = ctx->rdx;
-    if (!size_addr || !ctx->mem_base || size_addr + sizeof(uint32_t) > ctx->mem_size) {
+    if (!size_addr || !RECOMP_MEM_OK(ctx) || size_addr + sizeof(uint32_t) > ctx->mem_size) {
         ctx->rax = (uint64_t)(int64_t)VOICE_QOS_ERR_INVALID_PARAM;
         SHIM_RETURN();
     }

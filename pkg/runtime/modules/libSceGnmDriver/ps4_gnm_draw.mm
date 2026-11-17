@@ -1190,12 +1190,28 @@ void PrintCompileStats() {
     ps4gnm_lib_store::PrintStats();
 }
 
+// m8 (docs/m3/gpu-followups.md): guest-supplied addresses that fall in a decommitted hole are PROT_NONE in the arena; plain
+// loads or stores there SIGSEGV the host thread. These two guard the readers/writers that reach guest memory directly.
+inline bool GuestHostAccessible(const GuestContext* ctx, uint64_t addr, uint64_t size, bool write = false) {
+    return ctx && addr && size && addr < ctx->mem_size && size <= ctx->mem_size - addr &&
+           ps4_gpumem_range_accessible(ctx->mem_base + addr, size, write);
+}
+// Copy of guest [addr, addr+size) that zero-fills what is not mapped instead of faulting.
+void GuestCopyReadable(void* dst, const uint8_t* src, uint64_t size) {
+    struct C { uint8_t* dst; const uint8_t* src; } c = {(uint8_t*)dst, src};
+    memset(dst, 0, size);
+    ps4_gpumem_for_each_readable(src, size, [](void* p, uint64_t o, uint64_t n) {
+        C* x = (C*)p;
+        memcpy(x->dst + o, x->src + o, n);
+    }, &c);
+}
+
 bool g_trace_reads = false;
 bool ReadGuest(void* c, uint64_t addr, void* dst, uint64_t size) {
     GuestContext* ctx = (GuestContext*)c;
-    if (!ctx || !ctx->mem_base || addr == 0 || addr >= ctx->mem_size || size > ctx->mem_size - addr)
+    if (!ctx || !RECOMP_MEM_OK(ctx) || addr == 0 || addr >= ctx->mem_size || size > ctx->mem_size - addr)
         return false;
-    memcpy(dst, ctx->mem_base + addr, size);
+    if (!nps5_mem_safe_read(ctx->mem_base + addr, dst, size)) return false; // m8: a hole, not a crash
     if (g_trace_reads) fprintf(stderr, "[gnm-trace]      read 0x%llx +%llu\n", (unsigned long long)addr, (unsigned long long)size);
     return true;
 }
@@ -8621,7 +8637,8 @@ bool BuildQuadListIndices(const DrawArgs& a, uint32_t count, __strong id<MTLBuff
     if (a.indexed) {
         const uint64_t isz = i32 ? 4 : 2;
         const uint64_t addr = a.index_base + (uint64_t)a.index_offset * isz;
-        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr)
+        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr ||
+            !GuestHostAccessible(S.ctx, addr, (uint64_t)avail * isz)) // m8
             return false;
         src = S.ctx->mem_base + addr;
     }
@@ -8666,7 +8683,8 @@ bool BuildQuadStripIndices(const DrawArgs& a, uint32_t count, __strong id<MTLBuf
     if (a.indexed) {
         const uint64_t isz = i32 ? 4 : 2;
         const uint64_t addr = a.index_base + (uint64_t)a.index_offset * isz;
-        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr)
+        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr ||
+            !GuestHostAccessible(S.ctx, addr, (uint64_t)avail * isz)) // m8
             return false;
         src = S.ctx->mem_base + addr;
     }
@@ -8707,7 +8725,8 @@ bool BuildTriangleFanIndices(const DrawArgs& a, uint32_t count, __strong id<MTLB
     if (a.indexed) {
         const uint64_t isz = i32 ? 4 : 2;
         const uint64_t addr = a.index_base + (uint64_t)a.index_offset * isz;
-        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr)
+        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr ||
+            !GuestHostAccessible(S.ctx, addr, (uint64_t)avail * isz)) // m8
             return false;
         src = S.ctx->mem_base + addr;
     }
@@ -8743,7 +8762,8 @@ bool BuildLineLoopIndices(const DrawArgs& a, uint32_t count, __strong id<MTLBuff
     if (a.indexed) {
         const uint64_t isz = i32 ? 4 : 2;
         const uint64_t addr = a.index_base + (uint64_t)a.index_offset * isz;
-        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr)
+        if (!a.index_base || addr >= S.ctx->mem_size || (uint64_t)avail * isz > S.ctx->mem_size - addr ||
+            !GuestHostAccessible(S.ctx, addr, (uint64_t)avail * isz)) // m8
             return false;
         src = S.ctx->mem_base + addr;
     }
@@ -9193,7 +9213,7 @@ bool Init(GuestContext* ctx) {
         fprintf(stderr, "[gnm-draw] GPU rendering disabled (PS4_GNM_METAL_DRAW=0)\n");
         return false;
     }
-    if (!ctx || !ctx->mem_base) return false;
+    if (!ctx || !RECOMP_MEM_OK(ctx)) return false;
     if (const char* b = getenv("PS4_GNM_COMPUTE_BATCH")) {
         if (strcmp(b, "0") && strcmp(b, "1")) {
             fprintf(stderr, "[gnm-draw] FATAL: PS4_GNM_COMPUTE_BATCH=%s (0: commit every compute submission at "
@@ -9951,7 +9971,7 @@ void OcclEventDone(OcclEvent* ev) {
     }
     GuestContext* ctx = ev->ctx;
     const uint64_t addr = ev->addr, bytes = (uint64_t)ev->backends * 16;
-    if (ctx && ctx->mem_base && addr != 0 && addr < ctx->mem_size && bytes <= ctx->mem_size - addr) {
+    if (ctx && RECOMP_MEM_OK(ctx) && GuestHostAccessible(ctx, addr, bytes, true)) { // m8: a hole is skipped
         uint64_t* r = (uint64_t*)(ctx->mem_base + addr);
         constexpr uint64_t kValid = 0x8000000000000000ull;
         r[0] = (total & ~kValid) | kValid;
@@ -10031,7 +10051,7 @@ void ZpassDone(uint64_t addr, uint32_t backends) {
         // no renderer: the event's counts are 0 (valid), as for a query over nothing
         AfterGpu([addr, backends] {
             GuestContext* ctx = S.ctx;
-            if (!ctx || !ctx->mem_base || addr == 0 || addr >= ctx->mem_size || (uint64_t)backends * 16 > ctx->mem_size - addr)
+            if (!ctx || !RECOMP_MEM_OK(ctx) || !GuestHostAccessible(ctx, addr, (uint64_t)backends * 16, true)) // m8
                 return;
             uint64_t* r = (uint64_t*)(ctx->mem_base + addr);
             for (uint32_t i = 0; i < backends; ++i) r[i * 2] = 0x8000000000000000ull;
@@ -11402,7 +11422,7 @@ void EncodeTessDraw(DrawRec& r) {
                 NoteSkip(SkipReason::Arena);
                 return;
             }
-            memcpy(ptr, S.ctx->mem_base + addr, bytes);
+            GuestCopyReadable(ptr, S.ctx->mem_base + addr, bytes);
             ib_off = aoff;
         }
     }
@@ -11912,7 +11932,7 @@ void EncodeGsDraw(DrawRec& r) {
                     NoteSkip(SkipReason::Arena);
                     return;
                 }
-                memcpy(ptr, S.ctx->mem_base + addr, bytes);
+                GuestCopyReadable(ptr, S.ctx->mem_base + addr, bytes);
                 ib_off = aoff;
             }
         }
@@ -12997,7 +13017,7 @@ void DrawEncode(DrawRec& r) {
                     NoteSkip(SkipReason::Arena);
                     return;
                 }
-                memcpy(ptr, S.ctx->mem_base + addr, bytes);
+                GuestCopyReadable(ptr, S.ctx->mem_base + addr, bytes);
                 ib_off = aoff;
             }
             ib_len = bytes;
@@ -13015,7 +13035,11 @@ void DrawEncode(DrawRec& r) {
             const uint8_t* src = nullptr;
             if (indexed) {
                 const uint64_t isz = args.index_type == 1 ? 4 : 2;
-                src = S.ctx->mem_base + args.index_base + (uint64_t)args.index_offset * isz; // checked above
+                src = S.ctx->mem_base + args.index_base + (uint64_t)args.index_offset * isz; // bounds checked above
+                if (!GuestHostAccessible(S.ctx, args.index_base + (uint64_t)args.index_offset * isz, (uint64_t)n * isz)) { // m8
+                    NoteSkip(SkipReason::IndexBuffer);
+                    return;
+                }
             }
             void* sp;
             void* pp;
@@ -14302,7 +14326,8 @@ void DispatchEncode(DispatchRec*& rp) {
                 }
                 const uint64_t ctl_bytes = (uint64_t)dim_x * sizeof(CopyShaderControl);
                 if (ctl_bd.base_address && src_bd.base_address && dst_bd.base_address &&
-                    GuestRangeOk(ctl_bd.base_address, ctl_bytes)) {
+                    GuestRangeOk(ctl_bd.base_address, ctl_bytes) &&
+                    GuestHostAccessible(S.ctx, ctl_bd.base_address, ctl_bytes)) { // m8
                     const auto* ctl = reinterpret_cast<const CopyShaderControl*>(S.ctx->mem_base + ctl_bd.base_address);
                     struct CopyRange {
                         uint64_t src_off;
@@ -14468,7 +14493,8 @@ void DispatchEncode(DispatchRec*& rp) {
                 // 64 threads per group, tgid_enable[0] set, no images, each thread clears 2 texels (128 * bpp bytes per group).
                 if (n_read == 1 && n_written == 1 && rd.size_bytes == 16 && rd.base_address && wr.base_address &&
                     wr.size_bytes > 4096 && wx == 64 && wy == 1 && wz == 1 && rt.cs.tgid_enable[0] &&
-                    cs->imgs.empty() && !indirect_addr && GuestRangeOk(rd.base_address, 16)) {
+                    cs->imgs.empty() && !indirect_addr && GuestRangeOk(rd.base_address, 16) &&
+                    GuestHostAccessible(S.ctx, rd.base_address, 16)) { // m8
                     DataFormat dfmt{};
                     NumberFormat nfmt{};
                     id<MTLTexture> dst = S.tex->FindColorTargetForClear(wr.base_address, wr.size_bytes, &dfmt, &nfmt);
@@ -14598,7 +14624,7 @@ void PresentFromGuestMemory(GuestContext* ctx, uint64_t addr, uint32_t width, ui
     buf.resize((size_t)width * height * 4);
     if (ps4_gnm_read_display_cpu(ctx, addr, width, height, pitch, tiling_mode, pixel_format, buf.data()))
         ps4_metal_screen_present_frame(buf.data(), (size_t)width * 4, (int)width, (int)height);
-    else
+    else if (GuestHostAccessible(ctx, addr, (uint64_t)pitch * 4 * height)) // m8: never present from a hole
         ps4_metal_screen_present_frame(ctx->mem_base + addr, (size_t)pitch * 4, (int)width, (int)height);
 }
 
