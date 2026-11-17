@@ -11,3 +11,4 @@ GOFLAGS=-mod=vendor go test ./pkg/lifter/ -run 'PatchValue' -count=1
 bash tools/framerate_unit.sh
 bash tools/haptics_unit.sh
 bash tools/avsync_unit.sh
+bash tools/avloop_unit.sh
