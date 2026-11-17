@@ -47,6 +47,9 @@ bool ps4_vfs_is_readonly(const char *guest_path);
 // symlink), ENODEV for a per-title root (/data, /temp0, /download0) whose host directory could not be created.
 // Both ends of rename and link are checked. fd forms refuse fds that refer to the application image.
 int ps4_vfs_resolve_for_write(const char *guest_path, char *host_path, size_t host_path_sz); // 0 or -errno
+// Directory listing cache for case-insensitive lookups (NPS5_VFS_DIRCACHE=1, default off): test/diagnostic hooks.
+void ps4_vfs_dircache_set(int on);
+void ps4_vfs_dircache_stats(uint64_t *hits, uint64_t *scans);
 int ps4_vfs_check_writable(const char *guest_path); // 0 or -errno
 int ps4_vfs_fd_check_writable(int fd);              // 0 or -errno
 int ps4_vfs_unlink(const char *g);

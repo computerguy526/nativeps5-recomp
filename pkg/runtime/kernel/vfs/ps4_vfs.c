@@ -3,6 +3,8 @@
 #include "ps4_pak.h"
 #include "nps5_diag.h"
 #include "ps4_sfo.h"
+#include <ctype.h>
+#include <limits.h>
 #include <dirent.h>
 #include <execinfo.h>
 #include <errno.h>
@@ -621,6 +623,122 @@ static void normalize_chroot_subpath(const char *subpath, char *out,
   out[written] = '\0';
 }
 
+// ---- directory listing cache (NPS5_VFS_DIRCACHE=1; default off) -------------------------------------------------
+// A failed access() makes case_insensitive_lookup read the whole parent directory for a case-insensitive match; a
+// level load probes thousands of files that do not exist in directories of 23k entries. With the cache the listing
+// is read once and a miss costs one hash lookup. A listing is trusted only while the directory's inode and mtime
+// (ns) are unchanged AND the mtime is older than DIRCACHE_RACY_S at scan time (an entry created right after the scan
+// within the timestamp granularity would otherwise be missed); every mutator also bumps a global generation
+// (ps4_vfs_resolve_for_write), which invalidates all listings. Match semantics are the old loop's: the first entry
+// in readdir order for which strcasecmp(name, part) == 0.
+#define DIRCACHE_SLOTS 32
+#define DIRCACHE_MAX_ENTRIES 1000000
+#define DIRCACHE_RACY_S 2
+typedef struct {
+  char *path;              // directory (as resolved), NULL = free
+  ino_t ino; dev_t dev;
+  struct timespec mtime;
+  uint64_t gen;
+  uint32_t count, cap;     // entries, hash table capacity (power of two)
+  char **names;            // [count] malloc'd
+  int32_t *table;          // [cap] index into names, -1 empty
+} dircache_entry_t;
+static pthread_mutex_t g_dircache_mu = PTHREAD_MUTEX_INITIALIZER;
+static dircache_entry_t g_dircache[DIRCACHE_SLOTS];
+static unsigned g_dircache_next;
+static _Atomic uint64_t g_dircache_gen;
+static _Atomic uint64_t g_dircache_hits, g_dircache_scans;
+static int g_dircache_on = -1;
+
+static int dircache_enabled(void) {
+  int on = g_dircache_on;
+  if (on < 0) { const char *e = getenv("NPS5_VFS_DIRCACHE"); on = e && *e && strcmp(e, "0") != 0; g_dircache_on = on; }
+  return on;
+}
+void ps4_vfs_dircache_set(int on) { g_dircache_on = on ? 1 : 0; }
+void ps4_vfs_dircache_stats(uint64_t *hits, uint64_t *scans) { if (hits) *hits = g_dircache_hits; if (scans) *scans = g_dircache_scans; }
+static void dircache_bump(void) { atomic_fetch_add(&g_dircache_gen, 1); }
+
+static uint64_t dircache_hash(const char *s) {
+  uint64_t h = 1469598103934665603ull;
+  for (; *s; s++) { h ^= (unsigned char)tolower((unsigned char)*s); h *= 1099511628211ull; }
+  return h;
+}
+static void dircache_free(dircache_entry_t *e) {
+  if (!e->path) return;
+  for (uint32_t i = 0; i < e->count; i++) free(e->names[i]);
+  free(e->names); free(e->table); free(e->path);
+  memset(e, 0, sizeof *e);
+}
+// Reads `dir`; returns 0 and fills *e (path stays NULL on failure).
+static int dircache_scan(const char *dir, const struct stat *st, dircache_entry_t *e) {
+  DIR *d = opendir(dir);
+  if (!d) return -1;
+  uint32_t cap_names = 256, n = 0;
+  char **names = malloc(cap_names * sizeof(char *));
+  struct dirent *de;
+  while (names && (de = readdir(d)) != NULL) {
+    if (n >= DIRCACHE_MAX_ENTRIES) { n = UINT32_MAX; break; }
+    if (n == cap_names) { cap_names *= 2; char **nn = realloc(names, cap_names * sizeof(char *)); if (!nn) { n = UINT32_MAX; break; } names = nn; }
+    names[n] = strdup(de->d_name);
+    if (!names[n]) { n = UINT32_MAX; break; }
+    n++;
+  }
+  closedir(d);
+  if (!names) return -1;
+  if (n == UINT32_MAX) { return -1; }  // too big / out of memory: leak-free enough, caller falls back
+  uint32_t cap = 16; while (cap < n * 2u) cap <<= 1;
+  int32_t *table = malloc(cap * sizeof(int32_t));
+  if (!table) { for (uint32_t i = 0; i < n; i++) free(names[i]); free(names); return -1; }
+  for (uint32_t i = 0; i < cap; i++) table[i] = -1;
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t j = (uint32_t)dircache_hash(names[i]) & (cap - 1);
+    int dup = 0;
+    for (; table[j] >= 0; j = (j + 1) & (cap - 1))
+      if (strcasecmp(names[table[j]], names[i]) == 0) { dup = 1; break; }  // keep the first in readdir order
+    if (!dup) table[j] = (int32_t)i;
+  }
+  e->path = strdup(dir); e->ino = st->st_ino; e->dev = st->st_dev; e->mtime = st->st_mtimespec;
+  e->count = n; e->cap = cap; e->names = names; e->table = table;
+  if (!e->path) { dircache_free(e); return -1; }
+  return 0;
+}
+// 1 and *match = the entry name when `part` matches case-insensitively; 0 no match; -1 cache not usable (scan the
+// directory the old way).
+static int dircache_lookup(const char *dir, const char *part, char *match, size_t match_sz) {
+  struct stat st;
+  if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+  struct timespec now; clock_gettime(CLOCK_REALTIME, &now);
+  int racy = now.tv_sec - st.st_mtimespec.tv_sec < DIRCACHE_RACY_S;
+  uint64_t gen = atomic_load(&g_dircache_gen);
+  int r = 0;
+  pthread_mutex_lock(&g_dircache_mu);
+  dircache_entry_t *e = NULL;
+  for (int i = 0; i < DIRCACHE_SLOTS; i++)
+    if (g_dircache[i].path && strcmp(g_dircache[i].path, dir) == 0) { e = &g_dircache[i]; break; }
+  if (e && (e->gen != gen || e->ino != st.st_ino || e->dev != st.st_dev ||
+            e->mtime.tv_sec != st.st_mtimespec.tv_sec || e->mtime.tv_nsec != st.st_mtimespec.tv_nsec)) {
+    dircache_free(e); e = NULL;
+  }
+  if (!e) {
+    if (racy) { pthread_mutex_unlock(&g_dircache_mu); return -1; }
+    dircache_entry_t fresh; memset(&fresh, 0, sizeof fresh);
+    if (dircache_scan(dir, &st, &fresh) != 0) { pthread_mutex_unlock(&g_dircache_mu); return -1; }
+    fresh.gen = gen;
+    atomic_fetch_add(&g_dircache_scans, 1);
+    e = &g_dircache[g_dircache_next++ % DIRCACHE_SLOTS];
+    dircache_free(e); *e = fresh;
+  } else {
+    atomic_fetch_add(&g_dircache_hits, 1);
+  }
+  for (uint32_t j = (uint32_t)dircache_hash(part) & (e->cap - 1); e->table[j] >= 0; j = (j + 1) & (e->cap - 1)) {
+    const char *nm = e->names[e->table[j]];
+    if (strcasecmp(nm, part) == 0) { snprintf(match, match_sz, "%s", nm); r = 1; break; }
+  }
+  pthread_mutex_unlock(&g_dircache_mu);
+  return r;
+}
+
 static int case_insensitive_lookup(const char *host_path, char *out_path,
                                    size_t out_sz) {
   if (!host_path || !out_path || out_sz == 0)
@@ -691,8 +809,18 @@ static int case_insensitive_lookup(const char *host_path, char *out_path,
       continue;
     }
 
-    DIR *dir = opendir(resolved);
     int matched = 0;
+    char cached_name[NAME_MAX + 1];
+    int cr = dircache_enabled() ? dircache_lookup(resolved, part, cached_name, sizeof cached_name) : -1;
+    if (cr >= 0) {
+      if (cr == 1) {
+        snprintf(test_path, sizeof(test_path), "%s%s%s", resolved, is_root ? "" : "/", cached_name);
+        strncpy(resolved, test_path, sizeof(resolved) - 1);
+        resolved[sizeof(resolved) - 1] = '\0';
+        matched = 1;
+      }
+    }
+    DIR *dir = cr < 0 ? opendir(resolved) : NULL;
     if (dir) {
       struct dirent *de;
       while ((de = readdir(dir)) != NULL) {
@@ -968,6 +1096,7 @@ static bool vfs_host_inside_mount(const char *host, const char *mount_dir) {
 int ps4_vfs_resolve_for_write(const char *guest_path, char *host_path, size_t host_path_sz) {
   if (!guest_path) return -EFAULT;
   if (ps4_vfs_is_readonly(guest_path)) return -EROFS;
+  dircache_bump(); // a mutation follows: no directory listing may outlive it
   int kind = 0, ro = 0;
   char mroot[1100];
   int r = vfs_resolve_ex(guest_path, host_path, host_path_sz, &kind, &ro, mroot, sizeof(mroot));

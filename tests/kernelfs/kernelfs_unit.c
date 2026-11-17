@@ -566,6 +566,72 @@ static void test_userdata_fail_closed(const char *tmp) {
   unsetenv("NPS5_USERDATA_DIR"); unsetenv("NPS5_TITLE_ID");
 }
 
+static int g_fs_ci;
+#define HAS(h, name) (g_fs_ci || strstr((h), (name)) != NULL)
+static void test_dircache(const char *tmp) {
+  char app[700], p[900];
+  snprintf(app, sizeof app, "%s/dump_dc", tmp); mkdir(app, 0755);
+  snprintf(p, sizeof p, "%s/gfx", app); mkdir(p, 0755);
+  const char *names[] = {"Alpha.GNF", "beta.gnf", "Gamma.Dat"};
+  for (int i = 0; i < 3; i++) { snprintf(p, sizeof p, "%s/gfx/%s", app, names[i]); FILE *f = fopen(p, "w"); fputs("x", f); fclose(f); }
+  // many files, so the scan matters
+  for (int i = 0; i < 3000; i++) { snprintf(p, sizeof p, "%s/gfx/f%05d.bin", app, i); FILE *f = fopen(p, "w"); fclose(f); }
+  // age the directory so it is not "racy"
+  { snprintf(p, sizeof p, "%s/gfx", app); struct timeval tv[2]; gettimeofday(&tv[0], 0); tv[0].tv_sec -= 100; tv[1] = tv[0]; utimes(p, tv); }
+  { char a[900], b[900]; snprintf(a, sizeof a, "%s/CsProbe", app); snprintf(b, sizeof b, "%s/csprobe", app); FILE *f = fopen(a, "w"); fclose(f); g_fs_ci = access(b, F_OK) == 0; unlink(a); }
+  char ud[800]; snprintf(ud, sizeof ud, "%s/ud_dc", tmp);
+  setenv("NPS5_USERDATA_DIR", ud, 1); setenv("NPS5_TITLE_ID", "TESTDC000", 1);
+  ps4_vfs_init(app);
+  const char *probes[] = {"/app0/gfx/alpha.gnf", "/app0/GFX/BETA.GNF", "/app0/gfx/GAMMA.dat", "/app0/gfx/F00042.BIN"};
+  const char *expect[] = {"Alpha.GNF", "beta.gnf", "Gamma.Dat", "f00042.bin"};
+  char h_off[4][1024], h[1024];
+  ps4_vfs_dircache_set(0);
+  for (int i = 0; i < 4; i++) { CHECK(ps4_vfs_resolve(probes[i], h_off[i], sizeof h) == 0); CHECK(HAS(h_off[i], expect[i])); }
+  char miss_off[1024]; CHECK(ps4_vfs_resolve("/app0/gfx/missing.gnf", miss_off, sizeof miss_off) == 0);
+  uint64_t hits0, scans0, hits1, scans1;
+  ps4_vfs_dircache_set(1);
+  ps4_vfs_dircache_stats(&hits0, &scans0);
+  for (int round = 0; round < 3; round++)
+    for (int i = 0; i < 4; i++) { CHECK(ps4_vfs_resolve(probes[i], h, sizeof h) == 0); CHECK(strcmp(h, h_off[i]) == 0); }
+  char miss[1024]; for (int i = 0; i < 100; i++) { CHECK(ps4_vfs_resolve("/app0/gfx/missing.gnf", miss, sizeof miss) == 0); CHECK(strcmp(miss, miss_off) == 0); }
+  ps4_vfs_dircache_stats(&hits1, &scans1);
+  CHECK(scans1 - scans0 == 1);          // one listing, then hash hits
+  CHECK(hits1 - hits0 >= 99);
+  // A file created in the directory behind the cache's back (the dir mtime changes) is found after the change,
+  // and a file made through the write gate also.
+  snprintf(p, sizeof p, "%s/gfx/NewFile.Gnf", app); { FILE *f = fopen(p, "w"); fclose(f); }
+  { snprintf(p, sizeof p, "%s/gfx", app); struct timeval tv[2]; gettimeofday(&tv[0], 0); tv[0].tv_sec -= 50; tv[1] = tv[0]; utimes(p, tv); }
+  CHECK(ps4_vfs_resolve("/app0/gfx/newfile.gnf", h, sizeof h) == 0); CHECK(HAS(h, "NewFile.Gnf"));
+  // unlink: the name is gone from the next lookup (resolves to the lowercase request path again).
+  snprintf(p, sizeof p, "%s/gfx/NewFile.Gnf", app); unlink(p);
+  { snprintf(p, sizeof p, "%s/gfx", app); struct timeval tv[2]; gettimeofday(&tv[0], 0); tv[0].tv_sec -= 40; tv[1] = tv[0]; utimes(p, tv); }
+  CHECK(ps4_vfs_resolve("/app0/gfx/newfile.gnf", h, sizeof h) == 0); CHECK(HAS(h, "newfile.gnf"));
+  // Through the gate: userdata directory create / rename / unlink are seen at once (generation bump).
+  char ddir[900]; snprintf(ddir, sizeof ddir, "%s/ud_dc", tmp);
+  int fd = ps4_vfs_open("/data/Save1.BIN", O_WRONLY | O_CREAT, 0644); CHECK(fd >= 0); if (fd >= 0) close(fd);
+  CHECK(ps4_vfs_resolve("/data/save1.bin", h, sizeof h) == 0); CHECK(HAS(h, "Save1.BIN"));
+  CHECK(ps4_vfs_rename("/data/Save1.BIN", "/data/Other.BIN") == 0);
+  CHECK(ps4_vfs_resolve("/data/other.bin", h, sizeof h) == 0); CHECK(HAS(h, "Other.BIN"));
+  CHECK(ps4_vfs_resolve("/data/save1.bin", h, sizeof h) == 0); CHECK(HAS(h, "save1.bin"));
+  CHECK(ps4_vfs_unlink("/data/Other.BIN") == 0);
+  CHECK(ps4_vfs_resolve("/data/other.bin", h, sizeof h) == 0); CHECK(HAS(h, "other.bin"));
+  // Two case variants in one directory: the first in readdir order wins, like the uncached loop.
+  snprintf(p, sizeof p, "%s/gfx/dup.txt", app); { FILE *f = fopen(p, "w"); fclose(f); }
+  snprintf(p, sizeof p, "%s/gfx/DUP.TXT", app); { FILE *f = fopen(p, "w"); fclose(f); }
+  { snprintf(p, sizeof p, "%s/gfx", app); struct timeval tv[2]; gettimeofday(&tv[0], 0); tv[0].tv_sec -= 30; tv[1] = tv[0]; utimes(p, tv); }
+  char d_on[1024], d_off[1024];
+  ps4_vfs_dircache_set(1); CHECK(ps4_vfs_resolve("/app0/gfx/Dup.Txt", d_on, sizeof d_on) == 0);
+  ps4_vfs_dircache_set(0); CHECK(ps4_vfs_resolve("/app0/gfx/Dup.Txt", d_off, sizeof d_off) == 0);
+  CHECK(strcmp(d_on, d_off) == 0);
+  // Racy directory (modified just now): never cached, still correct.
+  snprintf(p, sizeof p, "%s/gfx/Fresh.Gnf", app); { FILE *f = fopen(p, "w"); fclose(f); }
+  ps4_vfs_dircache_set(1);
+  CHECK(ps4_vfs_resolve("/app0/gfx/fresh.gnf", h, sizeof h) == 0); CHECK(HAS(h, "Fresh.Gnf"));
+  ps4_vfs_dircache_set(0);
+  printf("kernelfs: dircache ok\n");
+  unsetenv("NPS5_USERDATA_DIR"); unsetenv("NPS5_TITLE_ID");
+}
+
 static void test_locale_gate(const char *tmp) {
   char app[700], p[800];
   snprintf(app, sizeof app, "%s/dump_loc", tmp); mkdir(app, 0755);
@@ -799,7 +865,7 @@ int main(int argc, char **argv) {
     return fails ? 1 : 0;   // the files are written at exit
   }
   setenv("NPS5_TRACE_CONDWAIT", "50", 1);
-  char tmp[] = "/tmp/kernelfs_unit.XXXXXX";
+  char tmp[512]; snprintf(tmp, sizeof tmp, "%s/kernelfs_unit.XXXXXX", getenv("KERNELFS_TMP") ? getenv("KERNELFS_TMP") : "/tmp");
   if (!mkdtemp(tmp)) return 2;
   C = calloc(1, sizeof(GuestContext));
   C->mem_size = ARENA;
@@ -818,6 +884,7 @@ int main(int argc, char **argv) {
   alarm(60); test_gate_attacks(tmp); alarm(0); // a hang (the unfixed gate) is a failure, not a stall
   test_raw_write(tmp);
   test_locale_gate(tmp);
+  test_dircache(tmp);
   test_overlay_many(tmp);
   test_temp_per_process(tmp);
   test_usleep_resumes();
