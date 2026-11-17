@@ -144,6 +144,7 @@ static void legacy_two(int sig, siginfo_t *si, void *u) { // stands for the stde
   exit(7);
 }
 static void legacy_rec(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; abort(); } // same thread again
+static void legacy_recfin(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; nps5_diag_crash_finalize(); abort(); } // abort in teardown
 static void chain_before_diag(void (*fn)(int, siginfo_t *, void *)) {
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
@@ -202,6 +203,7 @@ int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "deepthread")) { deep_arm(); pthread_t t; pthread_create(&t, NULL, deep_thread, NULL); pthread_join(t, NULL); _exit(6); }
   if (argc > 1 && !strcmp(argv[1], "two")) { pthread_t t; pthread_create(&t, NULL, second_thread, NULL); chain_before_diag(legacy_two); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "rec")) { chain_before_diag(legacy_rec); crash_null(); }
+  if (argc > 1 && !strcmp(argv[1], "recfin")) { chain_before_diag(legacy_recfin); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
   test_redact();
   test_thread_init();
@@ -255,6 +257,13 @@ int main(int argc, char **argv) {
   st = run_self("rec", d5);
   CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 128 + SIGABRT);
   CHECK(file_has(d5, "nps5 crash report v1"));
+  snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
+  // the same after the bundle was finalised (abort from library teardown inside exit()): a plain exit 1, bundle complete
+  snprintf(d5, sizeof d5, "%s.recfin", base); mkdir(d5, 0755);
+  st = run_self("recfin", d5);
+  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 1);
+  snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt", d5);
+  CHECK(system(cmd) == 0);
   snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
   snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s' '%s'", d1, d2, d3); system(cmd);
   printf(fails ? "diag_unit: %d FAILURES\n" : "diag_unit: all passed\n", fails);

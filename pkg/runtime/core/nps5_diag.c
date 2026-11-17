@@ -94,6 +94,7 @@ static struct timespec g_t0;
 static struct timeval g_wall0;
 static int g_started;
 static _Atomic int g_crashed;
+static _Atomic int g_crash_finalized; // nps5_diag_crash_finalize ran: what follows is process teardown
 static _Atomic uintptr_t g_crash_owner; // the thread writing the crash report (set right after it wins g_crashed)
 static _Atomic int g_faults;
 static _Atomic int g_exiting;
@@ -1071,6 +1072,7 @@ void nps5_diag_crash_finalize(void) {
   signal(SIGALRM, SIG_DFL);
   alarm(5);
   diag_atexit_fwd();
+  atomic_store(&g_crash_finalized, 1);
 }
 
 #define NPS5_MAX_RESOLVERS 4
@@ -1173,6 +1175,13 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
       static const char m[] = "nps5: a second thread failed while the crash report is being written; it waits for the report\n";
       (void)!write(2, m, sizeof m - 1);
       for (;;) pause();
+    }
+    if (atomic_load(&g_crash_finalized)) {
+      // The report, the summary and the manifest are written and the reporting thread is in exit(): an abort from
+      // library teardown now (a destructor throwing from a mutex that is already gone) is not worth a second crash.
+      static const char m[] = "nps5: failure during process teardown after the crash report was written; exiting\n";
+      (void)!write(2, m, sizeof m - 1);
+      _exit(1);
     }
     // A fault inside the handler on the reporting thread itself: give up quickly.
     static const char m[] = "nps5: recursive crash, aborting\n";
