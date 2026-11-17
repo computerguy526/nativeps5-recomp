@@ -7,12 +7,18 @@ import (
 	"ps4-recomp/pkg/disasm"
 )
 
+// instHasRep reports F3 (REP/REPE); instHasRepn reports F2 (REPNE). On MOVS/STOS/LODS both
+// prefixes mean REP (instHasAnyRep).
 func instHasRep(inst x86asm.Inst) bool {
 	return instRepPrefix(inst) == 0xF3
 }
 
 func instHasRepn(inst x86asm.Inst) bool {
 	return instRepPrefix(inst) == 0xF2
+}
+
+func instHasAnyRep(inst x86asm.Inst) bool {
+	return instRepPrefix(inst) != 0
 }
 
 func instRepPrefix(inst x86asm.Inst) byte {
@@ -29,8 +35,15 @@ func instRepPrefix(inst x86asm.Inst) byte {
 }
 
 // liftStringOp handles string instructions: MOVS*, STOS*, LODS*, SCAS*, CMPS*.
+//
+// Direction: RSI/RDI advance by the element width when DF = 0 and go back by it when DF = 1.
+// DF is guest state (GuestContext.df, written by STD/CLD/POPFQ), read here every time; each
+// lowering starts by putting the signed step in x5 (strStep). FEX reads DF the same way per
+// string instruction (OpcodeDispatcher.h ForeachDirection:286, LoadDir; STD/CLD in
+// OpcodeDispatcher.cpp FLAGControlOp:1208).
 func (l *Arm64Lifter) liftStringOp(inst disasm.Instruction, width int, lines []string) ([]string, error) {
 	op := inst.Inst.Op
+	lines = append(lines, l.strStep(width)...)
 	switch op {
 	case x86asm.MOVSB, x86asm.MOVSW, x86asm.MOVSD, x86asm.MOVSQ:
 		return l.liftMovs(inst, width, lines)
@@ -48,110 +61,88 @@ func (l *Arm64Lifter) liftStringOp(inst disasm.Instruction, width int, lines []s
 	}
 }
 
-func (l *Arm64Lifter) liftMovs(inst disasm.Instruction, width int, lines []string) ([]string, error) {
-	loadInst := "ldr"
-	storeInst := "str"
-	reg := "x16"
+// strStep sets x5 to the string step: +width when DF = 0, -width when DF = 1. No flags change.
+func (l *Arm64Lifter) strStep(width int) []string {
+	shift := 1 // 2 * width = 1 << shift
+	switch width {
+	case 2:
+		shift = 2
+	case 4:
+		shift = 3
+	case 8:
+		shift = 4
+	}
+	lines := l.emitLoadCtxPtr("x5")
+	return append(lines,
+		fmt.Sprintf("    ldrb w5, [x5, #0x%x] // df", ctxDF),
+		fmt.Sprintf("    mov x17, #%d", width),
+		fmt.Sprintf("    sub x5, x17, x5, lsl #%d", shift))
+}
+
+func strStoreInst(width int) string {
 	switch width {
 	case 1:
-		loadInst = "ldrb"
-		storeInst = "strb"
-		reg = "w16"
+		return "strb"
 	case 2:
-		loadInst = "ldrh"
-		storeInst = "strh"
-		reg = "w16"
-	case 4:
-		loadInst = "ldr"
-		storeInst = "str"
-		reg = "w16"
-	case 8:
-		loadInst = "ldr"
-		storeInst = "str"
-		reg = "x16"
+		return "strh"
 	}
+	return "str"
+}
 
-	if instHasRep(inst.Inst) {
-		l.labelCounter++
-		id := l.labelCounter
-		lblLoop := fmt.Sprintf("L_rep_movs_loop_%x_%d", inst.Address, id)
-		lblDone := fmt.Sprintf("L_rep_movs_done_%x_%d", inst.Address, id)
-		lines = append(lines,
-			fmt.Sprintf("    cbz x21, %s", lblDone),
-			fmt.Sprintf("%s:", lblLoop),
-			fmt.Sprintf("    %s %s, [x28, x23]", loadInst, reg),
-			fmt.Sprintf("    %s %s, [x28, x24]", storeInst, reg),
-			fmt.Sprintf("    add x23, x23, #%d", width),
-			fmt.Sprintf("    add x24, x24, #%d", width),
-			"    sub x21, x21, #1", // REP MOVS keeps the flags: no SUBS
-			fmt.Sprintf("    cbnz x21, %s", lblLoop),
-			fmt.Sprintf("%s:", lblDone),
-		)
-		return lines, nil
+func strReg(width int, n string) string {
+	if width == 8 {
+		return "x" + n
 	}
+	return "w" + n
+}
 
-	lines = append(lines,
-		fmt.Sprintf("    %s %s, [x28, x23]", loadInst, reg),
-		fmt.Sprintf("    %s %s, [x28, x24]", storeInst, reg),
-		fmt.Sprintf("    add x23, x23, #%d", width),
-		fmt.Sprintf("    add x24, x24, #%d", width),
-	)
-	return lines, nil
+func (l *Arm64Lifter) liftMovs(inst disasm.Instruction, width int, lines []string) ([]string, error) {
+	body := []string{
+		l.strLoad(width, "x16", "x23"),
+		fmt.Sprintf("    %s %s, %s", strStoreInst(width), strReg(width, "16"), l.gm("x24")),
+		"    add x23, x23, x5",
+		"    add x24, x24, x5",
+	}
+	return l.strRep(inst, "movs", body, lines), nil
 }
 
 func (l *Arm64Lifter) liftStos(inst disasm.Instruction, width int, lines []string) ([]string, error) {
-	storeInst := "str"
-	reg := "x19"
-	switch width {
-	case 1:
-		storeInst = "strb"
-		reg = "w19"
-	case 2:
-		storeInst = "strh"
-		reg = "w19"
-	case 4:
-		storeInst = "str"
-		reg = "w19"
-	case 8:
-		storeInst = "str"
-		reg = "x19"
+	body := []string{
+		fmt.Sprintf("    %s %s, %s", strStoreInst(width), strReg(width, "19"), l.gm("x24")),
+		"    add x24, x24, x5",
 	}
+	return l.strRep(inst, "stos", body, lines), nil
+}
 
-	if instHasRep(inst.Inst) {
-		l.labelCounter++
-		id := l.labelCounter
-		lblLoop := fmt.Sprintf("L_rep_stos_loop_%x_%d", inst.Address, id)
-		lblDone := fmt.Sprintf("L_rep_stos_done_%x_%d", inst.Address, id)
-		lines = append(lines,
-			fmt.Sprintf("    cbz x21, %s", lblDone),
-			fmt.Sprintf("%s:", lblLoop),
-			fmt.Sprintf("    %s %s, [x28, x24]", storeInst, reg),
-			fmt.Sprintf("    add x24, x24, #%d", width),
-			"    sub x21, x21, #1", // REP STOS keeps the flags: no SUBS
-			fmt.Sprintf("    cbnz x21, %s", lblLoop),
-			fmt.Sprintf("%s:", lblDone),
-		)
-		return lines, nil
+// strRep emits body once, or under REP (F3 or F2) RCX times. REP MOVS/STOS keep the flags: the
+// count goes down with SUB, not SUBS.
+func (l *Arm64Lifter) strRep(inst disasm.Instruction, name string, body, lines []string) []string {
+	if !instHasAnyRep(inst.Inst) {
+		return append(lines, body...)
 	}
-
-	lines = append(lines,
-		fmt.Sprintf("    %s %s, [x28, x24]", storeInst, reg),
-		fmt.Sprintf("    add x24, x24, #%d", width),
-	)
-	return lines, nil
+	l.labelCounter++
+	id := l.labelCounter
+	lblLoop := fmt.Sprintf("L_rep_%s_loop_%x_%d", name, inst.Address, id)
+	lblDone := fmt.Sprintf("L_rep_%s_done_%x_%d", name, inst.Address, id)
+	lines = append(lines, fmt.Sprintf("    cbz x21, %s", lblDone), lblLoop+":")
+	lines = append(lines, body...)
+	return append(lines,
+		"    sub x21, x21, #1",
+		fmt.Sprintf("    cbnz x21, %s", lblLoop),
+		lblDone+":")
 }
 
 func (l *Arm64Lifter) liftLods(inst disasm.Instruction, width int, lines []string) ([]string, error) {
-	hasRep := instHasRep(inst.Inst)
+	hasRep := instHasAnyRep(inst.Inst)
 	var lblDone string
 	if hasRep {
+		// Only the last element read stays in the accumulator: skip to it.
 		l.labelCounter++
 		lblDone = fmt.Sprintf("L_rep_lods_done_%x_%d", inst.Address, l.labelCounter)
 		lines = append(lines,
 			fmt.Sprintf("    cbz x21, %s", lblDone),
 			"    sub x16, x21, #1",
-			fmt.Sprintf("    mov x17, #%d", width),
-			"    mul x16, x16, x17",
+			"    mul x16, x16, x5",
 			"    add x23, x23, x16",
 		)
 	}
@@ -159,27 +150,20 @@ func (l *Arm64Lifter) liftLods(inst disasm.Instruction, width int, lines []strin
 	switch width {
 	case 1:
 		lines = append(lines,
-			"    ldrb w16, [x28, x23]",
+			"    ldrb w16, "+l.gm("x23"),
 			"    bfi x19, x16, #0, #8",
-			"    add x23, x23, #1",
 		)
 	case 2:
 		lines = append(lines,
-			"    ldrh w16, [x28, x23]",
+			"    ldrh w16, "+l.gm("x23"),
 			"    bfi x19, x16, #0, #16",
-			"    add x23, x23, #2",
 		)
 	case 4:
-		lines = append(lines,
-			"    ldr w19, [x28, x23]",
-			"    add x23, x23, #4",
-		)
+		lines = append(lines, "    ldr w19, "+l.gm("x23"))
 	case 8:
-		lines = append(lines,
-			"    ldr x19, [x28, x23]",
-			"    add x23, x23, #8",
-		)
+		lines = append(lines, "    ldr x19, "+l.gm("x23"))
 	}
+	lines = append(lines, "    add x23, x23, x5")
 
 	if hasRep {
 		lines = append(lines,
@@ -208,42 +192,61 @@ func strCompare(width int, lhs, rhs string) []string {
 }
 
 // strLoad returns the zero-extending load of one element.
-func strLoad(width int, dst, addr string) string {
+func (l *Arm64Lifter) strLoad(width int, dst, addr string) string {
 	switch width {
 	case 1:
-		return fmt.Sprintf("    ldrb w%s, [x28, %s]", dst[1:], addr)
+		return fmt.Sprintf("    ldrb w%s, %s", dst[1:], l.gm(addr))
 	case 2:
-		return fmt.Sprintf("    ldrh w%s, [x28, %s]", dst[1:], addr)
+		return fmt.Sprintf("    ldrh w%s, %s", dst[1:], l.gm(addr))
 	case 4:
-		return fmt.Sprintf("    ldr w%s, [x28, %s]", dst[1:], addr)
+		return fmt.Sprintf("    ldr w%s, %s", dst[1:], l.gm(addr))
 	}
-	return fmt.Sprintf("    ldr x%s, [x28, %s]", dst[1:], addr)
+	return fmt.Sprintf("    ldr x%s, %s", dst[1:], l.gm(addr))
 }
 
-// liftScas handles SCAS: flags of AL/AX/EAX/RAX - [RDI], RDI advances. liftCmps handles CMPS:
-// flags of [RSI] - [RDI], RSI and RDI advance. With REPE/REPNE the comparison repeats while RCX
+// liftScas handles SCAS: flags of AL/AX/EAX/RAX - [RDI], RDI steps. liftCmps handles CMPS:
+// flags of [RSI] - [RDI], RSI and RDI step. With REPE/REPNE the comparison repeats while RCX
 // is not 0 and ZF is 1 (REPE) or 0 (REPNE); RCX = 0 on entry leaves the flags of the previous
 // instruction, so the carry is brought into the sub sense first and both paths end in it.
 func (l *Arm64Lifter) liftScas(inst disasm.Instruction, width int, lines []string) ([]string, error) {
-	body := []string{strLoad(width, "x16", "x24"), fmt.Sprintf("    add x24, x24, #%d", width)}
-	return l.liftRepCompare(inst, "scas", body, strCompare(width, "x19", "x16"), lines), nil
+	body := []string{l.strLoad(width, "x16", "x24"), "    add x24, x24, x5"}
+	return l.liftRepCompare(inst, "scas", body, width, "x19", "x16", lines), nil
 }
 
 func (l *Arm64Lifter) liftCmps(inst disasm.Instruction, width int, lines []string) ([]string, error) {
 	body := []string{
-		strLoad(width, "x16", "x23"),
-		strLoad(width, "x17", "x24"),
-		fmt.Sprintf("    add x23, x23, #%d", width),
-		fmt.Sprintf("    add x24, x24, #%d", width),
+		l.strLoad(width, "x16", "x23"),
+		l.strLoad(width, "x17", "x24"),
+		"    add x23, x23, x5",
+		"    add x24, x24, x5",
 	}
-	return l.liftRepCompare(inst, "cmps", body, strCompare(width, "x16", "x17"), lines), nil
+	return l.liftRepCompare(inst, "cmps", body, width, "x16", "x17", lines), nil
 }
 
-func (l *Arm64Lifter) liftRepCompare(inst disasm.Instruction, name string, body, cmp, lines []string) []string {
+// strParity records the lazy PF/AF of the comparison lhs - rhs (see arm64_lifter_parity.go)
+// when a reader can follow. Scratch: x2, x3, x4.
+func (l *Arm64Lifter) strParity(inst disasm.Instruction, lhs, rhs string) []string {
+	if inst.ParityDead && inst.AdjustDead {
+		return nil
+	}
+	lines := []string{
+		fmt.Sprintf("    sub w4, w%s, w%s", lhs[1:], rhs[1:]),
+		fmt.Sprintf("    eor w3, w%s, w%s", lhs[1:], rhs[1:]),
+	}
+	lines = append(lines, l.emitLoadCtxPtr("x2")...)
+	return append(lines,
+		fmt.Sprintf("    strb w4, [x2, #0x%x] // pf", ctxPF),
+		fmt.Sprintf("    strb w3, [x2, #0x%x] // af", ctxAF))
+}
+
+func (l *Arm64Lifter) liftRepCompare(inst disasm.Instruction, name string, body []string, width int, lhs, rhs string, lines []string) []string {
+	cmp := strCompare(width, lhs, rhs)
+	rec := l.strParity(inst, lhs, rhs)
 	stopOnMatch := instHasRepn(inst.Inst)
 	if !stopOnMatch && !instHasRep(inst.Inst) {
 		lines = append(lines, body...)
 		lines = append(lines, cmp...)
+		lines = append(lines, rec...)
 		l.cpol = carrySub
 		return lines
 	}
@@ -251,6 +254,10 @@ func (l *Arm64Lifter) liftRepCompare(inst disasm.Instruction, name string, body,
 	id := l.labelCounter
 	lblLoop := fmt.Sprintf("L_rep_%s_loop_%x_%d", name, inst.Address, id)
 	lblDone := fmt.Sprintf("L_rep_%s_done_%x_%d", name, inst.Address, id)
+	lblStop := lblDone
+	if len(rec) > 0 {
+		lblStop = fmt.Sprintf("L_rep_%s_stop_%x_%d", name, inst.Address, id)
+	}
 	stopBranch := "b.ne" // REPE stops when not equal
 	if stopOnMatch {
 		stopBranch = "b.eq" // REPNE stops when equal
@@ -261,10 +268,15 @@ func (l *Arm64Lifter) liftRepCompare(inst disasm.Instruction, name string, body,
 	lines = append(lines, "    sub x21, x21, #1")
 	lines = append(lines, cmp...)
 	lines = append(lines,
-		fmt.Sprintf("    %s %s", stopBranch, lblDone),
+		fmt.Sprintf("    %s %s", stopBranch, lblStop),
 		fmt.Sprintf("    cbnz x21, %s", lblLoop),
-		lblDone+":",
 	)
+	if len(rec) > 0 {
+		// At least one comparison ran: its operands are still in the registers.
+		lines = append(lines, lblStop+":")
+		lines = append(lines, rec...)
+	}
+	lines = append(lines, lblDone+":")
 	l.cpol = carrySub
 	return lines
 }

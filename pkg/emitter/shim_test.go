@@ -259,11 +259,11 @@ func TestBatchKernelAndPthreadShims(t *testing.T) {
 		{"scePthreadGetname", "How7B8Oet6k", "shim_scePthreadGetname"},
 		{"pthread_cancel", "0D4-FVvEikw", "shim_pthread_cancel"},
 		{"pthread_mutexattr_setprotocol", "5txKfcMUAok", "shim_pthread_mutexattr_setprotocol"},
-		{"sceKernelMkdir", "1-LFLmRFxxM", "shim_mkdir"},
+		{"sceKernelMkdir", "1-LFLmRFxxM", "shim_sceKernelMkdir"},
 		{"rmdir", "c7ZnT7V1B98", "shim_rmdir"},
-		{"sceKernelRename", "52NcYU9+lEo", "shim_rename"},
-		{"sceKernelUnlink", "AUXVxWeJU-A", "shim_unlink"},
-		{"sceKernelTruncate", "WlyEA-sLDf0", "shim_truncate"},
+		{"sceKernelRename", "52NcYU9+lEo", "shim_sceKernelRename"},
+		{"sceKernelUnlink", "AUXVxWeJU-A", "shim_sceKernelUnlink"},
+		{"sceKernelTruncate", "WlyEA-sLDf0", "shim_sceKernelTruncate"},
 		{"sceKernelMlock", "3k6kx-zOOSQ", "shim_mlock"},
 		{"__pthread_cxa_finalize", "kbw4UHHSYy0", "shim___pthread_cxa_finalize"},
 		{"sceKernelConvertUtcToLocaltime", "-o5uEDpN+oY", "shim_sceKernelConvertUtcToLocaltime"},
@@ -392,11 +392,12 @@ func TestVideoOutAndEqueueShims(t *testing.T) {
 // libc's exports bind to the shims that report them (by name and by NID).
 func TestNonLocalTransfersAreShimmed(t *testing.T) {
 	for name, want := range map[string]string{
-		"longjmp":       "shim_guest_nonlocal_jump",
-		"_longjmp":      "shim_guest_nonlocal_jump",
-		"siglongjmp":    "shim_guest_nonlocal_jump",
-		"__cxa_throw":   "shim_guest_cxa_throw",
-		"__cxa_rethrow": "shim_guest_cxa_throw",
+		"longjmp":    "shim_guest_longjmp",
+		"_longjmp":   "shim_guest_longjmp",
+		"siglongjmp": "shim_guest_longjmp",
+		"setjmp":     "shim_guest_setjmp",
+		"_setjmp":    "shim_guest_setjmp",
+		"sigsetjmp":  "shim_guest_setjmp",
 	} {
 		for _, sym := range []string{name, elfloader.CalculateNID(name) + "#D#A"} {
 			if got, ok := LookupShim(sym); !ok || got != want {
@@ -404,9 +405,9 @@ func TestNonLocalTransfersAreShimmed(t *testing.T) {
 			}
 		}
 	}
-	path := "/Volumes/ssd/The Last of Us Remastered Repack/CUSA00557/sce_module/libc.prx"
-	if _, err := os.Stat(path); err != nil {
-		t.Skip("TLOU libc.prx not present")
+	path := os.Getenv("NPS5_TEST_PS4_LIBC") // a PS4 title's own sce_module/libc.prx, from your own dump
+	if _, err := os.Stat(path); path == "" || err != nil {
+		t.Skip("NPS5_TEST_PS4_LIBC not set or not present")
 	}
 	loaded, err := elfloader.LoadELF(path)
 	if err != nil {
@@ -418,18 +419,13 @@ func TestNonLocalTransfersAreShimmed(t *testing.T) {
 		switch elfloader.NIDPrefix(sym.Name) {
 		case elfloader.CalculateNID("longjmp"), elfloader.CalculateNID("_longjmp"):
 			found++
-			if e.shimMap[sym.Address] != "shim_guest_nonlocal_jump" {
+			if e.shimMap[sym.Address] != "shim_guest_longjmp" {
 				t.Errorf("libc.prx %s at 0x%x: shim %q", sym.Name, sym.Address, e.shimMap[sym.Address])
-			}
-		case elfloader.CalculateNID("__cxa_throw"):
-			found++
-			if e.shimMap[sym.Address] != "shim_guest_cxa_throw" {
-				t.Errorf("libc.prx __cxa_throw at 0x%x: shim %q", sym.Address, e.shimMap[sym.Address])
 			}
 		}
 	}
-	if found != 3 {
-		t.Errorf("found %d of longjmp, _longjmp, __cxa_throw in libc.prx", found)
+	if found != 2 {
+		t.Errorf("found %d of longjmp, _longjmp in libc.prx", found)
 	}
 }
 

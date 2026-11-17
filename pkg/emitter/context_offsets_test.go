@@ -3,6 +3,7 @@ package emitter
 import (
 	"os"
 	"path/filepath"
+	"ps4-recomp/pkg/lifter"
 	"regexp"
 	"strconv"
 	"testing"
@@ -42,8 +43,10 @@ func TestContextOffsetsMatchHeader(t *testing.T) {
 	for name, off := range map[string]uint64{
 		"rax": 0x00, "rdx": 0x10, "rsp": 0x20, "rsi": 0x30, "r8": 0x40, "r10": 0x50, "r12": 0x60, "r14": 0x70,
 		"rip": 0x80, "fs_base": 0x88, "cf": 0x98, "zf": 0x99, "sf": 0x9a, "of": 0x9b,
+		"pf": 0x9c, "af": 0x9d, "df": 0x9e,
 		"xmm[0]": 0xa0, "xmm[2]": 0xc0, "xmm[4]": 0xe0, "xmm[6]": 0x100,
 		"fpu_stack": 0x2a0, "fpu_top": 0x2e0, "fpu_cw": 0x2e4, "fpu_sw": 0x2e6, "mxcsr": 0x2e8, "mem_base": 0x330,
+		"shadow_sp": ctxShadowSP, "host_boundary": ctxHostBoundary, "lean_active": ctxLeanActive,
 	} {
 		if got, ok := fields[name]; !ok || got != off {
 			t.Errorf("recomp_context.h asserts %s at %#x (present %v), the assembly uses %#x", name, got, ok, off)
@@ -53,7 +56,8 @@ func TestContextOffsetsMatchHeader(t *testing.T) {
 		t.Errorf("RECOMP_TCB_CTX_SLOT = %#x, the assembly uses 0x70", tcbSlot)
 	}
 
-	sources := map[string]string{"asm_trampoline.go:trampolineAsm": trampolineAsm}
+	sources := map[string]string{"asm_trampoline.go:trampolineAsm": trampolineAsm, "asm_x87.go:X87BridgeAsm": X87BridgeAsm, "asm_x87.go:X87BridgeSource(flat)": X87BridgeSource(lifter.CallFlat),
+		"asm_trampoline_flat.go:TrampolineSource(flat)": TrampolineSource(lifter.CallFlat)}
 	lifterFiles, _ := filepath.Glob(filepath.Join("..", "lifter", "*.go"))
 	for _, f := range lifterFiles {
 		if matched, _ := filepath.Match("*_test.go", filepath.Base(f)); matched {

@@ -41,6 +41,8 @@ const (
 	ImportGuestExport
 	ImportDefined
 	ImportUnresolved
+	// ImportExcluded: the symbol is exported by a module left out with -exclude-module.
+	ImportExcluded
 )
 
 func (c ImportClass) String() string {
@@ -51,6 +53,8 @@ func (c ImportClass) String() string {
 		return "guest-export"
 	case ImportDefined:
 		return "defined"
+	case ImportExcluded:
+		return "excluded-module"
 	default:
 		return "unresolved"
 	}
@@ -84,6 +88,7 @@ type HLEReport struct {
 	GuestExportCount int
 	DefinedCount     int
 	UnresolvedCount  int
+	ExcludedCount    int
 	UnresolvedRelocs int
 
 	Syscalls        []SyscallSite
@@ -137,7 +142,10 @@ func NewHLEReport(loaded *elfloader.LoadedELF, modules []GuestModule) *HLEReport
 				Library: loaded.LibraryForNID(rel.SymName),
 				Class:   ImportUnresolved,
 			}
-			if shim, hit := LookupShim(rel.SymName); hit {
+			if mod, hit := loaded.IsExcludedImport(rel.SymName); hit {
+				ent.Class = ImportExcluded
+				ent.Library = "excluded:" + mod
+			} else if shim, hit := LookupShim(rel.SymName); hit {
 				ent.Class = ImportHostShim
 				ent.Shim = shim
 			} else if _, hit := exportNID[rel.SymName]; hit {
@@ -175,6 +183,8 @@ func NewHLEReport(loaded *elfloader.LoadedELF, modules []GuestModule) *HLEReport
 			r.GuestExportCount++
 		case ImportDefined:
 			r.DefinedCount++
+		case ImportExcluded:
+			r.ExcludedCount++
 		default:
 			r.UnresolvedCount++
 			r.UnresolvedRelocs += ent.Relocs

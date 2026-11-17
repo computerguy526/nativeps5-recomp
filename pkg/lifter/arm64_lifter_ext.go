@@ -21,10 +21,10 @@ func (l *Arm64Lifter) liftMxcsr(inst disasm.Instruction, nextPC uint64, lines []
 		lines = append(lines, l.emitLoadCtxPtr("x17")...)
 		lines = append(lines, "    ldr w0, [x17, #0x2e8]")
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    str w0, [x28, x16]")
+		lines = append(lines, "    str w0, "+l.gm("x16"))
 	} else {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr w0, [x28, x16]")
+		lines = append(lines, "    ldr w0, "+l.gm("x16"))
 		lines = append(lines, l.emitLoadCtxPtr("x17")...)
 		lines = append(lines, "    str w0, [x17, #0x2e8]")
 		lines = append(lines, mxcsrToFpcr("w0")...)
@@ -56,7 +56,7 @@ func mxcsrToFpcr(w string) []string {
 // liftMaskmov handles VMASKMOVPS and VMASKMOVPD.
 func (l *Arm64Lifter) liftMaskmov(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
 	op := inst.Inst.Op
-	isDouble := (op == x86asm.VMASKMOVPD)
+	isDouble := (op == x86asm.VMASKMOVPD || op == x86asm.VPMASKMOVQ)
 	_, isStore := inst.Inst.Args[0].(x86asm.Mem)
 
 	var mem x86asm.Mem
@@ -80,7 +80,7 @@ func (l *Arm64Lifter) liftMaskmov(inst disasm.Instruction, nextPC uint64, lines 
 	}
 
 	lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-	lines = append(lines, "    add  x16, x28, x16")
+	lines = append(lines, l.gAdd("x16", "x16"))
 
 	if isStore {
 		// Store data elements to memory where mask sign bit is 1
@@ -192,10 +192,10 @@ func (l *Arm64Lifter) liftMaskmovdqu(inst disasm.Instruction, nextPC uint64, lin
 	if inst.Inst.AddrSize == 32 {
 		lines = append(lines,
 			"    ubfx x16, x24, #0, #32",
-			"    add  x16, x28, x16",
+			l.gAdd("x16", "x16"),
 		)
 	} else {
-		lines = append(lines, "    add  x16, x28, x24")
+		lines = append(lines, l.gAdd("x16", "x24"))
 	}
 
 	l.labelCounter++
@@ -281,9 +281,9 @@ func (l *Arm64Lifter) liftPmaddupsw(inst disasm.Instruction, nextPC uint64, line
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	}
 
@@ -351,9 +351,9 @@ func (l *Arm64Lifter) liftPmuldq(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	}
 
@@ -386,6 +386,10 @@ func (l *Arm64Lifter) liftPmulhw(inst disasm.Instruction, nextPC uint64, lines [
 
 	op := inst.Inst.Op
 	isAvx := (op == x86asm.VPMULHW)
+	mull, mull2 := "smull ", "smull2"
+	if op == x86asm.PMULHUW {
+		mull, mull2 = "umull ", "umull2"
+	}
 
 	var dstReg, s1Reg x86asm.Reg
 	var src2 x86asm.Arg
@@ -415,16 +419,16 @@ func (l *Arm64Lifter) liftPmulhw(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	}
 
 	emitLanePmulhw := func(dLane, s1Lane, s2Lane string) {
 		lines = append(lines,
-			fmt.Sprintf("    smull  v20.4s, %s.4h, %s.4h", s1Lane, s2Lane),
-			fmt.Sprintf("    smull2 v21.4s, %s.8h, %s.8h", s1Lane, s2Lane),
+			fmt.Sprintf("    %s v20.4s, %s.4h, %s.4h", mull, s1Lane, s2Lane),
+			fmt.Sprintf("    %s v21.4s, %s.8h, %s.8h", mull2, s1Lane, s2Lane),
 			fmt.Sprintf("    uzp2   %s.8h, v20.8h, v21.8h", dLane),
 		)
 	}
@@ -455,7 +459,7 @@ func (l *Arm64Lifter) liftVphminposuw(inst disasm.Instruction, nextPC uint64, li
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 	}
 
 	l.labelCounter++
@@ -510,7 +514,7 @@ func (l *Arm64Lifter) liftAes(inst disasm.Instruction, nextPC uint64, lines []st
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q30, [x28, x16]")
+			lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		}
 		lines = append(lines,
 			fmt.Sprintf("    aesimc %s.16b, %s.16b", dLowV, sLow),
@@ -528,12 +532,12 @@ func (l *Arm64Lifter) liftAes(inst disasm.Instruction, nextPC uint64, lines []st
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q0, [x28, x16]")
+			lines = append(lines, "    ldr q0, "+l.gm("x16"))
 		}
 		lines = append(lines,
 			"    sub  sp, sp, #96",
 			"    stp  x29, x30, [sp, #80]",
-			"    add  x29, sp, #80",
+			helperFramePointer(80),
 			"    stp  x8,  x9,  [sp, #0]",
 			"    stp  x10, x11, [sp, #16]",
 			"    stp  x12, x13, [sp, #32]",
@@ -572,7 +576,7 @@ func (l *Arm64Lifter) liftAes(inst disasm.Instruction, nextPC uint64, lines []st
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 	}
 
 	lines = append(lines,
@@ -609,35 +613,45 @@ func (l *Arm64Lifter) liftAes(inst disasm.Instruction, nextPC uint64, lines []st
 	return lines, nil
 }
 
-// liftPushfq handles PUSHFQ: SF, ZF, CF (in the tracked carry sense) and OF from NZCV, IF and
-// bit 1 set; AF and PF are not modeled.
+// liftPushfq handles PUSHFQ: SF, ZF, CF (in the tracked carry sense) and OF from NZCV, PF and AF
+// from the lazy bytes (or V after an FP compare, where OF is 0), DF from the context, IF and
+// bit 1 set. FEX: OpcodeDispatcher.cpp PUSHFOp:3761 (GetPackedRFLAG).
 func (l *Arm64Lifter) liftPushfq(inst disasm.Instruction, lines []string) ([]string, error) {
 	lines = append(lines,
 		"    cset w0, mi",
 		"    cset w1, eq",
 		fmt.Sprintf("    cset w2, %s", l.carryCond(true)),
-		"    cset w3, vs",
 		"    orr w0, w2, w0, lsl #7",
 		"    orr w0, w0, w1, lsl #6",
-		"    orr w0, w0, w3, lsl #11",
-		"    mov w1, #0x202",
-		"    orr w0, w0, w1",
+	)
+	if !inst.ParityInV {
+		lines = append(lines, "    cset w3, vs", "    orr w0, w0, w3, lsl #11")
+	}
+	lines = append(lines, "    mov w1, #0x202", "    orr w0, w0, w1")
+	lines = append(lines, l.flagBitsPFAF(inst)...)
+	lines = append(lines,
+		fmt.Sprintf("    ldrb w1, [x17, #0x%x] // df", ctxDF),
+		"    orr w0, w0, w1, lsl #10",
 		"    sub x26, x26, #8",
-		"    str x0, [x28, x26]",
+		"    str x0, "+l.gm("x26"),
 	)
 	return lines, nil
 }
 
-// liftPopfq handles POPFQ: N = SF, Z = ZF, C = CF (carryAdd), V = OF.
+// liftPopfq handles POPFQ: N = SF, Z = ZF, C = CF (carryAdd), V = OF; DF to the context; PF
+// and AF to the lazy bytes when they are live. FEX: OpcodeDispatcher.cpp POPFOp:3767.
 func (l *Arm64Lifter) liftPopfq(inst disasm.Instruction, lines []string) ([]string, error) {
 	lines = append(lines,
-		"    ldr x0, [x28, x26]",
+		"    ldr x0, "+l.gm("x26"),
 		"    add x26, x26, #8",
 		"    rmif x0, #4, #12", // N = bit 7, Z = bit 6
 		"    rmif x0, #63, #2", // C = bit 0
 		"    ubfx w1, w0, #11, #1",
 		"    rmif x1, #0, #1", // V = bit 11
 	)
+	lines = append(lines, l.emitLoadCtxPtr("x17")...)
+	lines = append(lines, "    ubfx w1, w0, #10, #1", fmt.Sprintf("    strb w1, [x17, #0x%x] // df", ctxDF))
+	lines = append(lines, storeFlagBitsPFAF(inst, "x17")...)
 	l.cpol = carryAdd
 	return lines, nil
 }
@@ -647,7 +661,7 @@ func (l *Arm64Lifter) liftXlatb(lines []string) ([]string, error) {
 	lines = append(lines,
 		"    uxtb w16, w19",
 		"    add  x16, x20, x16",
-		"    ldrb w16, [x28, x16]",
+		"    ldrb w16, "+l.gm("x16"),
 		"    bfi  x19, x16, #0, #8",
 	)
 	return lines, nil
@@ -664,9 +678,7 @@ func (l *Arm64Lifter) liftLoop(inst disasm.Instruction, nextPC uint64, fn *disas
 		return lines, nil
 	}
 	target := uint64(int64(nextPC) + int64(rel))
-	if !inst.CarryDead {
-		lines = append(lines, l.normalizeCarry()...)
-	}
+	lines = append(lines, l.exitFlags(inst)...)
 	localLbl := localLabel(fn, target)
 	local := localLbl != ""
 	l.labelCounter++
@@ -716,7 +728,7 @@ func (l *Arm64Lifter) liftFxsave(inst disasm.Instruction, nextPC uint64, lines [
 		return lines, nil
 	}
 	lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-	lines = append(lines, "    add x16, x28, x16")
+	lines = append(lines, l.gAdd("x16", "x16"))
 	lines = append(lines, l.emitLoadCtxPtr("x17")...)
 	lines = append(lines,
 		"    ldrh w5, [x17, #0x2e4]",
@@ -749,7 +761,7 @@ func (l *Arm64Lifter) liftFxrstor(inst disasm.Instruction, nextPC uint64, lines 
 		return lines, nil
 	}
 	lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-	lines = append(lines, "    add x16, x28, x16")
+	lines = append(lines, l.gAdd("x16", "x16"))
 	lines = append(lines, l.emitLoadCtxPtr("x17")...)
 	lines = append(lines,
 		"    ldrh w5, [x16, #0]",
@@ -802,7 +814,7 @@ func (l *Arm64Lifter) liftVphsubd(inst disasm.Instruction, nextPC uint64, lines 
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 	}
 
 	lines = append(lines,
@@ -859,7 +871,7 @@ func (l *Arm64Lifter) liftPclmulqdq(inst disasm.Instruction, nextPC uint64, line
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 	}
 
 	if (immVal & 1) == 0 {
@@ -905,13 +917,13 @@ func (l *Arm64Lifter) liftPcmpistri(inst disasm.Instruction, nextPC uint64, line
 
 	if mem, okMem := s2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x1")...)
-		lines = append(lines, "    add  x1, x28, x1")
+		lines = append(lines, l.gAdd("x1", "x1"))
 	}
 
 	lines = append(lines,
 		"    sub  sp, sp, #128",
 		"    stp  x29, x30, [sp, #112]",
-		"    add  x29, sp, #112",
+		helperFramePointer(112),
 		"    stp  x8,  x9,  [sp, #32]",
 		"    stp  x10, x11, [sp, #48]",
 		"    stp  x12, x13, [sp, #64]",
@@ -981,13 +993,13 @@ func (l *Arm64Lifter) liftPcmpestri(inst disasm.Instruction, nextPC uint64, line
 
 	if mem, okMem := s2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x1")...)
-		lines = append(lines, "    add  x1, x28, x1")
+		lines = append(lines, l.gAdd("x1", "x1"))
 	}
 
 	lines = append(lines,
 		"    sub  sp, sp, #128",
 		"    stp  x29, x30, [sp, #112]",
-		"    add  x29, sp, #112",
+		helperFramePointer(112),
 		"    stp  x8,  x9,  [sp, #32]",
 		"    stp  x10, x11, [sp, #48]",
 		"    stp  x12, x13, [sp, #64]",
@@ -1063,7 +1075,7 @@ func (l *Arm64Lifter) ssse3Operands(inst disasm.Instruction, nextPC uint64, line
 		b = s2Low
 	case x86asm.Mem:
 		lines = append(lines, computeEffAddr(v, nextPC, "x16")...)
-		lines = append(lines, "    ldr q28, [x28, x16]")
+		lines = append(lines, "    ldr q28, "+l.gm("x16"))
 		b = "v28"
 	default:
 		return lines, "", "", "", "", vex, false

@@ -5,6 +5,7 @@
 #include "ps4_fiber.h"
 #include "ps4_threading.h"
 #include "ps4_kernel_sys.h"
+#include "nps5_lean.h"
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -108,6 +109,28 @@ void guest_rip(void);
 void guest_thread_main(void);
 void guest_thread_entry(void);
 #define ADDR_THREAD_MAIN 0x400b00ULL
+void guest_lean_mix(void);
+void guest_lean_exc_main(void);
+void guest_lean_bad_x19(void);
+void guest_lean_bad_x28(void);
+void guest_lean_bad_x29(void);
+void guest_lean_bad_d9(void);
+void guest_lean_bad_callback(void);
+void guest_lean_fault(void);
+#define ADDR_LEAN_FAULT 0x401850ULL
+void guest_lean_thread_entry(void);
+void guest_lean_threads_main(void);
+#define ADDR_LEAN_MIX 0x401600ULL
+#define ADDR_LEAN_EXC_MAIN 0x401700ULL
+#define ADDR_LEAN_BAD_X19 0x401800ULL
+#define ADDR_LEAN_BAD_X28 0x401810ULL
+#define ADDR_LEAN_BAD_X29 0x401820ULL
+#define ADDR_LEAN_BAD_D9 0x401830ULL
+#define ADDR_LEAN_BAD_CALLBACK 0x401840ULL
+#define ADDR_LEAN_THREAD_ENTRY 0x401500ULL
+#define ADDR_LEAN_THREADS_MAIN 0x401900ULL
+#define LEAN_THR_RES (D + 0xa40)
+#define RES_LEAN_N 0x17
 #define ADDR_THREAD_ENTRY 0x400a00ULL
 #define THREAD_RET (D + 0x408)
 #define TLS_INDEX (D + 0x500)
@@ -708,6 +731,148 @@ static void test_module_info(void) {
          (uint64_t)(int64_t)(int32_t)0x80020003);
 }
 
+
+// ---- Lean HLE calls (docs/m3/leanshim.md). boundary_test.go marks the shims below lean (leanTable); the
+// emitted stubs take the lean bridge when g_nps5_lean_mode says so and the full bridge in mode 0.
+extern uint8_t g_nps5_lean_mode;
+
+static uint64_t lean_mix_fn(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+  return a0 * 3 + (a1 ^ a2) + a3 - a4 + a5 * 7;
+}
+
+// Six integer arguments in, one result out, and a write to the guest's errno (FS:[0x100]).
+NPS5_LEAN_FN(test_lean_mix) {
+  set_guest_errno(ctx, (int)(a0 & 0xff) + 1);
+  return lean_mix_fn(a0, a1, a2, a3, a4, a5);
+}
+void shim_test_lean_mix(GuestContext *ctx) {
+  set_guest_errno(ctx, (int)(ctx->rdi & 0xff) + 1);
+  ctx->rax = lean_mix_fn(ctx->rdi, ctx->rsi, ctx->rdx, ctx->rcx, ctx->r8, ctx->r9);
+  SHIM_RETURN();
+}
+
+// Blocks like a lock wait until released: host code that uses every caller-saved register.
+NPS5_LEAN_FN(test_lean_wait) {
+  atomic_store(&g_wait_state, 1);
+  while (atomic_load_explicit(&g_wait_state, memory_order_acquire) != 2)
+    __asm__ volatile("mov x8, #0xdead\n mov x9, #0xdead\n mov x10, #0xdead\n mov x11, #0xdead\n"
+                     "mov x12, #0xdead\n mov x13, #0xdead\n mov x14, #0xdead\n mov x15, #0xdead\n"
+                     "mov x0, #0xdead\n mov x1, #0xdead\n mov x16, #0xdead\n"
+                     ::: "x0", "x1", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "cc", "memory");
+  return 0x1234;
+}
+void shim_test_lean_wait(GuestContext *ctx) {
+  shim_test_wait_signal(ctx);
+  ctx->rsp -= 8;
+  ctx->rax = 0x1234;
+  SHIM_RETURN();
+}
+
+// Shims wrongly marked lean: each breaks the host ABI the way a lean function must not.
+__asm__(".text\n.p2align 2\n"
+        ".globl _lean_test_lean_bad_x19\n_lean_test_lean_bad_x19:\n mov x19, #0x1bad\n ret\n"
+        ".globl _lean_test_lean_bad_x28\n_lean_test_lean_bad_x28:\n mov x28, #0x1bad\n ret\n"
+        ".globl _lean_test_lean_bad_x29\n_lean_test_lean_bad_x29:\n mov x29, #0x1bad\n ret\n"
+        ".globl _lean_test_lean_bad_d9\n_lean_test_lean_bad_d9:\n fmov d9, #1.0\n ret\n");
+#define BAD_FULL(n) void shim_test_lean_##n(GuestContext *ctx) { (void)ctx; fail("the full bridge of a bad lean shim ran"); }
+BAD_FULL(bad_x19) BAD_FULL(bad_x28) BAD_FULL(bad_x29) BAD_FULL(bad_d9) BAD_FULL(bad_callback)
+NPS5_LEAN_FN(test_lean_bad_callback) {
+  ctx->xmm[0].f32[0] = 3.0f;
+  recomp_call_guest(ctx, ADDR_XMM_CALLBACK);  // a lean function must never do this
+  return 0;
+}
+
+// A lean function that dereferences a bad guest pointer: the crash report must show the guest registers.
+NPS5_LEAN_FN(test_lean_fault) { return *(volatile uint64_t *)(ctx->mem_base + (0x4000000000ULL + a0 - a0)); }
+void shim_test_lean_fault(GuestContext *ctx) { ctx->rax = *(volatile uint64_t *)(ctx->mem_base + 0x4000000000ULL); SHIM_RETURN(); }
+
+static uint64_t g_lean_rng = 0x2545f4914f6cdd1dULL;
+static uint64_t lean_rnd(void) {
+  g_lean_rng ^= g_lean_rng << 13; g_lean_rng ^= g_lean_rng >> 7; g_lean_rng ^= g_lean_rng << 17;
+  return g_lean_rng;
+}
+
+// A guest call of the lean shim with random arguments, in every bridge mode: the result, the guest
+// registers (including r8-r11, which the full bridge restores too), the FS/memory base, the guest stack
+// pointer and errno must come out as the full bridge leaves them.
+static void test_lean_diff(void) {
+  const uint64_t fs = g_proc->fs_base;
+  for (int mode = 0; mode <= 3; mode++) {
+    g_nps5_lean_mode = (uint8_t)mode;
+    for (int i = 0; i < 2000; i++) {
+      uint64_t a0 = lean_rnd(), a1 = lean_rnd(), a2 = lean_rnd(), a3 = lean_rnd();
+      g_proc->rdi = a0; g_proc->rsi = a1; g_proc->rdx = a2; g_proc->rcx = a3;
+      *(int *)(g_proc->mem_base + fs + 0x100) = -1;
+      recomp_call_guest(g_proc, ADDR_LEAN_MIX);
+      char what[64];
+      snprintf(what, sizeof what, "mode %d call %d", mode, i);
+      expect(what, res(RES_LEAN_N)[W_RAX], lean_mix_fn(a0, a1, a2, a3, 0x5108, 0x5109));
+      check_pattern(what, RES_LEAN_N, 0x5100, res(RES_LEAN_N + 1)[W_RSP], fs);
+      for (int r = 8; r <= 11; r++) expect(what, res(RES_LEAN_N)[W_R8 + r - 8], 0x5100 + (uint64_t)r);
+      expect(what, (uint64_t)*(int *)(g_proc->mem_base + fs + 0x100), (a0 & 0xff) + 1);
+      if (g_failures) return;
+    }
+  }
+  g_nps5_lean_mode = 1;
+}
+
+// A guest exception handler (SIGUSR1) runs while the thread is inside a lean function: it sees the
+// guest registers of the call, and the guest registers the function returns with are unchanged.
+static void test_lean_signal(void) {
+  GuestContext *t = g_proc;
+  expect("sceKernelInstallExceptionHandler", (uint64_t)(int64_t)sceKernelInstallExceptionHandler(30, ADDR_EXC_HANDLER), 0);
+  for (int mode = 1; mode <= 3; mode++) {
+    g_nps5_lean_mode = (uint8_t)mode;
+    atomic_store(&g_wait_state, 0);
+    res(RES_EXC_HANDLER)[W_RDI] = 0;
+    pthread_t th;
+    pthread_create(&th, NULL, raise_exception_in_wait, NULL);
+    recomp_call_guest(t, ADDR_LEAN_EXC_MAIN);
+    pthread_join(th, NULL);
+    char what[64];
+    snprintf(what, sizeof what, "mode %d", mode);
+    expect(what, res(RES_EXC_HANDLER)[W_RDI], 30);
+    const uint64_t uc = res(RES_EXC_HANDLER)[W_RSI];
+    expect("ucontext r12", *gmem64(uc + 0xa0), 0xe00c);
+    expect("ucontext rbx", *gmem64(uc + 0x80), 0xe001);
+    expect("ucontext rbp", *gmem64(uc + 0x88), 0xe002);
+    expect("RAX the lean function returned", res(RES_LEAN_N + 2)[W_RAX], 0x1234);
+    check_pattern(what, RES_LEAN_N + 2, 0xe000, res(RES_LEAN_N + 1)[W_RSP], t->fs_base);
+    if (g_failures) return;
+  }
+  g_nps5_lean_mode = 1;
+}
+
+// Three guest threads call the lean shim 40000 times each, concurrently.
+static void test_lean_threads(void) {
+  for (int mode = 1; mode <= 3; mode++) {
+    g_nps5_lean_mode = (uint8_t)mode;
+    memset(g_proc->mem_base + LEAN_THR_RES, 0, 3 * 0x40);
+    recomp_call_guest(g_proc, ADDR_LEAN_THREADS_MAIN);
+    uint64_t fs_seen[3];
+    for (int i = 0; i < 3; i++) {
+      const uint64_t arg = LEAN_THR_RES + 0x40 * (uint64_t)i;
+      const uint64_t *r = gmem64(arg);
+      uint64_t acc = 0;
+      for (uint64_t k = 40000; k >= 1; k--) acc ^= lean_mix_fn(k, arg, 3, 4, 5, 6);
+      char what[64];
+      snprintf(what, sizeof what, "mode %d thread %d", mode, i);
+      expect(what, r[0], acc);
+      expect("r13", r[1], 0x13131313);
+      expect("r14", r[2], arg);
+      expect("r15", r[3], 0x15151515);
+      expect("rbx", r[4], arg);
+      expect("errno of the thread's own TLS", r[6], 2);
+      expect("rbp (the loop counter)", r[7], 0);
+      fs_seen[i] = r[5];
+      if (fs_seen[i] == g_proc->fs_base || fs_seen[i] == 0) fail("thread %d runs with the creator's FS base", i);
+    }
+    if (fs_seen[0] == fs_seen[1] || fs_seen[1] == fs_seen[2] || fs_seen[0] == fs_seen[2]) fail("threads share an FS base");
+    if (g_failures) return;
+  }
+  g_nps5_lean_mode = 1;
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (argc < 2) {
@@ -740,6 +905,16 @@ int main(int argc, char **argv) {
   recomp_register_fn(ADDR_LONGJMP, (recomp_fn_t)guest_longjmp);
   recomp_register_fn(ADDR_THREAD_MAIN, (recomp_fn_t)guest_thread_main);
   recomp_register_fn(ADDR_THREAD_ENTRY, (recomp_fn_t)guest_thread_entry);
+  recomp_register_fn(ADDR_LEAN_MIX, (recomp_fn_t)guest_lean_mix);
+  recomp_register_fn(ADDR_LEAN_EXC_MAIN, (recomp_fn_t)guest_lean_exc_main);
+  recomp_register_fn(ADDR_LEAN_BAD_X19, (recomp_fn_t)guest_lean_bad_x19);
+  recomp_register_fn(ADDR_LEAN_BAD_X28, (recomp_fn_t)guest_lean_bad_x28);
+  recomp_register_fn(ADDR_LEAN_BAD_X29, (recomp_fn_t)guest_lean_bad_x29);
+  recomp_register_fn(ADDR_LEAN_BAD_D9, (recomp_fn_t)guest_lean_bad_d9);
+  recomp_register_fn(ADDR_LEAN_BAD_CALLBACK, (recomp_fn_t)guest_lean_bad_callback);
+  recomp_register_fn(ADDR_LEAN_FAULT, (recomp_fn_t)guest_lean_fault);
+  recomp_register_fn(ADDR_LEAN_THREAD_ENTRY, (recomp_fn_t)guest_lean_thread_entry);
+  recomp_register_fn(ADDR_LEAN_THREADS_MAIN, (recomp_fn_t)guest_lean_threads_main);
   recomp_register_fn(ADDR_LIFTED_VPCMPISTRI, (recomp_fn_t)guest_lifted_vpcmpistri);
   recomp_register_fn(ADDR_LIFTED_VAESKEYGENASSIST, (recomp_fn_t)guest_lifted_vaeskeygenassist);
 
@@ -782,7 +957,7 @@ int main(int argc, char **argv) {
   } else if (strcmp(c, "exception-fiber") == 0) {
     test_exception_fiber();
   } else if (strcmp(c, "longjmp") == 0) {
-    // shim_guest_nonlocal_jump reports and aborts; boundary_test.go checks the report.
+    // shim_guest_longjmp reports a longjmp without a setjmp and aborts; boundary_test.go checks the report.
     recomp_call_guest(g_proc, ADDR_LONGJMP);
     fail("longjmp returned");
   } else if (strcmp(c, "unresolved-plt") == 0 || strcmp(c, "unresolved-got") == 0 || strcmp(c, "unresolved-named") == 0) {
@@ -796,6 +971,32 @@ int main(int argc, char **argv) {
     fail("the unresolved import returned");
   } else if (strcmp(c, "module-info") == 0) {
     test_module_info();
+  } else if (strcmp(c, "lean-diff") == 0) {
+    test_lean_diff();
+  } else if (strcmp(c, "lean-signal") == 0) {
+    test_lean_signal();
+  } else if (strcmp(c, "lean-threads") == 0) {
+    test_lean_threads();
+  } else if (strncmp(c, "lean-bad-", 9) == 0) {
+    // A wrongly marked shim: only the checked mode (NPS5_LEAN_CHECK=1) can catch it, and must.
+    g_nps5_lean_mode = 3;
+    recomp_call_guest(g_proc, !strcmp(c, "lean-bad-x19") ? ADDR_LEAN_BAD_X19 : !strcmp(c, "lean-bad-x28") ? ADDR_LEAN_BAD_X28
+                              : !strcmp(c, "lean-bad-x29") ? ADDR_LEAN_BAD_X29 : !strcmp(c, "lean-bad-d9") ? ADDR_LEAN_BAD_D9
+                                                                                                          : ADDR_LEAN_BAD_CALLBACK);
+    fail("the wrongly marked lean shim was not caught");
+  } else if (strcmp(c, "lean-fault") == 0) {
+    g_nps5_lean_mode = 1;
+    recomp_call_guest(g_proc, ADDR_LEAN_FAULT);
+    fail("the faulting lean function returned");
+  } else if (strcmp(c, "bench-lean") == 0) {
+    // bench-lean <mode>: ns per guest call of the lean shim that does next to nothing.
+    g_nps5_lean_mode = argc > 2 ? (uint8_t)atoi(argv[2]) : 1;
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    const uint64_t t0 = mach_absolute_time();
+    for (int i = 0; i < 2000000; i++) recomp_call_guest(g_proc, ADDR_LEAN_MIX);
+    const double ns = (double)(mach_absolute_time() - t0) * tb.numer / tb.denom;
+    printf("bench-lean mode %d: %.2f ns per call (guest call from C included)\n", g_nps5_lean_mode, ns / 2e6);
   } else if (strcmp(c, "crash") == 0) {
     // The crash handler reports and exits 1; boundary_test.go checks its report.
     recomp_call_guest(g_proc, ADDR_CRASH);

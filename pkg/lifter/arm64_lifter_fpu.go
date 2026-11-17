@@ -35,7 +35,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 	loadCtxPtr := func(reg string) []string {
 		return []string{
 			fmt.Sprintf("    add  %s, x27, #0x70", reg),
-			fmt.Sprintf("    ldr  %s, [x28, %s]", reg, reg),
+			fmt.Sprintf("    ldr  %s, %s", reg, l.gm(reg)),
 		}
 	}
 
@@ -135,13 +135,13 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 			if isX87M80(inst) {
-				lines = append(lines, "    add  x1, x28, x16")
+				lines = append(lines, l.gAdd("x1", "x16"))
 				lines = append(lines, x87LoadM80()...)
 			} else if defMemSz == 8 {
-				lines = append(lines, "    ldr d28, [x28, x16]")
+				lines = append(lines, "    ldr d28, "+l.gm("x16"))
 			} else {
 				lines = append(lines,
-					"    ldr s28, [x28, x16]",
+					"    ldr s28, "+l.gm("x16"),
 					"    fcvt d28, s28",
 				)
 			}
@@ -154,17 +154,17 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 			if defMemSz == 8 {
 				lines = append(lines,
-					"    ldr x17, [x28, x16]",
+					"    ldr x17, "+l.gm("x16"),
 					"    scvtf d28, x17",
 				)
 			} else if defMemSz == 2 {
 				lines = append(lines,
-					"    ldrsh w17, [x28, x16]",
+					"    ldrsh w17, "+l.gm("x16"),
 					"    scvtf d28, w17",
 				)
 			} else {
 				lines = append(lines,
-					"    ldrsw x17, [x28, x16]",
+					"    ldrsw x17, "+l.gm("x16"),
 					"    scvtf d28, x17",
 				)
 			}
@@ -191,17 +191,17 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			lines = append(lines, loadFpuSt("d28", 0)...)
 			if isX87M80(inst) {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    add  x1, x28, x16")
+				lines = append(lines, l.gAdd("x1", "x16"))
 				lines = append(lines, x87StoreM80()...)
 			} else if defMemSz == 8 {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    str d28, [x28, x16]")
+				lines = append(lines, "    str d28, "+l.gm("x16"))
 			} else {
-				lines = append(lines, x87RoundBegin()...)
+				lines = append(lines, l.x87RoundBegin()...)
 				lines = append(lines, "    fcvt s28, d28")
 				lines = append(lines, x87RoundEnd()...)
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    str s28, [x28, x16]")
+				lines = append(lines, "    str s28, "+l.gm("x16"))
 			}
 			if isPop {
 				lines = append(lines, emitFpuDiscard()...)
@@ -221,7 +221,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			// integer in that mode first, so the conversion itself is exact.
 			trunc := op == x86asm.FISTTP
 			if !trunc {
-				lines = append(lines, x87RoundBegin()...)
+				lines = append(lines, l.x87RoundBegin()...)
 				lines = append(lines, "    frintx d28, d28")
 				lines = append(lines, x87RoundEnd()...)
 				trunc = true
@@ -230,15 +230,15 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			case 8:
 				lines = append(lines, fpToIntX86("x17", "d28", trunc)...)
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    str x17, [x28, x16]")
+				lines = append(lines, "    str x17, "+l.gm("x16"))
 			case 2:
 				lines = append(lines, fpToInt16X86("w17", "d28", trunc)...)
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    strh w17, [x28, x16]")
+				lines = append(lines, "    strh w17, "+l.gm("x16"))
 			default:
 				lines = append(lines, fpToIntX86("w17", "d28", trunc)...)
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    str w17, [x28, x16]")
+				lines = append(lines, "    str w17, "+l.gm("x16"))
 			}
 			return lines, nil
 		}
@@ -334,10 +334,10 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			if mem, okMem := args[0].(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 				if defMemSz == 8 {
-					lines = append(lines, "    ldr d29, [x28, x16]")
+					lines = append(lines, "    ldr d29, "+l.gm("x16"))
 				} else {
 					lines = append(lines,
-						"    ldr s29, [x28, x16]",
+						"    ldr s29, "+l.gm("x16"),
 						"    fcvt d29, s29",
 					)
 				}
@@ -375,12 +375,12 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 			if defMemSz == 2 {
 				lines = append(lines,
-					"    ldrsh w17, [x28, x16]",
+					"    ldrsh w17, "+l.gm("x16"),
 					"    scvtf d29, w17",
 				)
 			} else {
 				lines = append(lines,
-					"    ldrsw x17, [x28, x16]",
+					"    ldrsw x17, "+l.gm("x16"),
 					"    scvtf d29, x17",
 				)
 			}
@@ -400,7 +400,11 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		}
 
 	// Comparisons setting EFLAGS: FUCOMI, FUCOMIP, FCOMI, FCOMIP
-	case x86asm.FUCOMI, x86asm.FUCOMIP, x86asm.FCOMI:
+	// FEX: OpcodeDispatcher/X87.cpp FCOMI:659 (EFLAGS branch: CF = lt|unordered,
+	// ZF = eq|unordered, PF = unordered, OF = SF = AF = 0; FLAGS_POP pops once), tables
+	// X86Tables/X87Tables.cpp DB E8 / DB F0 / DF E8 / DF F0. FCOMI/FCOMIP raise invalid on a
+	// quiet NaN too, hence fcmpe (FPSR.IOC only: the x87 status word's IE is not modelled).
+	case x86asm.FUCOMI, x86asm.FUCOMIP, x86asm.FCOMI, x86asm.FCOMIP:
 		idx := 1
 		if len(args) > 1 && args[1] != nil {
 			if reg, ok := args[1].(x86asm.Reg); ok && reg >= x86asm.F0 && reg <= x86asm.F7 {
@@ -415,9 +419,13 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		// LT -> C=0, Z=0
 		// GT -> C=1, Z=0
 		// Unordered -> V=1, C=1, Z=0
-		lines = append(lines, "    fcmp d28, d29")
+		if op == x86asm.FCOMI || op == x86asm.FCOMIP {
+			lines = append(lines, "    fcmpe d28, d29")
+		} else {
+			lines = append(lines, "    fcmp d28, d29")
+		}
 		lines = append(lines, l.fpCompareFlags()...)
-		if op == x86asm.FUCOMIP {
+		if op == x86asm.FUCOMIP || op == x86asm.FCOMIP {
 			lines = append(lines, emitFpuDiscard()...)
 		}
 		return lines, nil
@@ -439,10 +447,16 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		}[op]
 		pre, cond := l.condFor(cc)
 		lines = append(lines, pre...)
+		var post []string
+		if isParityCond(cc) && !inst.ParityInV {
+			pre, post = l.parityToV()
+			lines = append(lines, pre...)
+		}
 		lines = append(lines, loadFpuSt("d28", 0)...)
 		lines = append(lines, loadFpuSt("d29", idx)...)
 		lines = append(lines, fmt.Sprintf("    fcsel d28, d29, d28, %s", cond))
 		lines = append(lines, storeFpuSt("d28", 0)...)
+		lines = append(lines, post...)
 		return lines, nil
 
 	// Status and Control Word
@@ -462,14 +476,14 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		}
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x5")...)
-			lines = append(lines, "    strh w17, [x28, x5]")
+			lines = append(lines, "    strh w17, "+l.gm("x5"))
 			return lines, nil
 		}
 
 	case x86asm.FLDCW:
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldrh w17, [x28, x16]")
+			lines = append(lines, "    ldrh w17, "+l.gm("x16"))
 			lines = append(lines, loadCtxPtr("x5")...)
 			lines = append(lines, "    strh w17, [x5, #0x2e4]")
 			return lines, nil
@@ -481,7 +495,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 			lines = append(lines, loadCtxPtr("x5")...)
 			lines = append(lines,
 				"    ldrh w17, [x5, #0x2e4]",
-				"    strh w17, [x28, x16]",
+				"    strh w17, "+l.gm("x16"),
 			)
 			return lines, nil
 		}
@@ -532,7 +546,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 	case x86asm.FNSTENV:
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    add  x16, x28, x16")
+			lines = append(lines, l.gAdd("x16", "x16"))
 			lines = append(lines, loadCtxPtr("x5")...)
 			// The 28-byte protected-mode environment: FCW, FSW with TOP, the tag word (not
 			// modelled: all empty), and the last instruction and operand pointers (0). Then all
@@ -557,7 +571,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 	case x86asm.FLDENV:
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    add  x16, x28, x16")
+			lines = append(lines, l.gAdd("x16", "x16"))
 			lines = append(lines, loadCtxPtr("x5")...)
 			lines = append(lines,
 				"    ldrh w17, [x16, #0]",
@@ -576,12 +590,25 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 		lines = append(lines, l.emitUnsupported(inst, "fcos (not lowered: no call site in the supported games)")...)
 		return lines, nil
 
-	case x86asm.FLDL2T:
+	// Constant loads. FEX: X87.cpp FLD_Const:94 with the named constants bound in
+	// X86Tables/X87Tables.cpp (D9 E8..EE). Precision: the x87 stack holds doubles here, so the
+	// 64-bit-mantissa constant of the hardware is replaced by the nearest double (the value an
+	// FSTP m64 of the constant stores under round-to-nearest). This is FEX's reduced-precision
+	// model (unittests/ASM/X87_F64/D9_E9..ED_F64.asm). The hardware also rounds the constant by
+	// the RC field; that is not modelled.
+	case x86asm.FLDL2T, x86asm.FLDL2E, x86asm.FLDPI, x86asm.FLDLG2, x86asm.FLDLN2:
+		bits := map[x86asm.Op]uint64{
+			x86asm.FLDL2T: 0x400a934f0979a371, // log2(10)
+			x86asm.FLDL2E: 0x3ff71547652b82fe, // log2(e)
+			x86asm.FLDPI:  0x400921fb54442d18, // pi
+			x86asm.FLDLG2: 0x3fd34413509f79ff, // log10(2)
+			x86asm.FLDLN2: 0x3fe62e42fefa39ef, // ln(2)
+		}[op]
 		lines = append(lines,
-			"    movz x16, #0xa371",
-			"    movk x16, #0x0979, lsl #16",
-			"    movk x16, #0x934f, lsl #32",
-			"    movk x16, #0x400a, lsl #48",
+			fmt.Sprintf("    movz x16, #0x%04x", bits&0xffff),
+			fmt.Sprintf("    movk x16, #0x%04x, lsl #16", bits>>16&0xffff),
+			fmt.Sprintf("    movk x16, #0x%04x, lsl #32", bits>>32&0xffff),
+			fmt.Sprintf("    movk x16, #0x%04x, lsl #48", bits>>48&0xffff),
 			"    fmov d28, x16",
 		)
 		lines = append(lines, emitFpuPushD0()...)
@@ -589,7 +616,7 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 
 	case x86asm.FRNDINT:
 		lines = append(lines, loadFpuSt("d28", 0)...)
-		lines = append(lines, x87RoundBegin()...)
+		lines = append(lines, l.x87RoundBegin()...)
 		lines = append(lines, "    frintx d28, d28")
 		lines = append(lines, x87RoundEnd()...)
 		lines = append(lines, storeFpuSt("d28", 0)...)
@@ -614,24 +641,24 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 				if isInteger {
 					if defMemSz == 2 {
 						lines = append(lines,
-							"    ldrsh w17, [x28, x16]",
+							"    ldrsh w17, "+l.gm("x16"),
 							"    scvtf d29, w17",
 						)
 					} else {
 						lines = append(lines,
-							"    ldr  w17, [x28, x16]",
+							"    ldr  w17, "+l.gm("x16"),
 							"    scvtf d29, w17",
 						)
 					}
 				} else {
 					if defMemSz == 4 {
 						lines = append(lines,
-							"    ldr  s29, [x28, x16]",
+							"    ldr  s29, "+l.gm("x16"),
 							"    fcvt d29, s29",
 						)
 					} else {
 						lines = append(lines,
-							"    ldr  d29, [x28, x16]",
+							"    ldr  d29, "+l.gm("x16"),
 						)
 					}
 				}
@@ -681,10 +708,10 @@ func (l *Arm64Lifter) liftFpu(inst disasm.Instruction, nextPC uint64, lines []st
 // x87RoundBegin sets FPCR.RMode to the rounding control of the x87 control word (FCW bits
 // 11:10: nearest, down, up, toward zero; FPCR RMode: nearest, up, down, toward zero) and keeps
 // the previous FPCR in x5 for x87RoundEnd. NZCV is not touched. Scratch: x5-x7.
-func x87RoundBegin() []string {
+func (l *Arm64Lifter) x87RoundBegin() []string {
 	return []string{
 		"    add  x5, x27, #0x70",
-		"    ldr  x5, [x28, x5]",
+		"    ldr  x5, " + l.gm("x5"),
 		"    ldrh w6, [x5, #0x2e4]",
 		"    ubfx w6, w6, #10, #2",
 		"    eor  w7, w6, w6, lsr #1",

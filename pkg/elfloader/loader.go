@@ -5,7 +5,11 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"slices"
+	"sort"
 )
 
 const (
@@ -13,6 +17,7 @@ const (
 	PT_SCE_PROCPARAM    elf.ProgType = 0x61000001
 	PT_SCE_MODULE_PARAM elf.ProgType = 0x61000002
 	PT_SCE_RELRO        elf.ProgType = 0x61000010
+	PT_GNU_RELRO        elf.ProgType = 0x6474e552
 
 	R_X86_64_JUMP_SLOT = 7
 	R_X86_64_RELATIVE  = 8
@@ -72,6 +77,9 @@ type Symbol struct {
 	Size    uint64
 	Type    elf.SymType
 	Section elf.SectionIndex
+	// Local is set for STB_LOCAL symbols of the static symbol table. They name things for
+	// diagnostics and seeding but never satisfy an import (ResolveModuleRelocations).
+	Local bool
 }
 
 // LoadedELF holds the parsed ELF metadata and initial memory layout.
@@ -87,16 +95,35 @@ type LoadedELF struct {
 	DynSymbols   []Symbol
 	Relocations  []Relocation
 	InitArray    []uint64
-	DynamicTags  map[int64]uint64
-	NeededLibs   []string
+	// InitWalked lists the InitArray entries that the image's DT_INIT function calls itself (a
+	// Sony PRX's module_start loops over its preinit/init array): the runtime must not call them
+	// a second time. They stay in InitArray as function seeds.
+	InitWalked  []uint64
+	DynamicTags map[int64]uint64
+	NeededLibs  []string
 	// ImportLibs maps the 16-bit SCE library ID (DT_SCE_IMPORT_LIB LID)
 	// onto the plaintext library name in the SCE string table.
 	ImportLibs map[uint16]string
-	ExecRanges []AddrRange
-	DynlibData []byte
+	// LibIDSecond is set for PS5-style dynamic tables, where the library index of a dynsym
+	// name "NID#a#b" is the second id (b); on PS4 it is the first (a).
+	LibIDSecond bool
+	// ExcludedImports maps the NID of every symbol exported by a module left out of the
+	// translation (-exclude-module) to that module's file name. Imports of these NIDs are never
+	// satisfied by a shim or an unrelated export: they bind to the "excluded-module" stub.
+	ExcludedImports map[string]string
+	ExecRanges      []AddrRange
+	// ROAddrRanges: guest address ranges the loader never writes after it has finished and that
+	// the guest never writes: PT_GNU_RELRO / PT_SCE_RELRO (relocated once, then read-only) and
+	// the non-executable PT_LOADs without PF_W. The lifter (-ro-loads) emits constant-address
+	// loads from them without acquire ordering (docs/m3/lift2.md). Sorted and merged.
+	ROAddrRanges []AddrRange
+	DynlibData   []byte
 
 	MinVAddr uint64
 	MaxVAddr uint64
+	// Bias is the module's displacement from its linked addresses (sum of ApplyBias deltas):
+	// guest address = linked virtual address + Bias.
+	Bias uint64
 	// OrigMinVAddr and OrigMaxVAddr track the unmerged extent of this specific ELF image.
 	OrigMinVAddr uint64
 	OrigMaxVAddr uint64
@@ -118,8 +145,14 @@ type LoadedELF struct {
 	// tlsTPOFF holds the TPOFF64 slots AddTLSModule queued for ApplyTLSOffsets.
 	tlsTPOFF []pendingTPOFF
 
-	// MemoryImage holds the pre-mapped guest memory image with relative relocs applied.
-	MemoryImage []byte
+	// MemoryImage is the sparse guest memory image (relative relocs applied), addressed by final
+	// guest virtual address. One region per module; ApplyBias moves regions without copying.
+	MemoryImage *Image
+	// local is this module's dense load buffer indexed by *linked* virtual address. It is what
+	// LoadELFBytes and the .eh_frame parser work on before the module is placed; its bytes are
+	// shared with the module's MemoryImage region. After ApplyBias its indices are no longer
+	// guest addresses, so nothing outside load-time parsing may use it.
+	local []byte
 
 	// FuncBounds are half-open function extents from .eh_frame, sorted by Start.
 	FuncBounds []AddrRange
@@ -185,7 +218,7 @@ func LoadELF(path string) (*LoadedELF, error) {
 
 // LoadELFBytes parses a 64-bit x86-64 ELF image from memory.
 func LoadELFBytes(data []byte) (*LoadedELF, error) {
-	file, err := elf.NewFile(bytes.NewReader(data))
+	file, err := elf.NewFile(sectionlessReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse elf: %w", err)
 	}
@@ -225,17 +258,34 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 			loaded.TLSMemsz = prog.Memsz
 			loaded.TLSAlign = prog.Align
 		}
-		if !isMappedProg(prog.Type) || prog.Memsz == 0 {
-			continue
-		}
-		fsz := prog.Filesz
-		if prog.Off+fsz > uint64(len(data)) {
-			if prog.Off >= uint64(len(data)) {
-				fsz = 0
-			} else {
-				fsz = uint64(len(data)) - prog.Off
+		if prog.Type == PT_GNU_RELRO || prog.Type == PT_SCE_RELRO {
+			// ld.so protects whole pages: the range ends at the last page boundary at or below the end.
+			if end := (prog.Vaddr + prog.Memsz) &^ (relroPage - 1); end > prog.Vaddr {
+				loaded.ROAddrRanges = append(loaded.ROAddrRanges, AddrRange{Start: prog.Vaddr, End: end})
 			}
 		}
+		if prog.Type == elf.PT_LOAD && prog.Flags&(elf.PF_R|elf.PF_W|elf.PF_X) == elf.PF_R && prog.Memsz > 0 {
+			loaded.ROAddrRanges = append(loaded.ROAddrRanges, AddrRange{Start: prog.Vaddr, End: prog.Vaddr + prog.Memsz})
+		}
+		if !isMappedProg(prog.Type) {
+			continue
+		}
+		if prog.Filesz > prog.Memsz { // also catches memsz == 0 with file data: not silently ignored
+			return nil, fmt.Errorf("segment at 0x%x: filesz 0x%x exceeds memsz 0x%x", prog.Vaddr, prog.Filesz, prog.Memsz)
+		}
+		if prog.Memsz == 0 {
+			continue
+		}
+		if prog.Vaddr+prog.Memsz < prog.Vaddr || prog.Vaddr+prog.Memsz > maxImageSize {
+			return nil, fmt.Errorf("segment vaddr 0x%x memsz 0x%x exceeds the %d GiB image limit", prog.Vaddr, prog.Memsz, maxImageSize>>30)
+		}
+		if prog.Filesz > prog.Memsz {
+			return nil, fmt.Errorf("segment at 0x%x: filesz 0x%x exceeds memsz 0x%x", prog.Vaddr, prog.Filesz, prog.Memsz)
+		}
+		if prog.Filesz > 0 && (prog.Off > uint64(len(data)) || prog.Filesz > uint64(len(data))-prog.Off) {
+			return nil, fmt.Errorf("segment at 0x%x: file range [0x%x,+0x%x) exceeds file size 0x%x", prog.Vaddr, prog.Off, prog.Filesz, len(data))
+		}
+		fsz := prog.Filesz
 		pending = append(pending, pendingSeg{prog: prog, off: prog.Off, fsz: fsz})
 		if prog.Vaddr < loaded.MinVAddr {
 			loaded.MinVAddr = prog.Vaddr
@@ -252,18 +302,33 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 	if len(pending) == 0 {
 		return nil, fmt.Errorf("no PT_LOAD segments found in ELF")
 	}
+	// PT_LOAD segments must not overlap: the later one would silently overwrite the earlier.
+	{
+		loads := make([]*elf.Prog, 0, len(pending))
+		for _, p := range pending {
+			if p.prog.Type == elf.PT_LOAD {
+				loads = append(loads, p.prog)
+			}
+		}
+		sort.Slice(loads, func(i, j int) bool { return loads[i].Vaddr < loads[j].Vaddr })
+		for i := 1; i < len(loads); i++ {
+			if prev := loads[i-1]; loads[i].Vaddr < prev.Vaddr+prev.Memsz {
+				return nil, fmt.Errorf("PT_LOAD segments overlap: [0x%x,+0x%x) and [0x%x,+0x%x)", prev.Vaddr, prev.Memsz, loads[i].Vaddr, loads[i].Memsz)
+			}
+		}
+	}
 
 	pageSize := uint64(4096)
 	totalMemSize := (loaded.MaxVAddr + pageSize - 1) &^ (pageSize - 1)
-	loaded.MemoryImage = make([]byte, totalMemSize)
+	loaded.local = make([]byte, totalMemSize)
 
 	for _, p := range pending {
 		if p.fsz > 0 {
 			end := p.prog.Vaddr + p.fsz
-			if end > uint64(len(loaded.MemoryImage)) {
+			if end > uint64(len(loaded.local)) {
 				return nil, fmt.Errorf("segment at 0x%x exceeds memory image", p.prog.Vaddr)
 			}
-			copy(loaded.MemoryImage[p.prog.Vaddr:end], data[p.off:p.off+p.fsz])
+			copy(loaded.local[p.prog.Vaddr:end], data[p.off:p.off+p.fsz])
 		}
 		seg := &Segment{
 			Vaddr:  p.prog.Vaddr,
@@ -272,10 +337,10 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 			Flags:  p.prog.Flags,
 		}
 		memEnd := p.prog.Vaddr + p.prog.Memsz
-		if memEnd > uint64(len(loaded.MemoryImage)) {
-			memEnd = uint64(len(loaded.MemoryImage))
+		if memEnd > uint64(len(loaded.local)) {
+			memEnd = uint64(len(loaded.local))
 		}
-		seg.Data = loaded.MemoryImage[p.prog.Vaddr:memEnd]
+		seg.Data = loaded.local[p.prog.Vaddr:memEnd]
 		loaded.Segments = append(loaded.Segments, seg)
 	}
 
@@ -296,6 +361,7 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 				Size:    s.Size,
 				Type:    elf.ST_TYPE(s.Info),
 				Section: s.Section,
+				Local:   elf.ST_BIND(s.Info) == elf.STB_LOCAL,
 			})
 		}
 	}
@@ -317,13 +383,17 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 		}
 	}
 
-	parseSCEDynamic(loaded, data, file)
+	if err := parseSCEDynamic(loaded, data, file); err != nil {
+		return nil, fmt.Errorf("dynamic section: %w", err)
+	}
 	if len(loaded.NeededLibs) == 0 {
 		if needed, err := file.DynString(elf.DT_NEEDED); err == nil {
 			loaded.NeededLibs = needed
 		}
 	}
-	parseRelocations(loaded, file)
+	if err := parseRelocations(loaded, file); err != nil {
+		return nil, err
+	}
 	parseInitArray(loaded)
 
 	if len(loaded.ExecRanges) == 0 {
@@ -333,11 +403,16 @@ func LoadELFBytes(data []byte) (*LoadedELF, error) {
 			}
 		}
 	}
+	loaded.ROAddrRanges = mergeRanges(loaded.ROAddrRanges)
 	loaded.OrigMinVAddr = loaded.MinVAddr
 	loaded.OrigMaxVAddr = loaded.MaxVAddr
 	attachUnwind(loaded, file)
+	loaded.publishImage()
 	return loaded, nil
 }
+
+// relroPage is the granularity ld.so protects PT_GNU_RELRO with (the PS5 page size, the larger of the two).
+const relroPage = 0x4000
 
 func isMappedProg(t elf.ProgType) bool {
 	return t == elf.PT_LOAD || t == PT_SCE_RELRO
@@ -357,7 +432,7 @@ func addSymbol(loaded *LoadedELF, sym Symbol) {
 	}
 }
 
-func parseRelocations(loaded *LoadedELF, file *elf.File) {
+func parseRelocations(loaded *LoadedELF, file *elf.File) error {
 	relSecNames := []string{".rela.dyn", ".rela.plt"}
 	for _, name := range relSecNames {
 		sec, ok := loaded.Sections[name]
@@ -368,10 +443,13 @@ func parseRelocations(loaded *LoadedELF, file *elf.File) {
 		if err != nil {
 			continue
 		}
-		applyRelaTable(loaded, relData, name == ".rela.plt")
+		if err := applyRelaTable(loaded, relData, name == ".rela.plt"); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 	}
 
 	resolvePltAddresses(loaded)
+	return nil
 }
 
 func resolvePltAddresses(loaded *LoadedELF) {
@@ -422,22 +500,46 @@ func resolvePltAddresses(loaded *LoadedELF) {
 			if rel.Type == R_X86_64_JUMP_SLOT && rel.PltAddr == 0 {
 				rel.PltAddr = pltBase + 16*uint64(entryIdx+1)
 				entryIdx++
-				if rel.Offset+8 <= uint64(len(loaded.MemoryImage)) {
-					binary.LittleEndian.PutUint64(loaded.MemoryImage[rel.Offset:rel.Offset+8], rel.PltAddr)
+				if rel.Offset+8 <= uint64(len(loaded.local)) {
+					binary.LittleEndian.PutUint64(loaded.local[rel.Offset:rel.Offset+8], rel.PltAddr)
 				}
 			}
 		}
 	}
 }
 
-func applyRelaTable(loaded *LoadedELF, relData []byte, isPlt bool) {
+// relocSlotInImage reports whether the 8-byte word at offset lies wholly inside one loaded segment
+// (written without any addition that could wrap).
+func relocSlotInImage(loaded *LoadedELF, offset uint64) bool {
+	for _, seg := range loaded.Segments {
+		if offset >= seg.Vaddr && seg.Memsz >= 8 && offset-seg.Vaddr <= seg.Memsz-8 {
+			return true
+		}
+	}
+	return false
+}
+
+func applyRelaTable(loaded *LoadedELF, relData []byte, isPlt bool) error {
 	const entrySize = 24
+	if len(relData)/entrySize > maxRelocEntries {
+		return fmt.Errorf("relocation table too large (%d bytes)", len(relData))
+	}
 	for i := 0; i+entrySize <= len(relData); i += entrySize {
 		offset := binary.LittleEndian.Uint64(relData[i : i+8])
 		info := binary.LittleEndian.Uint64(relData[i+8 : i+16])
 		addend := int64(binary.LittleEndian.Uint64(relData[i+16 : i+24]))
 		relType := uint32(info & 0xffffffff)
 		symIdx := uint32(info >> 32)
+
+		if !supportedRelocType(relType) {
+			return &UnsupportedRelocError{Type: relType, Offset: offset}
+		}
+		if !relocSlotInImage(loaded, offset) {
+			return fmt.Errorf("relocation at 0x%x (type %d) is outside every loaded segment", offset, relType)
+		}
+		if symIdx != 0 && int(symIdx) >= len(loaded.DynSymbols) && len(loaded.DynSymbols) > 0 {
+			return fmt.Errorf("relocation at 0x%x references symbol index %d beyond symbol table (%d entries)", offset, symIdx, len(loaded.DynSymbols))
+		}
 
 		var symName string
 		if int(symIdx) < len(loaded.DynSymbols) {
@@ -456,15 +558,15 @@ func applyRelaTable(loaded *LoadedELF, relData []byte, isPlt bool) {
 			if pltSec, ok := loaded.Sections[".plt"]; ok {
 				entryIdx := i / entrySize
 				rel.PltAddr = pltSec.Addr + 16*uint64(entryIdx+1)
-				if offset+8 <= uint64(len(loaded.MemoryImage)) {
-					binary.LittleEndian.PutUint64(loaded.MemoryImage[offset:offset+8], rel.PltAddr)
+				if offset+8 <= uint64(len(loaded.local)) {
+					binary.LittleEndian.PutUint64(loaded.local[offset:offset+8], rel.PltAddr)
 				}
 			}
 		}
 
 		if relType == R_X86_64_RELATIVE {
-			if offset+8 <= uint64(len(loaded.MemoryImage)) {
-				binary.LittleEndian.PutUint64(loaded.MemoryImage[offset:offset+8], uint64(addend))
+			if offset+8 <= uint64(len(loaded.local)) {
+				binary.LittleEndian.PutUint64(loaded.local[offset:offset+8], uint64(addend))
 			}
 		}
 
@@ -475,40 +577,41 @@ func applyRelaTable(loaded *LoadedELF, relData []byte, isPlt bool) {
 
 		if relType == R_X86_64_64 && int(symIdx) < len(loaded.DynSymbols) {
 			sym := loaded.DynSymbols[symIdx]
-			if sym.Address != 0 && offset+8 <= uint64(len(loaded.MemoryImage)) {
-				binary.LittleEndian.PutUint64(loaded.MemoryImage[offset:offset+8], sym.Address+uint64(addend))
+			if sym.Address != 0 && offset+8 <= uint64(len(loaded.local)) {
+				binary.LittleEndian.PutUint64(loaded.local[offset:offset+8], sym.Address+uint64(addend))
 			}
 		}
 
 		loaded.Relocations = append(loaded.Relocations, rel)
 	}
+	return nil
 }
 
 func applyStackCanary(loaded *LoadedELF, gotOffset uint64) {
 	guardAddr := loaded.CanaryAddr
 	if guardAddr == 0 {
 		guardAddr = (loaded.MaxVAddr + 4095) &^ 4095
-		if uint64(len(loaded.MemoryImage)) < guardAddr+4096 {
+		if uint64(len(loaded.local)) < guardAddr+4096 {
 			newImg := make([]byte, guardAddr+4096)
-			copy(newImg, loaded.MemoryImage)
-			loaded.MemoryImage = newImg
+			copy(newImg, loaded.local)
+			loaded.local = newImg
 			loaded.MaxVAddr = guardAddr + 4096
 			for _, seg := range loaded.Segments {
 				end := seg.Vaddr + seg.Memsz
-				if end > uint64(len(loaded.MemoryImage)) {
-					end = uint64(len(loaded.MemoryImage))
+				if end > uint64(len(loaded.local)) {
+					end = uint64(len(loaded.local))
 				}
 				if seg.Vaddr < end {
-					seg.Data = loaded.MemoryImage[seg.Vaddr:end]
+					seg.Data = loaded.local[seg.Vaddr:end]
 				}
 			}
 		}
 		const canaryValue = uint64(0x595e9fbd94fda766)
-		binary.LittleEndian.PutUint64(loaded.MemoryImage[guardAddr:guardAddr+8], canaryValue)
+		binary.LittleEndian.PutUint64(loaded.local[guardAddr:guardAddr+8], canaryValue)
 		loaded.CanaryAddr = guardAddr
 	}
-	if gotOffset+8 <= uint64(len(loaded.MemoryImage)) {
-		binary.LittleEndian.PutUint64(loaded.MemoryImage[gotOffset:gotOffset+8], guardAddr)
+	if gotOffset+8 <= uint64(len(loaded.local)) {
+		binary.LittleEndian.PutUint64(loaded.local[gotOffset:gotOffset+8], guardAddr)
 	}
 }
 
@@ -517,8 +620,8 @@ func parseInitArray(loaded *LoadedELF) {
 	if initSec, ok := loaded.Sections[".init_array"]; ok && initSec.Size > 0 {
 		for i := uint64(0); i+8 <= initSec.Size; i += 8 {
 			addr := initSec.Addr + i
-			if addr+8 <= uint64(len(loaded.MemoryImage)) {
-				fn := binary.LittleEndian.Uint64(loaded.MemoryImage[addr : addr+8])
+			if addr+8 <= uint64(len(loaded.local)) {
+				fn := binary.LittleEndian.Uint64(loaded.local[addr : addr+8])
 				if fn != 0 {
 					loaded.InitArray = append(loaded.InitArray, fn)
 				}
@@ -530,8 +633,8 @@ func parseInitArray(loaded *LoadedELF) {
 	if ctorsSec, ok := loaded.Sections[".ctors"]; ok && ctorsSec.Size > 0 {
 		for i := ctorsSec.Size; i >= 8; i -= 8 {
 			addr := ctorsSec.Addr + i - 8
-			if addr+8 <= uint64(len(loaded.MemoryImage)) {
-				fn := binary.LittleEndian.Uint64(loaded.MemoryImage[addr : addr+8])
+			if addr+8 <= uint64(len(loaded.local)) {
+				fn := binary.LittleEndian.Uint64(loaded.local[addr : addr+8])
 				if fn != 0 && fn != ^uint64(0) && loaded.InExecutable(fn) {
 					loaded.InitArray = append(loaded.InitArray, fn)
 				}
@@ -545,8 +648,8 @@ func parseInitArray(loaded *LoadedELF) {
 			sz := loaded.DynamicTags[DT_PREINIT_ARRAYSZ]
 			for i := uint64(0); i+8 <= sz; i += 8 {
 				addr := preinitAddr + i
-				if addr+8 <= uint64(len(loaded.MemoryImage)) {
-					fn := binary.LittleEndian.Uint64(loaded.MemoryImage[addr : addr+8])
+				if addr+8 <= uint64(len(loaded.local)) {
+					fn := binary.LittleEndian.Uint64(loaded.local[addr : addr+8])
 					if fn != 0 {
 						loaded.InitArray = append(loaded.InitArray, fn)
 					}
@@ -558,8 +661,8 @@ func parseInitArray(loaded *LoadedELF) {
 			sz := loaded.DynamicTags[DT_INIT_ARRAYSZ]
 			for i := uint64(0); i+8 <= sz; i += 8 {
 				addr := initArrayAddr + i
-				if addr+8 <= uint64(len(loaded.MemoryImage)) {
-					fn := binary.LittleEndian.Uint64(loaded.MemoryImage[addr : addr+8])
+				if addr+8 <= uint64(len(loaded.local)) {
+					fn := binary.LittleEndian.Uint64(loaded.local[addr : addr+8])
 					if fn != 0 {
 						loaded.InitArray = append(loaded.InitArray, fn)
 					}
@@ -575,8 +678,8 @@ func parseInitArray(loaded *LoadedELF) {
 						break
 					}
 					pos := initArrayAddr - off
-					if pos+8 <= uint64(len(loaded.MemoryImage)) {
-						val := binary.LittleEndian.Uint64(loaded.MemoryImage[pos : pos+8])
+					if pos+8 <= uint64(len(loaded.local)) {
+						val := binary.LittleEndian.Uint64(loaded.local[pos : pos+8])
 						if val == ^uint64(0) {
 							ctorEnd = pos
 							break
@@ -585,10 +688,10 @@ func parseInitArray(loaded *LoadedELF) {
 				}
 				if ctorEnd >= 8 {
 					for pos := ctorEnd - 8; pos >= 8; pos -= 8 {
-						if pos+8 > uint64(len(loaded.MemoryImage)) {
+						if pos+8 > uint64(len(loaded.local)) {
 							break
 						}
-						fn := binary.LittleEndian.Uint64(loaded.MemoryImage[pos : pos+8])
+						fn := binary.LittleEndian.Uint64(loaded.local[pos : pos+8])
 						if fn == ^uint64(0) {
 							break
 						}
@@ -601,25 +704,28 @@ func parseInitArray(loaded *LoadedELF) {
 		}
 
 		// 4. Scan DT_INIT function for references to legacy .ctors table (standard in PS4 Clang CRT).
-		if initAddr, ok := loaded.DynamicTags[DT_INIT]; ok && initAddr != 0 && initAddr < uint64(len(loaded.MemoryImage)) {
+		// Not when the dynamic table already names the arrays: a PS5 libc's DT_INIT loops over
+		// the preinit array, and the word after the array's end looks like one more constructor.
+		hasArrays := loaded.DynamicTags[DT_PREINIT_ARRAY] != 0 || loaded.DynamicTags[DT_INIT_ARRAY] != 0
+		if initAddr, ok := loaded.DynamicTags[DT_INIT]; ok && !hasArrays && initAddr != 0 && initAddr < uint64(len(loaded.local)) {
 			end := initAddr + 64
-			if end > uint64(len(loaded.MemoryImage)) {
-				end = uint64(len(loaded.MemoryImage))
+			if end > uint64(len(loaded.local)) {
+				end = uint64(len(loaded.local))
 			}
-			code := loaded.MemoryImage[initAddr:end]
+			code := loaded.local[initAddr:end]
 			for i := 0; i+7 <= len(code); i++ {
 				// LEA r64, [rip + disp32] (REX.W 0x48..0x4f, 0x8d, ModRM with mod=00, rm=101)
 				if (code[i] >= 0x48 && code[i] <= 0x4f) && code[i+1] == 0x8d && (code[i+2]&0xc7) == 0x05 {
 					disp := int32(binary.LittleEndian.Uint32(code[i+3 : i+7]))
 					pc := initAddr + uint64(i)
 					target := uint64(int64(pc+7) + int64(disp))
-					if target+8 <= uint64(len(loaded.MemoryImage)) {
+					if target+8 <= uint64(len(loaded.local)) {
 						var ctors []uint64
 						for pos := target; pos >= 8; pos -= 8 {
-							if pos+8 > uint64(len(loaded.MemoryImage)) {
+							if pos+8 > uint64(len(loaded.local)) {
 								break
 							}
-							val := binary.LittleEndian.Uint64(loaded.MemoryImage[pos : pos+8])
+							val := binary.LittleEndian.Uint64(loaded.local[pos : pos+8])
 							if val == ^uint64(0) {
 								ctors = append(ctors, val)
 								break
@@ -645,6 +751,8 @@ func parseInitArray(loaded *LoadedELF) {
 		}
 	}
 
+	markInitWalked(loaded)
+
 	// Deduplicate entries while preserving execution order
 	if len(loaded.InitArray) > 1 {
 		seen := make(map[uint64]struct{}, len(loaded.InitArray))
@@ -659,7 +767,111 @@ func parseInitArray(loaded *LoadedELF) {
 	}
 }
 
-func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
+// markInitWalked fills InitWalked: when the DT_INIT function of a section-less image (PRX/SELF)
+// takes the address of the DT_PREINIT_ARRAY / DT_INIT_ARRAY start (LEA r64,[rip+disp] in its
+// first bytes), it is the Sony CRT module_start that calls the array's entries itself. Calling
+// them again from the module's init list runs every initialiser twice (ASTRO BOT libc.prx: the
+// heap set-up ran twice and allocated its 1944 MiB of direct memory twice).
+func markInitWalked(loaded *LoadedELF) {
+	if loaded.DynamicTags == nil || len(loaded.Sections) != 0 {
+		return
+	}
+	initAddr := loaded.DynamicTags[DT_INIT]
+	if initAddr == 0 || initAddr >= uint64(len(loaded.local)) {
+		return
+	}
+	end := min(initAddr+64, uint64(len(loaded.local)))
+	code := loaded.local[initAddr:end]
+	for _, arr := range [...][2]int64{{DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ}, {DT_INIT_ARRAY, DT_INIT_ARRAYSZ}} {
+		start, sz := loaded.DynamicTags[arr[0]], loaded.DynamicTags[arr[1]]
+		if start == 0 || sz == 0 {
+			continue
+		}
+		walked := false
+		for i := 0; i+7 <= len(code); i++ {
+			if code[i] >= 0x48 && code[i] <= 0x4f && code[i+1] == 0x8d && code[i+2]&0xc7 == 0x05 {
+				disp := int32(binary.LittleEndian.Uint32(code[i+3 : i+7]))
+				if uint64(int64(initAddr+uint64(i)+7)+int64(disp)) == start {
+					walked = true
+					break
+				}
+			}
+		}
+		if !walked {
+			continue
+		}
+		for i := uint64(0); i+8 <= sz && start+i+8 <= uint64(len(loaded.local)); i += 8 {
+			if fn := binary.LittleEndian.Uint64(loaded.local[start+i : start+i+8]); fn != 0 && fn != initAddr {
+				loaded.InitWalked = append(loaded.InitWalked, fn)
+			}
+		}
+	}
+}
+
+// InitRunList returns the init functions the runtime calls for this image: InitArray without
+// the entries its DT_INIT calls itself.
+func (l *LoadedELF) InitRunList() []uint64 {
+	out := make([]uint64, 0, len(l.InitArray))
+	for _, fn := range l.InitArray {
+		if !slices.Contains(l.InitWalked, fn) {
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// Standard and PS5-era dynamic tags.
+const (
+	dtNeeded   int64 = 1
+	dtPLTRELSZ int64 = 2
+	dtStrtab   int64 = 5
+	dtSymtab   int64 = 6
+	dtRela     int64 = 7
+	dtRelaSz   int64 = 8
+	dtStrSz    int64 = 10
+	dtSymEnt   int64 = 11
+	dtJmpRel   int64 = 23
+
+	// PS5 shifts the SCE library tags by +0x30 relative to PS4.
+	DT_SCE_EXPORT_LIB_PS5 int64 = 0x61000043
+	DT_SCE_IMPORT_LIB_PS5 int64 = 0x61000045
+
+	maxRelocEntries = 1 << 24
+	maxImageSize    = uint64(4) << 30
+)
+
+// UnsupportedRelocError reports a relocation type the loader cannot honour.
+type UnsupportedRelocError struct {
+	Type   uint32
+	Offset uint64
+}
+
+func (e *UnsupportedRelocError) Error() string {
+	return fmt.Sprintf("unsupported relocation type %d at offset 0x%x", e.Type, e.Offset)
+}
+
+// supportedRelocType lists the x86-64 relocation types the loader and the
+// emitter understand. Everything else is rejected rather than silently dropped.
+func supportedRelocType(t uint32) bool {
+	switch t {
+	case 0, // R_X86_64_NONE
+		R_X86_64_64, 2, // PC32
+		R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE,
+		R_X86_64_DTPMOD64, R_X86_64_DTPOFF64, R_X86_64_TPOFF64:
+		return true
+	}
+	return false
+}
+
+// vaSlice returns img[va:va+size] when it lies fully inside img.
+func vaSlice(img []byte, va, size uint64) ([]byte, bool) {
+	if va > uint64(len(img)) || size > uint64(len(img))-va {
+		return nil, false
+	}
+	return img[va : va+size], true
+}
+
+func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) error {
 	var dynOff, dynSz uint64
 	for _, prog := range file.Progs {
 		if prog.Type == elf.PT_DYNAMIC {
@@ -668,8 +880,11 @@ func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
 			break
 		}
 	}
-	if dynSz < 16 || dynOff+dynSz > uint64(len(data)) {
-		return
+	if dynSz < 16 {
+		return nil
+	}
+	if dynOff > uint64(len(data)) || dynSz > uint64(len(data))-dynOff {
+		return fmt.Errorf("PT_DYNAMIC range [0x%x,+0x%x) exceeds file size 0x%x", dynOff, dynSz, len(data))
 	}
 	dyn := data[dynOff : dynOff+dynSz]
 
@@ -684,28 +899,83 @@ func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
 	}
 	loaded.DynamicTags = tags
 
-	base := loaded.DynlibData
-	if len(base) == 0 {
-		return
-	}
-
-	strtabOff, strtabSz := tags[DT_SCE_STRTAB], tags[DT_SCE_STRSZ]
-	symtabOff, symtabSz := tags[DT_SCE_SYMTAB], tags[DT_SCE_SYMTABSZ]
+	// Resolve table regions. PS4 keeps them in the PT_SCE_DYNLIBDATA blob and
+	// names them by offset (0x6100003x tags). PS5 and standard linkers name
+	// them by guest virtual address (DT_SYMTAB, DT_RELA, ...), the tables
+	// living in an ordinary mapped segment.
+	var strtab, symBytes []byte
+	var relaTab, jmpTab []byte
 	syment := tags[DT_SCE_SYMENT]
+	base := loaded.DynlibData
+	_, sceSym := tags[DT_SCE_SYMTAB]
+	if len(base) > 0 && sceSym {
+		strtabOff, strtabSz := tags[DT_SCE_STRTAB], tags[DT_SCE_STRSZ]
+		symtabOff, symtabSz := tags[DT_SCE_SYMTAB], tags[DT_SCE_SYMTABSZ]
+		if strtabOff >= uint64(len(base)) || symtabOff >= uint64(len(base)) {
+			return nil
+		}
+		strtab = base[strtabOff:]
+		if strtabSz > 0 && strtabOff+strtabSz <= uint64(len(base)) {
+			strtab = base[strtabOff : strtabOff+strtabSz]
+		}
+		symBytes = base[symtabOff:]
+		if symtabSz > 0 && symtabOff+symtabSz <= uint64(len(base)) {
+			symBytes = base[symtabOff : symtabOff+symtabSz]
+		}
+		region := func(offTag, szTag int64) []byte {
+			off, ok := tags[offTag]
+			if !ok || off >= uint64(len(base)) {
+				return nil
+			}
+			end := off + tags[szTag]
+			if tags[szTag] == 0 || end > uint64(len(base)) {
+				end = uint64(len(base))
+			}
+			return base[off:end]
+		}
+		relaTab = region(DT_SCE_RELA, DT_SCE_RELASZ)
+		jmpTab = region(DT_SCE_JMPREL, DT_SCE_PLTRELSZ)
+	} else if symVA, ok := tags[dtSymtab]; ok {
+		syment = tags[dtSymEnt]
+		img := loaded.local
+		if sva, ok := tags[dtStrtab]; ok {
+			sz := tags[dtStrSz]
+			if sz == 0 || sz > uint64(len(img)) {
+				sz = uint64(len(img)) - min(sva, uint64(len(img)))
+			}
+			var ok bool
+			if strtab, ok = vaSlice(img, sva, sz); !ok {
+				return fmt.Errorf("DT_STRTAB 0x%x size 0x%x outside image", sva, sz)
+			}
+		}
+		symSz := tags[DT_SCE_SYMTABSZ]
+		if symSz == 0 {
+			if sva, ok := tags[dtStrtab]; ok && sva > symVA {
+				symSz = sva - symVA
+			}
+		}
+		var ok2 bool
+		if symBytes, ok2 = vaSlice(img, symVA, symSz); !ok2 {
+			return fmt.Errorf("DT_SYMTAB 0x%x size 0x%x outside image", symVA, symSz)
+		}
+		if rva, ok := tags[dtRela]; ok && tags[dtRelaSz] > 0 {
+			if relaTab, ok = vaSlice(img, rva, tags[dtRelaSz]); !ok {
+				return fmt.Errorf("DT_RELA 0x%x size 0x%x outside image", rva, tags[dtRelaSz])
+			}
+		}
+		if jva, ok := tags[dtJmpRel]; ok && tags[dtPLTRELSZ] > 0 {
+			if jmpTab, ok = vaSlice(img, jva, tags[dtPLTRELSZ]); !ok {
+				return fmt.Errorf("DT_JMPREL 0x%x size 0x%x outside image", jva, tags[dtPLTRELSZ])
+			}
+		}
+	} else {
+		return nil
+	}
 	if syment == 0 {
 		syment = 24
 	}
-	if strtabOff >= uint64(len(base)) || symtabOff >= uint64(len(base)) {
-		return
-	}
-
-	strtab := base[strtabOff:]
-	if strtabSz > 0 && strtabOff+strtabSz <= uint64(len(base)) {
-		strtab = base[strtabOff : strtabOff+strtabSz]
-	}
-	symBytes := base[symtabOff:]
-	if symtabSz > 0 && symtabOff+symtabSz <= uint64(len(base)) {
-		symBytes = base[symtabOff : symtabOff+symtabSz]
+	if syment < 24 {
+		return fmt.Errorf("invalid DT_SYMENT %d", syment)
 	}
 
 	// SCE SYMTAB already includes the STN_UNDEF entry at index 0. Prepending
@@ -735,26 +1005,18 @@ func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
 
 	_, hasRelaDyn := loaded.Sections[".rela.dyn"]
 	_, hasRelaPlt := loaded.Sections[".rela.plt"]
-	if !hasRelaDyn {
-		if relaOff, ok := tags[DT_SCE_RELA]; ok {
-			relaSz := tags[DT_SCE_RELASZ]
-			if relaOff < uint64(len(base)) {
-				end := relaOff + relaSz
-				if relaSz == 0 || end > uint64(len(base)) {
-					end = uint64(len(base))
-				}
-				applyRelaTable(loaded, base[relaOff:end], false)
-			}
+	if !hasRelaDyn && len(relaTab) > 0 {
+		if err := applyRelaTable(loaded, relaTab, false); err != nil {
+			return err
 		}
 	}
-	if initAddr, ok := tags[DT_INIT]; ok && initAddr != 0 {
+	if initAddr, ok := tags[DT_INIT]; ok && initAddr != 0 && len(loaded.Sections) == 0 {
 		loaded.InitArray = append(loaded.InitArray, initAddr)
 	}
 
 	if loaded.ImportLibs == nil {
 		loaded.ImportLibs = make(map[uint16]string)
 	}
-	const dtNeeded int64 = 1
 	for i := 0; i+16 <= len(dyn); i += 16 {
 		tag := int64(binary.LittleEndian.Uint64(dyn[i : i+8]))
 		val := binary.LittleEndian.Uint64(dyn[i+8 : i+16])
@@ -767,8 +1029,11 @@ func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
 			if name != "" {
 				loaded.NeededLibs = append(loaded.NeededLibs, name)
 			}
-		case DT_SCE_IMPORT_LIB, DT_SCE_EXPORT_LIB:
+		case DT_SCE_IMPORT_LIB, DT_SCE_EXPORT_LIB, DT_SCE_IMPORT_LIB_PS5, DT_SCE_EXPORT_LIB_PS5:
 			id := uint16(val >> 48)
+			if tag == DT_SCE_IMPORT_LIB_PS5 || tag == DT_SCE_EXPORT_LIB_PS5 {
+				loaded.LibIDSecond = true
+			}
 			name := cstringAt(strtab, int(val&0xffffffff))
 			if name == "" {
 				name = cstringAt(strtab, int(val&0xfff))
@@ -779,18 +1044,12 @@ func parseSCEDynamic(loaded *LoadedELF, data []byte, file *elf.File) {
 		}
 	}
 
-	if !hasRelaPlt {
-		if jmpOff, ok := tags[DT_SCE_JMPREL]; ok {
-			jmpSz := tags[DT_SCE_PLTRELSZ]
-			if jmpOff < uint64(len(base)) {
-				end := jmpOff + jmpSz
-				if jmpSz == 0 || end > uint64(len(base)) {
-					end = uint64(len(base))
-				}
-				applyRelaTable(loaded, base[jmpOff:end], true)
-			}
+	if !hasRelaPlt && len(jmpTab) > 0 {
+		if err := applyRelaTable(loaded, jmpTab, true); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 func cstringAt(buf []byte, off int) string {
@@ -828,5 +1087,65 @@ func (l *LoadedELF) InExecutable(addr uint64) bool {
 
 // ContainsVA reports whether addr is inside the loaded memory image.
 func (l *LoadedELF) ContainsVA(addr uint64) bool {
-	return l != nil && addr < uint64(len(l.MemoryImage))
+	return l != nil && l.MemoryImage.Contains(addr)
+}
+
+// publishImage exposes the load buffer as the module's sparse image. The region starts at the
+// page floor of the lowest mapped address, so a fixed-address executable linked at 0x400000 does
+// not carry 4 MiB of leading zeros.
+func (l *LoadedELF) publishImage() {
+	lo := l.MinVAddr &^ 0x3fff
+	if lo > uint64(len(l.local)) {
+		lo = uint64(len(l.local))
+	}
+	l.MemoryImage = NewImage(lo, l.local[lo:])
+}
+
+// sectionlessReader returns a reader over data. PS5 dumps strip the section headers but keep
+// e_shoff/e_shnum in the ELF header, so debug/elf would fail with EOF. When the section header
+// table does not fit inside the file, the three section fields of the header are zeroed in an
+// overlay (the input is not copied or modified) and the image loads from program headers and
+// the dynamic segment alone.
+func sectionlessReader(data []byte) io.ReaderAt {
+	if len(data) < 64 || string(data[:4]) != "\x7fELF" || data[4] != 2 {
+		return bytes.NewReader(data)
+	}
+	var bo binary.ByteOrder = binary.LittleEndian
+	if data[5] == 2 {
+		bo = binary.BigEndian
+	}
+	shoff := bo.Uint64(data[40:])
+	shentsize := uint64(bo.Uint16(data[58:]))
+	shnum := uint64(bo.Uint16(data[60:]))
+	if shoff == 0 && shnum == 0 {
+		return bytes.NewReader(data)
+	}
+	if shoff <= uint64(len(data)) && shentsize*shnum <= uint64(len(data))-shoff {
+		return bytes.NewReader(data)
+	}
+	log.Printf("elfloader: section header table at 0x%x (%d entries) is outside the %d-byte file; loading from program headers", shoff, shnum, len(data))
+	hdr := make([]byte, 64)
+	copy(hdr, data[:64])
+	for i := 40; i < 48; i++ {
+		hdr[i] = 0 // e_shoff
+	}
+	hdr[60], hdr[61], hdr[62], hdr[63] = 0, 0, 0, 0 // e_shnum, e_shstrndx
+	return &overlayReader{base: bytes.NewReader(data), hdr: hdr}
+}
+
+type overlayReader struct {
+	base *bytes.Reader
+	hdr  []byte
+}
+
+func (o *overlayReader) ReadAt(p []byte, off int64) (int, error) {
+	n, err := o.base.ReadAt(p, off)
+	if off < int64(len(o.hdr)) {
+		for i := 0; i < n; i++ {
+			if pos := off + int64(i); pos < int64(len(o.hdr)) {
+				p[i] = o.hdr[pos]
+			}
+		}
+	}
+	return n, err
 }

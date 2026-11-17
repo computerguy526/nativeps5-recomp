@@ -2,7 +2,6 @@ package elfloader
 
 import (
 	"debug/elf"
-	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -15,7 +14,7 @@ func tlsImage(name string, vaddr, filesz, memsz, align uint64, rels []Relocation
 		TLSFilesz:   filesz,
 		TLSMemsz:    memsz,
 		TLSAlign:    align,
-		MemoryImage: make([]byte, 0x1000),
+		MemoryImage: NewImage(0, make([]byte, 0x1000)),
 		Relocations: rels,
 		DynSymbols: []Symbol{
 			{},
@@ -27,7 +26,7 @@ func tlsImage(name string, vaddr, filesz, memsz, align uint64, rels []Relocation
 }
 
 func word(l *LoadedELF, off uint64) uint64 {
-	return binary.LittleEndian.Uint64(l.MemoryImage[off : off+8])
+	return imgU64(l.MemoryImage, off)
 }
 
 func TestAddTLSModuleNumbersModulesInLoadOrder(t *testing.T) {
@@ -153,7 +152,7 @@ func TestApplyTLSOffsetsReportsWhatItCannotWrite(t *testing.T) {
 		t.Errorf("before the layout: %q", p)
 	}
 	AddTLSModule(main, tlsImage("libX.prx", 0x2000, 0, 0x10, 8, []Relocation{{Offset: 0x900, Type: R_X86_64_TPOFF64}}))
-	main.MemoryImage = main.MemoryImage[:0x800] // the slot lies past the merged image
+	main.MemoryImage = NewImage(0, main.MemoryImage.Bytes(0, 0x800)) // the slot lies past the merged image
 	LayoutStaticTLS(main.TLSModules)
 	if p := ApplyTLSOffsets(main); len(p) != 1 || !strings.Contains(p[0], "outside the merged image") {
 		t.Errorf("outside the image: %q", p)
@@ -171,7 +170,7 @@ func TestLayoutStaticTLSRoundsEachBlockToItsAlignment(t *testing.T) {
 }
 
 func TestApplyBiasMovesTheTLSTemplate(t *testing.T) {
-	l := &LoadedELF{TLSVaddr: 0x60020, TLSMemsz: 0x40, MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: make([]byte, 0x1000)}
+	l := &LoadedELF{TLSVaddr: 0x60020, TLSMemsz: 0x40, MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: NewImage(0, make([]byte, 0x1000))}
 	if err := l.ApplyBias(0x7fb0000); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +180,7 @@ func TestApplyBiasMovesTheTLSTemplate(t *testing.T) {
 }
 
 func TestApplyBiasKeepsTLSSymbolOffsets(t *testing.T) {
-	l := &LoadedELF{MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: make([]byte, 0x1000),
+	l := &LoadedELF{MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: NewImage(0, make([]byte, 0x1000)),
 		DynSymbols: []Symbol{{}, {Name: "tls_var", Type: elf.STT_TLS, Section: 5, Address: 0x18}, {Name: "fn", Type: elf.STT_FUNC, Address: 0x100}},
 		Symbols:    []Symbol{{Name: "tls_var", Type: elf.STT_TLS, Section: 5, Address: 0x18}}}
 	if err := l.ApplyBias(0x10000); err != nil {
@@ -196,8 +195,8 @@ func TestApplyBiasKeepsTLSSymbolOffsets(t *testing.T) {
 }
 
 func TestMergeImagesKeepsTheExecutablesTLS(t *testing.T) {
-	dst := &LoadedELF{MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: make([]byte, 0x1000)}
-	src := &LoadedELF{MinVAddr: 0x10000, MaxVAddr: 0x11000, MemoryImage: make([]byte, 0x11000),
+	dst := &LoadedELF{MinVAddr: 0, MaxVAddr: 0x1000, MemoryImage: NewImage(0, make([]byte, 0x1000))}
+	src := &LoadedELF{MinVAddr: 0x10000, MaxVAddr: 0x11000, MemoryImage: NewImage(0x10000, make([]byte, 0x1000)),
 		TLSVaddr: 0x10020, TLSFilesz: 8, TLSMemsz: 0x40, TLSAlign: 8}
 	if err := MergeImages(dst, src); err != nil {
 		t.Fatal(err)

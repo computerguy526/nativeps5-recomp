@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoadPlainELF(t *testing.T) {
-	loaded, err := elfloader.LoadELF("../../hello_world.elf")
+	loaded, err := elfloader.LoadELF(helloELF(t))
 	if err != nil {
 		t.Fatalf("LoadELF: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestLoadOpenOrbisEbootSELF(t *testing.T) {
 }
 
 func TestExtractELFFromPlainBytes(t *testing.T) {
-	data, err := os.ReadFile("../../hello_world.elf")
+	data, err := os.ReadFile(helloELF(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +78,10 @@ func TestSELFProcParamIntactFromEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := loaded.ProcParamAddr
-	if a == 0 || loaded.ProcParamSize < 16 || a+16 > uint64(len(loaded.MemoryImage)) {
-		t.Fatalf("PT_SCE_PROCPARAM at %#x size %#x (image %#x)", a, loaded.ProcParamSize, len(loaded.MemoryImage))
+	if a == 0 || loaded.ProcParamSize < 16 || !loaded.MemoryImage.Has(a, 16) {
+		t.Fatalf("PT_SCE_PROCPARAM at %#x size %#x (image %#x)", a, loaded.ProcParamSize, loaded.MemoryImage.Size())
 	}
-	m := loaded.MemoryImage[a:]
+	m := loaded.MemoryImage.From(a)
 	size := binary.LittleEndian.Uint64(m)
 	if string(m[8:12]) != "ORBI" || size < 16 || size > loaded.ProcParamSize {
 		t.Fatalf("process parameters at %#x: size %#x magic %q, want size <= %#x and \"ORBI\"", a, size, m[8:12], loaded.ProcParamSize)

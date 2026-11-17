@@ -53,10 +53,10 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 			if okDst && descDst.Size >= 4 {
 				// 32/64-bit: load straight into the pinned register (a 32-bit load zero-extends,
 				// as an x86 32-bit write does).
-				return append(lines, readMemTo(mem, nextPC, descDst.Size, descDst.X, descDst.W)...), nil
+				return append(lines, l.readMemToDirect(mem, nextPC, descDst.Size, descDst.X, descDst.W)...), nil
 			}
 			if okDst {
-				lines = append(lines, readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
+				lines = append(lines, l.readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
 				storeCode, _ := writeRegFrom(dstReg, "x16", "w16")
 				lines = append(lines, storeCode...)
 				return lines, nil
@@ -70,12 +70,12 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 			descSrc, okDesc := arm64RegMap[srcReg]
 			if okDesc && !descSrc.IsHigh8 {
 				// Store straight from the pinned register (STRB/STRH store its low bits).
-				return append(lines, writeMemFrom(mem, nextPC, descSrc.Size, descSrc.X, descSrc.W)...), nil
+				return append(lines, l.writeMemFromDirect(mem, nextPC, descSrc.Size, descSrc.X, descSrc.W)...), nil
 			}
 			if okDesc {
 				loadCode, _ := readRegTo(srcReg, "x17", "w17")
 				lines = append(lines, loadCode...)
-				lines = append(lines, writeMemFrom(mem, nextPC, descSrc.Size, "x17", "w17")...)
+				lines = append(lines, l.writeMemFrom(mem, nextPC, descSrc.Size, "x17", "w17")...)
 				return lines, nil
 			}
 		}
@@ -88,7 +88,7 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 			} else {
 				lines = append(lines, loadImm32("w17", uint32(imm))...)
 			}
-			lines = append(lines, writeMemFrom(mem, nextPC, sz, "x17", "w17")...)
+			lines = append(lines, l.writeMemFrom(mem, nextPC, sz, "x17", "w17")...)
 			return lines, nil
 		}
 	}
@@ -103,7 +103,7 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 					return lines, nil
 				}
 			} else if mem, okMem := src.(x86asm.Mem); okMem {
-				lines = append(lines, readMemTo(mem, nextPC, 8, "x27", "w27")...)
+				lines = append(lines, l.readMemTo(mem, nextPC, 8, "x27", "w27")...)
 				return lines, nil
 			}
 		}
@@ -122,7 +122,7 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 					return lines, nil
 				}
 			} else if mem, okMem := dst.(x86asm.Mem); okMem {
-				lines = append(lines, writeMemFrom(mem, nextPC, 8, "x27", "w27")...)
+				lines = append(lines, l.writeMemFrom(mem, nextPC, 8, "x27", "w27")...)
 				return lines, nil
 			}
 		}
@@ -135,7 +135,7 @@ func (l *Arm64Lifter) liftMov(inst disasm.Instruction, nextPC uint64, lines []st
 				return lines, nil
 			}
 		} else if mem, okMem := dst.(x86asm.Mem); okMem {
-			lines = append(lines, writeMemFrom(mem, nextPC, 2, "xzr", "wzr")...)
+			lines = append(lines, l.writeMemFrom(mem, nextPC, 2, "xzr", "wzr")...)
 			return lines, nil
 		}
 	}
@@ -175,11 +175,11 @@ func (l *Arm64Lifter) liftMovzx(inst disasm.Instruction, nextPC uint64, lines []
 		sz := defMemSz(inst)
 		switch sz {
 		case 2:
-			lines = append(lines, fmt.Sprintf("    ldrh %s, [x28, x16]", descDst.W))
+			lines = append(lines, fmt.Sprintf("    ldrh %s, "+l.gm("x16"), descDst.W))
 		case 4:
-			lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", descDst.W))
+			lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), descDst.W))
 		default:
-			lines = append(lines, fmt.Sprintf("    ldrb %s, [x28, x16]", descDst.W))
+			lines = append(lines, fmt.Sprintf("    ldrb %s, "+l.gm("x16"), descDst.W))
 		}
 		return lines, nil
 	}
@@ -226,18 +226,18 @@ func (l *Arm64Lifter) liftMovsx(inst disasm.Instruction, nextPC uint64, lines []
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 		sz := defMemSz(inst)
 		if inst.Inst.Op == x86asm.MOVSXD || sz == 4 {
-			lines = append(lines, fmt.Sprintf("    ldrsw %s, [x28, x16]", descDst.X))
+			lines = append(lines, fmt.Sprintf("    ldrsw %s, "+l.gm("x16"), descDst.X))
 		} else if sz == 2 {
 			if descDst.Size == 8 {
-				lines = append(lines, fmt.Sprintf("    ldrsh %s, [x28, x16]", descDst.X))
+				lines = append(lines, fmt.Sprintf("    ldrsh %s, "+l.gm("x16"), descDst.X))
 			} else {
-				lines = append(lines, fmt.Sprintf("    ldrsh %s, [x28, x16]", descDst.W))
+				lines = append(lines, fmt.Sprintf("    ldrsh %s, "+l.gm("x16"), descDst.W))
 			}
 		} else {
 			if descDst.Size == 8 {
-				lines = append(lines, fmt.Sprintf("    ldrsb %s, [x28, x16]", descDst.X))
+				lines = append(lines, fmt.Sprintf("    ldrsb %s, "+l.gm("x16"), descDst.X))
 			} else {
-				lines = append(lines, fmt.Sprintf("    ldrsb %s, [x28, x16]", descDst.W))
+				lines = append(lines, fmt.Sprintf("    ldrsb %s, "+l.gm("x16"), descDst.W))
 			}
 		}
 		return lines, nil
@@ -248,20 +248,20 @@ func (l *Arm64Lifter) liftMovsx(inst disasm.Instruction, nextPC uint64, lines []
 }
 
 // liftAlu handles ADD, SUB, AND, OR, XOR.
-func (l *Arm64Lifter) liftAlu(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
-	return l.liftArith(inst, nextPC, lines)
+func (l *Arm64Lifter) liftAlu(inst disasm.Instruction, nextPC uint64, fn *disasm.Function, lines []string) ([]string, error) {
+	return l.liftArith(inst, nextPC, fn, lines)
 }
 
 // liftCmpTest handles CMP and TEST.
-func (l *Arm64Lifter) liftCmpTest(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
-	return l.liftArith(inst, nextPC, lines)
+func (l *Arm64Lifter) liftCmpTest(inst disasm.Instruction, nextPC uint64, fn *disasm.Function, lines []string) ([]string, error) {
+	return l.liftArith(inst, nextPC, fn, lines)
 }
 
 // arithOperand puts a source operand of an ALU instruction in a register: the pinned register
 // itself for 32/64-bit registers, else xT/wT (8/16-bit values zero-extended; a memory operand's
 // address goes through x16). An immediate add/sub operand that fits ARM's 12-bit form is
 // returned as "#imm".
-func arithOperand(arg x86asm.Arg, size int, nextPC uint64, xT, wT string, immOK bool) ([]string, string, bool) {
+func (l *Arm64Lifter) arithOperand(arg x86asm.Arg, size int, nextPC uint64, xT, wT string, immOK bool) ([]string, string, bool) {
 	switch v := arg.(type) {
 	case x86asm.Reg:
 		d, ok := arm64RegMap[v]
@@ -294,7 +294,7 @@ func arithOperand(arg x86asm.Arg, size int, nextPC uint64, xT, wT string, immOK 
 		}
 		return loadImm32(wT, uint32(val)), wT, true
 	case x86asm.Mem:
-		rd := readMemTo(v, nextPC, size, xT, wT)
+		rd := l.readMemTo(v, nextPC, size, xT, wT)
 		if size == 8 {
 			return rd, xT, true
 		}
@@ -307,7 +307,7 @@ func arithOperand(arg x86asm.Arg, size int, nextPC uint64, xT, wT string, immOK 
 // 8/16-bit add/sub/cmp run on top-aligned operands (value << (32 - size)) so N, Z, C and V
 // come from the narrow result. The carry sense afterwards is carryAdd for ADD, carrySub for
 // SUB/CMP and carryClear for the logical operations (ARM ANDS/TST clear C and V).
-func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
+func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, fn *disasm.Function, lines []string) ([]string, error) {
 	op := inst.Inst.Op
 	dst := inst.Inst.Args[0]
 	src := inst.Inst.Args[1]
@@ -315,6 +315,11 @@ func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []
 	compareOnly := op == x86asm.CMP || op == x86asm.TEST
 	if compareOnly && !flags {
 		return lines, nil // nothing observable
+	}
+	if bmiPeep {
+		if out, ok := l.liftArithFast(inst, nextPC, fn, lines); ok {
+			return out, nil
+		}
 	}
 
 	size := 0
@@ -339,7 +344,7 @@ func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []
 	// holds a memory destination's address). b: the source (x0/w0 or the pinned register).
 	a := ""
 	if dstIsMem {
-		lines = append(lines, readMemTo(dstMem, nextPC, size, "x17", "w17")...)
+		lines = append(lines, l.readMemTo(dstMem, nextPC, size, "x17", "w17")...)
 		a = "w17"
 		if size == 8 {
 			a = "x17"
@@ -363,7 +368,7 @@ func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []
 	if dstIsReg {
 		bx, bw = "x16", "w16" // no address to keep
 	}
-	rb, b, ok := arithOperand(src, size, nextPC, bx, bw, isAddSub)
+	rb, b, ok := l.arithOperand(src, size, nextPC, bx, bw, isAddSub)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported alu src")...)
 		return lines, nil
@@ -444,13 +449,13 @@ func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []
 	if dstIsMem {
 		switch size {
 		case 1:
-			lines = append(lines, "    strb w17, [x28, x16]")
+			lines = append(lines, "    strb w17, "+l.gm("x16"))
 		case 2:
-			lines = append(lines, "    strh w17, [x28, x16]")
+			lines = append(lines, "    strh w17, "+l.gm("x16"))
 		case 4:
-			lines = append(lines, "    str w17, [x28, x16]")
+			lines = append(lines, "    str w17, "+l.gm("x16"))
 		default:
-			lines = append(lines, "    str x17, [x28, x16]")
+			lines = append(lines, "    str x17, "+l.gm("x16"))
 		}
 	} else if size < 4 {
 		wc, _ := writeRegFrom(dstReg, "x17", "w17")
@@ -462,7 +467,7 @@ func (l *Arm64Lifter) liftArith(inst disasm.Instruction, nextPC uint64, lines []
 // unaryOperand loads the operand of a one-operand integer instruction: the pinned register for
 // 32/64-bit registers, else x17/w17 (8/16-bit values zero-extended; x16 keeps a memory
 // operand's address). store writes a result register back.
-func unaryOperand(inst disasm.Instruction, nextPC uint64) (load []string, val string, size int,
+func (l *Arm64Lifter) unaryOperand(inst disasm.Instruction, nextPC uint64) (load []string, val string, size int,
 	store func(res string) []string, ok bool) {
 	switch v := inst.Inst.Args[0].(type) {
 	case x86asm.Reg:
@@ -490,7 +495,7 @@ func unaryOperand(inst disasm.Instruction, nextPC uint64) (load []string, val st
 		}, true
 	case x86asm.Mem:
 		size = defMemSz(inst)
-		load = readMemTo(v, nextPC, size, "x17", "w17")
+		load = l.readMemTo(v, nextPC, size, "x17", "w17")
 		val = "w17"
 		if size == 8 {
 			val = "x17"
@@ -498,11 +503,11 @@ func unaryOperand(inst disasm.Instruction, nextPC uint64) (load []string, val st
 		return load, val, size, func(res string) []string {
 			switch size {
 			case 1:
-				return []string{fmt.Sprintf("    strb %s, [x28, x16]", res)}
+				return []string{fmt.Sprintf("    strb %s, "+l.gm("x16"), res)}
 			case 2:
-				return []string{fmt.Sprintf("    strh %s, [x28, x16]", res)}
+				return []string{fmt.Sprintf("    strh %s, "+l.gm("x16"), res)}
 			}
-			return []string{fmt.Sprintf("    str %s, [x28, x16]", res)}
+			return []string{fmt.Sprintf("    str %s, "+l.gm("x16"), res)}
 		}, true
 	}
 	return nil, "", 0, nil, false
@@ -511,7 +516,7 @@ func unaryOperand(inst disasm.Instruction, nextPC uint64) (load []string, val st
 // liftIncDec handles INC and DEC. They do not change CF: 8/16-bit results set N/Z/V with
 // SETF8/SETF16 (which keep C); 32/64-bit ADDS/SUBS are followed by restoring C when CF is live.
 func (l *Arm64Lifter) liftIncDec(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
-	load, val, size, store, ok := unaryOperand(inst, nextPC)
+	load, val, size, store, ok := l.unaryOperand(inst, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported inc/dec operand")...)
 		return lines, nil
@@ -553,7 +558,7 @@ func (l *Arm64Lifter) liftIncDec(inst disasm.Instruction, nextPC uint64, lines [
 // liftNegNot handles NEG and NOT. NEGS leaves C = (x == 0) = !CF (carrySub); 8/16-bit NEG runs
 // on the top-aligned value so N/Z/C/V are those of the narrow result.
 func (l *Arm64Lifter) liftNegNot(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
-	load, val, size, store, ok := unaryOperand(inst, nextPC)
+	load, val, size, store, ok := l.unaryOperand(inst, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported neg/not operand")...)
 		return lines, nil
@@ -597,7 +602,7 @@ func (l *Arm64Lifter) liftNegNot(inst disasm.Instruction, nextPC uint64, lines [
 // leaves carryAdd.
 func (l *Arm64Lifter) liftShift(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
 	op := inst.Inst.Op
-	load, val, size, store, ok := unaryOperand(inst, nextPC)
+	load, val, size, store, ok := l.unaryOperand(inst, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, fmt.Sprintf("unsupported %s operand", strings.ToLower(op.String())))...)
 		return lines, nil
@@ -833,7 +838,7 @@ func (l *Arm64Lifter) mulOverflowFlags(lines []string) []string {
 }
 
 // mulSource puts a multiplier operand in x1/w1 (a pinned register is returned as is).
-func mulSource(arg x86asm.Arg, size int, nextPC uint64) ([]string, string, bool) {
+func (l *Arm64Lifter) mulSource(arg x86asm.Arg, size int, nextPC uint64) ([]string, string, bool) {
 	switch v := arg.(type) {
 	case x86asm.Reg:
 		d, ok := arm64RegMap[v]
@@ -850,9 +855,9 @@ func mulSource(arg x86asm.Arg, size int, nextPC uint64) ([]string, string, bool)
 		return rc, "w1", true
 	case x86asm.Mem:
 		if size == 8 {
-			return readMemTo(v, nextPC, 8, "x1", "w1"), "x1", true
+			return l.readMemTo(v, nextPC, 8, "x1", "w1"), "x1", true
 		}
-		return readMemTo(v, nextPC, size, "x1", "w1"), "w1", true
+		return l.readMemTo(v, nextPC, size, "x1", "w1"), "w1", true
 	}
 	return nil, "", false
 }
@@ -873,7 +878,7 @@ func (l *Arm64Lifter) liftImul(inst disasm.Instruction, nextPC uint64, lines []s
 			}
 			size = d.Size
 		}
-		ld, src, ok := mulSource(args[0], size, nextPC)
+		ld, src, ok := l.mulSource(args[0], size, nextPC)
 		if !ok {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported imul operand")...)
 			return lines, nil
@@ -923,7 +928,7 @@ func (l *Arm64Lifter) liftImul(inst disasm.Instruction, nextPC uint64, lines []s
 	// Two operands: dst = dst * src. Three operands: dst = src * imm.
 	var a, b string
 	if args[2] == nil {
-		ld, src, ok := mulSource(args[1], size, nextPC)
+		ld, src, ok := l.mulSource(args[1], size, nextPC)
 		if !ok {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported imul src")...)
 			return lines, nil
@@ -942,7 +947,7 @@ func (l *Arm64Lifter) liftImul(inst disasm.Instruction, nextPC uint64, lines []s
 		}
 	} else {
 		imm, okImm := args[2].(x86asm.Imm)
-		ld, src, ok := mulSource(args[1], size, nextPC)
+		ld, src, ok := l.mulSource(args[1], size, nextPC)
 		if !okImm || !ok {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported imul operands")...)
 			return lines, nil
@@ -1000,7 +1005,7 @@ func (l *Arm64Lifter) liftMul(inst disasm.Instruction, nextPC uint64, lines []st
 		}
 		size = d.Size
 	}
-	ld, src, ok := mulSource(inst.Inst.Args[0], size, nextPC)
+	ld, src, ok := l.mulSource(inst.Inst.Args[0], size, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported mul operand")...)
 		return lines, nil
@@ -1071,19 +1076,21 @@ func (l *Arm64Lifter) liftDiv(inst disasm.Instruction, nextPC uint64, lines []st
 				lines = append(lines, "    bfi x19, x0, #0, #16")
 				lines = append(lines, "    bfi x22, x1, #0, #16")
 			case 4:
-				lines = append(lines, fmt.Sprintf("    %s w16, w19, %s", divOp, desc.W))
-				lines = append(lines, fmt.Sprintf("    msub w22, w16, %s, w19", desc.W))
-				lines = append(lines, "    mov w19, w16")
+				if isSigned {
+					lines = append(lines, fmt.Sprintf("    sxtw x17, %s", desc.W))
+				} else {
+					lines = append(lines, fmt.Sprintf("    mov w17, %s", desc.W))
+				}
+				lines = append(lines, div32Lines(divOp)...)
 			default: // 8
-				lines = append(lines, fmt.Sprintf("    %s x16, x19, %s", divOp, desc.X))
-				lines = append(lines, fmt.Sprintf("    msub x22, x16, %s, x19", desc.X))
-				lines = append(lines, "    mov x19, x16")
+				lines = append(lines, fmt.Sprintf("    mov x17, %s", desc.X))
+				lines = append(lines, l.div64Lines(isSigned)...)
 			}
 			return lines, nil
 		}
 	} else if mem, ok := inst.Inst.Args[0].(x86asm.Mem); ok {
 		sz := defMemSz(inst)
-		lines = append(lines, readMemTo(mem, nextPC, sz, "x17", "w17")...)
+		lines = append(lines, l.readMemTo(mem, nextPC, sz, "x17", "w17")...)
 		switch sz {
 		case 1:
 			if isSigned {
@@ -1107,18 +1114,132 @@ func (l *Arm64Lifter) liftDiv(inst disasm.Instruction, nextPC uint64, lines []st
 			lines = append(lines, "    bfi x19, x0, #0, #16")
 			lines = append(lines, "    bfi x22, x1, #0, #16")
 		case 4:
-			lines = append(lines, fmt.Sprintf("    %s w16, w19, w17", divOp))
-			lines = append(lines, "    msub w22, w16, w17, w19")
-			lines = append(lines, "    mov w19, w16")
+			if isSigned {
+				lines = append(lines, "    sxtw x17, w17")
+			} else {
+				lines = append(lines, "    mov w17, w17")
+			}
+			lines = append(lines, div32Lines(divOp)...)
 		default: // 8
-			lines = append(lines, fmt.Sprintf("    %s x16, x19, x17", divOp))
-			lines = append(lines, "    msub x22, x16, x17, x19")
-			lines = append(lines, "    mov x19, x16")
+			lines = append(lines, l.div64Lines(isSigned)...)
 		}
 		return lines, nil
 	}
 	lines = append(lines, "    brk #0 // unsupported div")
 	return lines, nil
+}
+
+// div64Lines divides the 128-bit RDX:RAX by the 64-bit divisor in x17: quotient to RAX, remainder to RDX.
+// #DE (divisor 0, or a quotient that does not fit 64 bits: unsigned RDX >= divisor, signed overflow incl.
+// INT64_MIN / -1) goes down the guest exception path, `brk #0` as UD2 does. When RDX is the zero (DIV) or
+// sign (IDIV) extension of RAX the single udiv/sdiv is used; otherwise a 64-step restoring division of
+// the magnitudes (IDIV: signs applied afterwards, remainder takes the dividend's sign). NZCV is clobbered
+// (undefined after DIV). Scratch: x0-x7, x16.
+func (l *Arm64Lifter) div64Lines(signed bool) []string {
+	l.labelCounter++
+	n := l.labelCounter
+	lb := func(s string) string { return fmt.Sprintf("L_div64_%d_%s", n, s) }
+	var o []string
+	add := func(f string, a ...any) { o = append(o, fmt.Sprintf(f, a...)) }
+	loop := func(d string) { // rem x0 (< d on entry), quotient/dividend low x1; d = divisor register
+		add("    mov w2, #64")
+		add("%s:", lb("loop"))
+		add("    lsr x3, x0, #63")
+		add("    extr x0, x0, x1, #63")
+		add("    lsl x1, x1, #1")
+		add("    cmp x0, %s", d)
+		add("    cset w4, hs")
+		add("    orr w4, w4, w3")
+		add("    cbz w4, %s", lb("nosub"))
+		add("    sub x0, x0, %s", d)
+		add("    orr x1, x1, #1")
+		add("%s:", lb("nosub"))
+		add("    subs w2, w2, #1")
+		add("    b.ne %s", lb("loop"))
+	}
+	add("    cbz x17, %s", lb("de"))
+	if !signed {
+		add("    cmp x22, x17")
+		add("    b.hs %s", lb("de"))
+		add("    cbnz x22, %s", lb("slow"))
+		add("    udiv x16, x19, x17")
+		add("    msub x22, x16, x17, x19")
+		add("    mov x19, x16")
+		add("    b %s", lb("done"))
+		add("%s:", lb("slow"))
+		add("    mov x0, x22")
+		add("    mov x1, x19")
+		loop("x17")
+		add("    mov x19, x1")
+		add("    mov x22, x0")
+	} else {
+		add("    asr x0, x19, #63")
+		add("    cmp x22, x0")
+		add("    b.ne %s", lb("slow"))
+		add("    cmn x17, #1")
+		add("    b.ne %s", lb("fast"))
+		add("    mov x1, #1")
+		add("    lsl x1, x1, #63")
+		add("    cmp x19, x1")
+		add("    b.eq %s", lb("de"))
+		add("%s:", lb("fast"))
+		add("    sdiv x16, x19, x17")
+		add("    msub x22, x16, x17, x19")
+		add("    mov x19, x16")
+		add("    b %s", lb("done"))
+		add("%s:", lb("slow"))
+		add("    asr x5, x22, #63") // dividend sign mask
+		add("    mov x0, x22")
+		add("    mov x1, x19")
+		add("    cbz x5, %s", lb("pos"))
+		add("    mvn x1, x1")
+		add("    mvn x0, x0")
+		add("    adds x1, x1, #1")
+		add("    adc x0, x0, xzr")
+		add("%s:", lb("pos"))
+		add("    asr x6, x17, #63") // divisor sign mask
+		add("    eor x7, x17, x6")
+		add("    sub x7, x7, x6") // |divisor| (2^63 for INT64_MIN, fine unsigned)
+		add("    cmp x0, x7")
+		add("    b.hs %s", lb("de"))
+		loop("x7")
+		add("    eor x3, x5, x6") // quotient sign mask
+		add("    cbz x3, %s", lb("qpos"))
+		add("    mov x2, #1")
+		add("    lsl x2, x2, #63")
+		add("    cmp x1, x2")
+		add("    b.hi %s", lb("de"))
+		add("    b %s", lb("apply"))
+		add("%s:", lb("qpos"))
+		add("    tbnz x1, #63, %s", lb("de"))
+		add("%s:", lb("apply"))
+		add("    eor x1, x1, x3")
+		add("    sub x1, x1, x3")
+		add("    eor x0, x0, x5")
+		add("    sub x0, x0, x5")
+		add("    mov x19, x1")
+		add("    mov x22, x0")
+	}
+	add("    b %s", lb("done"))
+	add("%s:", lb("de"))
+	add("    brk #0 // #DE: divide error")
+	add("%s:", lb("done"))
+	return o
+}
+
+// div32Lines divides EDX:EAX by the 32-bit divisor already extended to 64 bits in x17 (zero-extended for DIV,
+// sign-extended for IDIV): quotient to EAX, remainder to EDX, both zero-extending their registers. The dividend is
+// the full 64-bit EDX:EAX; dividing EAX alone was wrong whenever EDX was not its zero/sign extension. Scratch: x0, x1,
+// x16. (The 64-bit form is div64Lines.)
+func div32Lines(divOp string) []string {
+	return []string{
+		"    mov w16, w19",
+		"    orr x16, x16, x22, lsl #32",
+		fmt.Sprintf("    %s x0, x16, x17", divOp),
+		"    msub x1, x0, x17, x16",
+		"    mov w19, w0",
+		"    mov w22, w1",
+	}
 }
 
 // liftXadd handles XADD: TEMP = DEST + SRC; SRC = DEST; DEST = TEMP, with ADD flags (8/16-bit
@@ -1333,7 +1454,7 @@ func (l *Arm64Lifter) liftAdcSbb(inst disasm.Instruction, nextPC uint64, isSbb b
 	// a: destination value in x17/w17 (zero-extended for 8/16-bit); x16 keeps a memory
 	// destination's address. b: source value in x0/w0 (zero-extended for 8/16-bit).
 	if dstIsMem {
-		lines = append(lines, readMemTo(dstMem, nextPC, size, "x17", "w17")...)
+		lines = append(lines, l.readMemTo(dstMem, nextPC, size, "x17", "w17")...)
 	} else if size < 4 {
 		rc, _ := readRegTo(dstReg, "x17", "w17")
 		lines = append(lines, rc...)
@@ -1371,7 +1492,7 @@ func (l *Arm64Lifter) liftAdcSbb(inst disasm.Instruction, nextPC uint64, isSbb b
 			lines = append(lines, l.emitUnsupported(inst, "adc/sbb mem, mem")...)
 			return lines, nil
 		}
-		lines = append(lines, readMemTo(v, nextPC, size, "x0", "w0")...)
+		lines = append(lines, l.readMemTo(v, nextPC, size, "x0", "w0")...)
 	default:
 		lines = append(lines, l.emitUnsupported(inst, "unsupported adc/sbb source")...)
 		return lines, nil
@@ -1475,13 +1596,13 @@ func (l *Arm64Lifter) liftAdcSbb(inst disasm.Instruction, nextPC uint64, isSbb b
 	if dstIsMem {
 		switch size {
 		case 1:
-			lines = append(lines, fmt.Sprintf("    strb %s, [x28, x16]", res))
+			lines = append(lines, fmt.Sprintf("    strb %s, "+l.gm("x16"), res))
 		case 2:
-			lines = append(lines, fmt.Sprintf("    strh %s, [x28, x16]", res))
+			lines = append(lines, fmt.Sprintf("    strh %s, "+l.gm("x16"), res))
 		case 4:
-			lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", res))
+			lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), res))
 		default:
-			lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", resX))
+			lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), resX))
 		}
 	} else {
 		wc, _ := writeRegFrom(dstReg, resX, "w"+res[1:])
@@ -1530,7 +1651,7 @@ func (l *Arm64Lifter) liftBt(inst disasm.Instruction, nextPC uint64, lines []str
 		}
 		store = func() []string {
 			st := map[int]string{1: "strb", 2: "strh", 4: "str", 8: "str"}[size]
-			return []string{fmt.Sprintf("    %s %s, [x28, x16]", st, v)}
+			return []string{fmt.Sprintf("    %s %s, "+l.gm("x16"), st, v)}
 		}
 	default:
 		lines = append(lines, l.emitUnsupported(inst, "unsupported bt operand")...)
@@ -1570,7 +1691,7 @@ func (l *Arm64Lifter) liftBt(inst disasm.Instruction, nextPC uint64, lines []str
 	}
 	if _, isMem := dst.(x86asm.Mem); isMem {
 		ld := map[int]string{1: "ldrb", 2: "ldrh", 4: "ldr", 8: "ldr"}[size]
-		lines = append(lines, fmt.Sprintf("    %s %s, [x28, x16]", ld, v))
+		lines = append(lines, fmt.Sprintf("    %s %s, "+l.gm("x16"), ld, v))
 	}
 
 	if !inst.CarryDead {
@@ -1619,7 +1740,7 @@ func (l *Arm64Lifter) liftMovbe(inst disasm.Instruction, nextPC uint64, lines []
 		if mem, okMem := src.(x86asm.Mem); okMem {
 			descDst, okDesc := arm64RegMap[dstReg]
 			if okDesc {
-				lines = append(lines, readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
+				lines = append(lines, l.readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
 				switch descDst.Size {
 				case 2:
 					lines = append(lines, "    rev16 w16, w16")
@@ -1650,7 +1771,7 @@ func (l *Arm64Lifter) liftMovbe(inst disasm.Instruction, nextPC uint64, lines []
 				default: // 8
 					lines = append(lines, "    rev x17, x17")
 				}
-				lines = append(lines, writeMemFrom(mem, nextPC, descSrc.Size, "x17", "w17")...)
+				lines = append(lines, l.writeMemFrom(mem, nextPC, descSrc.Size, "x17", "w17")...)
 				return lines, nil
 			}
 		}
@@ -1672,17 +1793,28 @@ const guestTscFreq = 2130000000
 // safe.
 // Flags are not touched. Scratch: x0-x2, x16, x17.
 func (l *Arm64Lifter) liftRdtsc(lines []string) []string {
+	// Fast path: the counter runs at 24 MHz on every Apple silicon part, where floor(v * 2.13e9 / 24e6) is exactly
+	// (v * 355) >> 2: mul + umulh + extr, no division, and the 128-bit product cannot overflow at any uptime.
+	// Any other cntfrq takes the divmod form below (cbz skips it; no flags are touched).
 	lines = append(lines, "    mrs x16, cntvct_el0")
 	lines = append(lines, "    mrs x17, cntfrq_el0")
+	lines = append(lines, "    mov x2, #355")
+	lines = append(lines, "    mul x0, x16, x2")
+	lines = append(lines, "    umulh x1, x16, x2")
+	lines = append(lines, "    extr x0, x1, x0, #2")
+	lines = append(lines, loadImm64("x2", 24000000)...)
+	lines = append(lines, "    sub x2, x17, x2")
+	lines = append(lines, "    cbz x2, 1f")
 	lines = append(lines, "    udiv x0, x16, x17")
 	lines = append(lines, "    msub x1, x0, x17, x16")
 	lines = append(lines, loadImm64("x2", guestTscFreq)...)
 	lines = append(lines, "    mul x0, x0, x2")
 	lines = append(lines, "    mul x1, x1, x2")
 	lines = append(lines, "    udiv x1, x1, x17")
-	lines = append(lines, "    add x16, x0, x1")
-	lines = append(lines, "    mov w19, w16")
-	lines = append(lines, "    lsr x16, x16, #32")
+	lines = append(lines, "    add x0, x0, x1")
+	lines = append(lines, "1:")
+	lines = append(lines, "    mov w19, w0")
+	lines = append(lines, "    lsr x16, x0, #32")
 	lines = append(lines, "    mov w22, w16")
 	return lines
 }
@@ -1696,13 +1828,13 @@ func (l *Arm64Lifter) liftRdtscp(lines []string) []string {
 }
 
 // bitSource loads the source of a bit-count instruction into x0/w0, zero-extended.
-func bitSource(arg x86asm.Arg, size int, nextPC uint64) ([]string, bool) {
+func (l *Arm64Lifter) bitSource(arg x86asm.Arg, size int, nextPC uint64) ([]string, bool) {
 	switch v := arg.(type) {
 	case x86asm.Reg:
 		rc, ok := readRegTo(v, "x0", "w0")
 		return rc, ok
 	case x86asm.Mem:
-		return readMemTo(v, nextPC, size, "x0", "w0"), true
+		return l.readMemTo(v, nextPC, size, "x0", "w0"), true
 	}
 	return nil, false
 }
@@ -1717,7 +1849,7 @@ func (l *Arm64Lifter) liftPopcnt(inst disasm.Instruction, nextPC uint64, lines [
 		return lines, nil
 	}
 	sz := descDst.Size
-	ld, ok := bitSource(inst.Inst.Args[1], sz, nextPC)
+	ld, ok := l.bitSource(inst.Inst.Args[1], sz, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported popcnt src")...)
 		return lines, nil
@@ -1765,7 +1897,7 @@ func (l *Arm64Lifter) liftBitScan(inst disasm.Instruction, nextPC uint64, lines 
 	}
 	sz := d.Size
 	bits := 8 * sz
-	ld, ok := bitSource(inst.Inst.Args[1], sz, nextPC)
+	ld, ok := l.bitSource(inst.Inst.Args[1], sz, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported bit scan src")...)
 		return lines, nil
@@ -1838,7 +1970,7 @@ func (l *Arm64Lifter) liftBextr(inst disasm.Instruction, nextPC uint64, lines []
 	bits := 8 * sz
 	// Read the control register first: dst may alias it.
 	lines = append(lines, fmt.Sprintf("    ubfx w1, %s, #0, #8", descCtrl.W), fmt.Sprintf("    ubfx w2, %s, #8, #8", descCtrl.W))
-	ld, ok := bitSource(inst.Inst.Args[1], sz, nextPC)
+	ld, ok := l.bitSource(inst.Inst.Args[1], sz, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported bextr src")...)
 		return lines, nil
@@ -1997,7 +2129,7 @@ func (l *Arm64Lifter) liftAndn(inst disasm.Instruction, nextPC uint64, lines []s
 			s2 = d2.X
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
-		lines = append(lines, readMemTo(mem, nextPC, sz, "x17", "w17")...)
+		lines = append(lines, l.readMemTo(mem, nextPC, sz, "x17", "w17")...)
 		s2 = r + "17"
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported andn src2")...)
@@ -2016,8 +2148,10 @@ func (l *Arm64Lifter) liftAndn(inst disasm.Instruction, nextPC uint64, lines []s
 	return lines, nil
 }
 
-// liftFlagsOp handles CLC, STC, CMC, LAHF, SAHF in terms of the tracked carry sense.
-// LAHF stores AF = PF = 0 (not modeled); SAHF keeps OF (V), as x86 does.
+// liftFlagsOp handles CLC, STC, CMC, LAHF, SAHF in terms of the tracked carry sense. LAHF
+// reads PF and AF from the lazy bytes (PF from V after an FP compare); SAHF writes them when
+// they are live and keeps OF (V), as x86 does. FEX: OpcodeDispatcher.cpp SAHFOp:1187,
+// LAHFOp:1200.
 func (l *Arm64Lifter) liftFlagsOp(inst disasm.Instruction, lines []string) ([]string, error) {
 	switch inst.Inst.Op {
 	case x86asm.CLC:
@@ -2032,24 +2166,25 @@ func (l *Arm64Lifter) liftFlagsOp(inst disasm.Instruction, lines []string) ([]st
 			l.cpol = carryAdd
 		}
 	case x86asm.LAHF:
-		// AH = SF:ZF:0:AF:0:PF:1:CF. AF and PF are not modelled (0 here; PF exists only after FP
-		// compares, in V). Evidence from the lifted TLOU and U4 listings: every PF reader
-		// (JP/JNP/SETP/CMOVP) follows a (V)(U)COMIS or FUCOMI(P); the AF/PF consumers are clang's
-		// LAHF ... SAHF pairs around an overflow check (2 TLOU / 5 U4 sites, AH only restored)
-		// and one PUSHFQ in a context save. None reads AF or PF of an integer operation.
+		// AH = SF:ZF:0:AF:0:PF:1:CF.
 		lines = append(lines,
 			"    cset w0, mi",
 			"    cset w1, eq",
 			fmt.Sprintf("    cset w2, %s", l.carryCond(true)),
 			"    orr w0, w2, w0, lsl #7",
 			"    orr w0, w0, w1, lsl #6",
-			"    orr w0, w0, #2",
-			"    bfi x19, x0, #8, #8")
+			"    orr w0, w0, #2")
+		lines = append(lines, l.flagBitsPFAF(inst)...)
+		lines = append(lines, "    bfi x19, x0, #8, #8")
 	case x86asm.SAHF:
 		lines = append(lines,
 			"    ubfx w0, w19, #8, #8", // AH
 			"    rmif x0, #4, #12",     // N = SF (bit 7), Z = ZF (bit 6)
 			"    rmif x0, #63, #2")     // C = CF (bit 0)
+		if !inst.ParityDead || !inst.AdjustDead {
+			lines = append(lines, l.emitLoadCtxPtr("x17")...)
+			lines = append(lines, storeFlagBitsPFAF(inst, "x17")...)
+		}
 		l.cpol = carryAdd
 	}
 	return lines, nil
@@ -2059,8 +2194,8 @@ func (l *Arm64Lifter) liftFlagsOp(inst disasm.Instruction, lines []string) ([]st
 func (l *Arm64Lifter) liftLeave(lines []string) []string {
 	// RSP is x26, RBP is x25
 	lines = append(lines,
-		"    mov x26, x25",        // mov rsp, rbp
-		"    ldr x25, [x28, x26]", // pop rbp
+		"    mov x26, x25",          // mov rsp, rbp
+		"    ldr x25, "+l.gm("x26"), // pop rbp
 		"    add x26, x26, #8",
 	)
 	return lines
@@ -2098,7 +2233,7 @@ func (l *Arm64Lifter) liftShldShrd(inst disasm.Instruction, nextPC uint64, lines
 		lines = append(lines, l.emitUnsupported(inst, "shld/shrd count")...)
 		return lines, nil
 	}
-	load, val, size, store, ok := unaryOperand(inst, nextPC)
+	load, val, size, store, ok := l.unaryOperand(inst, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported shld/shrd dst")...)
 		return lines, nil
@@ -2177,7 +2312,7 @@ func (l *Arm64Lifter) liftEnter(inst disasm.Instruction, lines []string) []strin
 	// push rbp:
 	lines = append(lines,
 		"    sub  x26, x26, #8",
-		"    str  x25, [x28, x26]",
+		"    str  x25, "+l.gm("x26"),
 	)
 	if level == 0 {
 		lines = append(lines, "    mov  x25, x26")
@@ -2186,14 +2321,14 @@ func (l *Arm64Lifter) liftEnter(inst disasm.Instruction, lines []string) []strin
 		for i := 1; i < level; i++ {
 			lines = append(lines,
 				fmt.Sprintf("    sub  x17, x25, #%d", i*8),
-				"    ldr  x17, [x28, x17]",
+				"    ldr  x17, "+l.gm("x17"),
 				"    sub  x26, x26, #8",
-				"    str  x17, [x28, x26]",
+				"    str  x17, "+l.gm("x26"),
 			)
 		}
 		lines = append(lines,
 			"    sub  x26, x26, #8",
-			"    str  x16, [x28, x26]",
+			"    str  x16, "+l.gm("x26"),
 			"    mov  x25, x16",
 		)
 	}
@@ -2216,7 +2351,7 @@ func (l *Arm64Lifter) liftEnter(inst disasm.Instruction, lines []string) []strin
 // change (RCL: OF = MSB(result) ^ CF after; RCR: OF = MSB(dst) ^ CF before), inserted with RMIF.
 func (l *Arm64Lifter) liftRclRcr(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
 	op := inst.Inst.Op
-	load, val, size, store, ok := unaryOperand(inst, nextPC)
+	load, val, size, store, ok := l.unaryOperand(inst, nextPC)
 	if !ok {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported rcl/rcr operand")...)
 		return lines, nil
@@ -2348,13 +2483,13 @@ func (l *Arm64Lifter) liftCrc32(inst disasm.Instruction, nextPC uint64, lines []
 		lines = append(lines, computeEffAddr(mem, nextPC, "x17")...)
 		switch srcSize {
 		case 1:
-			lines = append(lines, "    ldrb w16, [x28, x17]")
+			lines = append(lines, "    ldrb w16, "+l.gm("x17"))
 		case 2:
-			lines = append(lines, "    ldrh w16, [x28, x17]")
+			lines = append(lines, "    ldrh w16, "+l.gm("x17"))
 		case 4:
-			lines = append(lines, "    ldr  w16, [x28, x17]")
+			lines = append(lines, "    ldr  w16, "+l.gm("x17"))
 		case 8:
-			lines = append(lines, "    ldr  x16, [x28, x17]")
+			lines = append(lines, "    ldr  x16, "+l.gm("x17"))
 		}
 	}
 
@@ -2407,7 +2542,7 @@ func (l *Arm64Lifter) liftStr(inst disasm.Instruction, nextPC uint64, lines []st
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 		lines = append(lines,
 			"    mov  w17, #0x40",
-			"    strh w17, [x28, x16]",
+			"    strh w17, "+l.gm("x16"),
 		)
 		return lines, nil
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 func TestFunctionSymbols(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)
@@ -31,7 +31,7 @@ func TestFunctionSymbols(t *testing.T) {
 }
 
 func TestLinearSweepAllFunctions(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)
@@ -45,11 +45,11 @@ func TestLinearSweepAllFunctions(t *testing.T) {
 			limit := sym.Address + sym.Size
 			hasErr := false
 			for pc < limit {
-				if pc >= uint64(len(loaded.MemoryImage)) {
+				if !loaded.MemoryImage.Contains(pc) {
 					hasErr = true
 					break
 				}
-				inst, err := x86asm.Decode(loaded.MemoryImage[pc:], 64)
+				inst, err := x86asm.Decode(loaded.MemoryImage.From(pc), 64)
 				if err != nil || inst.Len == 0 {
 					hasErr = true
 					break

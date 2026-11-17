@@ -339,3 +339,13 @@ func TestBundleDylibDependenciesRpathAndLoaderPath(t *testing.T) {
 	}
 }
 
+
+func TestParseArgsExcludeModule(t *testing.T) {
+	cfg, err := ParseArgs([]string{"-exclude-module", "a.prx", "--exclude-module=b,c", "game.elf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.ExcludeModules, "|"); got != "a.prx|b|c" || cfg.ElfPath != "game.elf" {
+		t.Fatalf("%q %q", got, cfg.ElfPath)
+	}
+}

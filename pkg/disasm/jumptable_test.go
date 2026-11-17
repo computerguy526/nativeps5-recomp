@@ -54,7 +54,7 @@ func assembleClangSwitch(img []byte) (entry, case0, case1, case2, def, table uin
 
 func switchTestELF(img []byte) *elfloader.LoadedELF {
 	return &elfloader.LoadedELF{
-		MemoryImage:  img,
+		MemoryImage:  elfloader.NewImage(0, img),
 		ExecRanges:   []elfloader.AddrRange{{Start: 0, End: uint64(len(img))}},
 		SymbolByAddr: make(map[uint64]elfloader.Symbol),
 		Sections:     make(map[string]*elf.Section),
@@ -201,7 +201,7 @@ func TestLibExamplePrintfSwitchLeaders(t *testing.T) {
 	var window []Instruction
 	pc := uint64(0xb5d8)
 	for i := 0; i < 8; i++ {
-		inst, err := x86asm.Decode(loaded.MemoryImage[pc:], 64)
+		inst, err := x86asm.Decode(loaded.MemoryImage.From(pc), 64)
 		if err != nil {
 			t.Fatal(err)
 		}

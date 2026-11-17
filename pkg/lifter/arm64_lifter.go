@@ -2,6 +2,7 @@ package lifter
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -186,15 +187,67 @@ type Arm64Lifter struct {
 	knownFuncs    map[uint64]bool
 	currentFn     *disasm.Function
 	unsuppCounter uint64
-	labelCounter  uint64
+	uhCounter     uint64
+	// noComments omits the per-instruction "// 0xADDR: INST" line (the emitter drops it anyway
+	// unless -asm-comments); everything else is unchanged.
+	noComments   bool
+	labelCounter uint64
 	// cpol is how ARM C holds x86 CF at the current point of the block being lifted.
 	cpol carryPol
 	// noTSO turns off acquire/release for non-stack guest memory (see arm64_lifter_tso.go).
 	noTSO bool
+	// tsoRelax: entry addresses of functions lifted without acquire/release (SetTSORelax).
+	tsoRelax map[uint64]bool
+	// tsoElide selects which stack accesses stay plain (SetTSOElide); stackPriv holds the
+	// stack privacy bits of the instruction being lowered (disasm.Instruction.StackPriv).
+	tsoElide  TSOElideMode
+	stackPriv uint8
+	// roLoad: the instruction being lowered reads read-only image memory at a constant address
+	// (disasm.Instruction.ROLoad, honoured only with -ro-loads).
+	roLoad bool
+	// noPeephole turns off the per-instruction peephole pass and the folded TSO access forms
+	// (arm64_lifter_peephole.go; NPS5_NO_PEEPHOLE=1 or SetPeephole(false)), for A/B runs.
+	noPeephole bool
+	// allowUnsupported keeps unsupported instructions as stubs instead of failing the
+	// translation (see arm64_lifter_unsupported.go); unsupported lists the stubs emitted.
+	allowUnsupported bool
+	unsupported      []UnsupportedSite
+	// noVecLive turns the use of vector lane liveness off (see arm64_lifter_veclive.go).
+	noVecLive bool
+	vecZero   vecZero
+	// pfSpilled: the lowering of the instruction just lifted already emitted the block-exit
+	// PF store (see exitFlags); EndBlock must not repeat it.
+	pfSpilled bool
+	// cold holds the outlined bodies of the instructions lifted since TakeCold (cold-section outlining).
+	cold []string
+	// addrMode: how guest addresses map to host addresses (arm64_lifter_mem.go).
+	addrMode AddrMode
+	// x87F80: lower x87 to the 80-bit SoftFloat helpers (arm64_lifter_x87f80.go) instead of
+	// the stack of doubles (arm64_lifter_fpu.go).
+	x87F80 bool
+	// x87 optimisations (arm64_lifter_x87inline.go): inline fast paths and batching of runs of
+	// consecutive helper operations; both on by default, SetX87Opt turns them off (reference
+	// lowering of the differential test).
+	x87NoInline, x87NoBatch bool
+	x87Blk                  *disasm.BasicBlock
+	x87RunFirst, x87RunLast uint64
+	x87Rec                  *x87Recorder
+	ppSkipFrom, ppSkipUntil uint64 // push/pop run lowered at ppSkipFrom covers up to ppSkipUntil
+	fpRawNow                bool   // liftFpCmp: this compare is fused (arm64_lifter_fpfuse.go)
+	fpRawLive               bool   // NZCV holds the raw FCMP flags of a fused compare
+	// fuseSkip: the instruction at this address was folded into the one before (bmi-peep).
+	// cbzAt / cbzReg: the conditional branch at cbzAt tests this register against zero (CBZ/CBNZ)
+	// instead of reading flags; the compare before it loaded the register (bmi-peep).
+	fuseSkip uint64
+	cbzAt    uint64
+	cbzReg   string
+	// patchSites: conditional branches a run-time setting can force (arm64_lifter_patchpoint.go).
+	patchSites map[uint64]PatchSite
 }
 
-// x86 flags live in NZCV: N = SF, Z = ZF, V = OF (PF after an FP compare, the only place PF
-// is modeled), and C = CF in one of the senses below. The sense is tracked statically while a
+// x86 flags live in NZCV: N = SF, Z = ZF, V = OF (PF after an FP compare; PF and AF of integer
+// operations are lazy context bytes, see arm64_lifter_parity.go), and C = CF in one of the
+// senses below. The sense is tracked statically while a
 // block is lifted; at every block boundary it is carrySub.
 type carryPol uint8
 
@@ -210,6 +263,7 @@ const (
 // ResetFlags starts a block: C holds CF in the block-boundary sense (carrySub).
 func (l *Arm64Lifter) ResetFlags() {
 	if l != nil {
+		l.fpRawLive = false
 		l.cpol = carrySub
 	}
 }
@@ -227,10 +281,10 @@ func (l *Arm64Lifter) normalizeCarry() []string {
 // EndBlock returns the code that ends a block falling through from its last instruction:
 // the next block starts in the carrySub sense, so C is inverted when CF is live there.
 func (l *Arm64Lifter) EndBlock(last disasm.Instruction) []string {
-	if l == nil || last.CarryDead {
+	if l == nil {
 		return nil
 	}
-	return l.normalizeCarry()
+	return l.exitFlags(last)
 }
 
 // localLabel returns the label of the block of fn that starts at target, or "" when target
@@ -251,10 +305,11 @@ func (l *Arm64Lifter) branchTo(fn *disasm.Function, target uint64) []string {
 		return []string{"    b " + lbl}
 	}
 	if l.IsKnownFunc(target) {
-		return []string{"    ldr x30, [sp], #16", fmt.Sprintf("    b _fn_0x%x", target)}
+		return append(leaveFrame(), tailCallTo(target))
 	}
 	lines := loadImm64("x0", target)
-	return append(lines, "    ldr x30, [sp], #16", "    b _recomp_indirect_jump")
+	lines = append(lines, leaveFrame()...)
+	return append(lines, "    b _recomp_indirect_jump")
 }
 
 // fallsThrough reports whether control can continue after inst at the next instruction. The
@@ -389,8 +444,18 @@ func (l *Arm64Lifter) condFor(cc int) ([]string, string) {
 func NewArm64Lifter(knownFuncs map[uint64]bool) *Arm64Lifter {
 	return &Arm64Lifter{
 		knownFuncs: knownFuncs,
+		noPeephole: !peepholeDefault || os.Getenv("NPS5_NO_PEEPHOLE") != "",
+		tsoRelax:   parseTSORelax(os.Getenv("NPS5_TSO_RELAX_FUNCS")),
 	}
 }
+
+// peepholeDefault is the peephole setting of a new lifter. The shape tests of the individual
+// lowerings turn it off (they document the unoptimised text); the tests that execute lowerings
+// turn it on per lifter.
+var peepholeDefault = true
+
+// SetPeephole turns the peephole pass (and the folded TSO access forms) on or off.
+func (l *Arm64Lifter) SetPeephole(on bool) { l.noPeephole = !on }
 
 // emitUnsupported generates a diagnostic stub that calls recomp_unsupported_instruction.
 func (l *Arm64Lifter) emitUnsupported(inst disasm.Instruction, reason string) []string {
@@ -403,6 +468,7 @@ func (l *Arm64Lifter) emitUnsupported(inst disasm.Instruction, reason string) []
 		msg = disasm.InstString(inst.Inst)
 	}
 	l.unsuppCounter++
+	l.unsupported = append(l.unsupported, siteOf(inst, fnEntry, msg))
 	strLabel := fmt.Sprintf("L_unsupp_str_0x%x_%d", inst.Address, l.unsuppCounter)
 	skipLabel := fmt.Sprintf("L_unsupp_skip_0x%x_%d", inst.Address, l.unsuppCounter)
 
@@ -508,6 +574,8 @@ func unsupportedAddressing(inst x86asm.Inst) string {
 			continue
 		}
 		switch {
+		case inst.AddrSize == 32 && inst.Op == x86asm.LEA:
+			// No memory access: the lowering computes the 64-bit sum and keeps its low 32 bits.
 		case inst.AddrSize == 32:
 			return "addr32 memory operand (32-bit address wrap not lowered)"
 		case inst.Op == x86asm.MOV && inst.Opcode>>24 >= 0xa0 && inst.Opcode>>24 <= 0xa3:
@@ -687,40 +755,59 @@ func loadImmToReg(reg x86asm.Reg, val uint64) ([]string, bool) {
 	return lines, true
 }
 
-// readMemTo generates instructions to read memory into target ARM register.
-func readMemTo(mem x86asm.Mem, nextPC uint64, size int, targetX string, targetW string) []string {
-	var lines []string
-	lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
+// readMemTo generates instructions to read memory into target ARM register. Contract kept by
+// many lowerings: the guest address is left in x16 for a following access to the same operand.
+func (l *Arm64Lifter) readMemTo(mem x86asm.Mem, nextPC uint64, size int, targetX string, targetW string) []string {
+	return l.readMemToOpt(mem, nextPC, size, targetX, targetW, false)
+}
+
+// readMemToDirect is readMemTo for callers that do not use x16 afterwards: in identity mode a
+// plain [reg] / stack [reg+disp] operand is used in place, with no address computation.
+func (l *Arm64Lifter) readMemToDirect(mem x86asm.Mem, nextPC uint64, size int, targetX string, targetW string) []string {
+	return l.readMemToOpt(mem, nextPC, size, targetX, targetW, true)
+}
+
+func (l *Arm64Lifter) readMemToOpt(mem x86asm.Mem, nextPC uint64, size int, targetX string, targetW string, direct bool) []string {
+	ref, lines := l.memOperand(mem, nextPC, "x16", direct, l.plainStackOperand(mem))
 	switch size {
 	case 1:
-		lines = append(lines, fmt.Sprintf("    ldrb %s, [x28, x16]", targetW))
+		lines = append(lines, fmt.Sprintf("    ldrb %s, %s", targetW, ref))
 	case 2:
-		lines = append(lines, fmt.Sprintf("    ldrh %s, [x28, x16]", targetW))
+		lines = append(lines, fmt.Sprintf("    ldrh %s, %s", targetW, ref))
 	case 4:
-		lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", targetW))
+		lines = append(lines, fmt.Sprintf("    ldr %s, %s", targetW, ref))
 	default:
-		lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", targetX))
+		lines = append(lines, fmt.Sprintf("    ldr %s, %s", targetX, ref))
 	}
 	return lines
 }
 
-// writeMemFrom generates instructions to write from ARM register to guest memory.
-func writeMemFrom(mem x86asm.Mem, nextPC uint64, size int, srcX string, srcW string) []string {
-	var lines []string
+// writeMemFrom generates instructions to write from ARM register to guest memory (the guest
+// address is left in x16, or x17 when the data is in x16).
+func (l *Arm64Lifter) writeMemFrom(mem x86asm.Mem, nextPC uint64, size int, srcX string, srcW string) []string {
+	return l.writeMemFromOpt(mem, nextPC, size, srcX, srcW, false)
+}
+
+// writeMemFromDirect is writeMemFrom for callers that do not use the address register after.
+func (l *Arm64Lifter) writeMemFromDirect(mem x86asm.Mem, nextPC uint64, size int, srcX string, srcW string) []string {
+	return l.writeMemFromOpt(mem, nextPC, size, srcX, srcW, true)
+}
+
+func (l *Arm64Lifter) writeMemFromOpt(mem x86asm.Mem, nextPC uint64, size int, srcX string, srcW string, direct bool) []string {
 	addrReg := "x16"
 	if srcX == "x16" || srcW == "w16" {
 		addrReg = "x17"
 	}
-	lines = append(lines, computeEffAddr(mem, nextPC, addrReg)...)
+	ref, lines := l.memOperand(mem, nextPC, addrReg, direct, l.plainStackOperand(mem))
 	switch size {
 	case 1:
-		lines = append(lines, fmt.Sprintf("    strb %s, [x28, %s]", srcW, addrReg))
+		lines = append(lines, fmt.Sprintf("    strb %s, %s", srcW, ref))
 	case 2:
-		lines = append(lines, fmt.Sprintf("    strh %s, [x28, %s]", srcW, addrReg))
+		lines = append(lines, fmt.Sprintf("    strh %s, %s", srcW, ref))
 	case 4:
-		lines = append(lines, fmt.Sprintf("    str %s, [x28, %s]", srcW, addrReg))
+		lines = append(lines, fmt.Sprintf("    str %s, %s", srcW, ref))
 	default:
-		lines = append(lines, fmt.Sprintf("    str %s, [x28, %s]", srcX, addrReg))
+		lines = append(lines, fmt.Sprintf("    str %s, %s", srcX, ref))
 	}
 	return lines
 }
@@ -763,14 +850,40 @@ func invertArm64Cond(cond string) string {
 // LiftInstructionToBuf translates a single x86 instruction into ARM64 assembly instructions.
 func (l *Arm64Lifter) LiftInstructionToBuf(inst disasm.Instruction, nextPC uint64, fn *disasm.Function, dst []string) ([]string, error) {
 	start := len(dst)
+	l.pfSpilled = false
+	fpWasRaw := false
+	if fpCmpFuse {
+		if inst.FpRawIn {
+			l.fpRawLive = true
+		}
+		fpWasRaw = l.fpRawLive
+	}
+	l.stackPriv = inst.StackPriv
+	l.roLoad = roLoads && inst.ROLoad
 	lines, err := l.liftInstructionInternal(inst, nextPC, fn, dst)
+	if err == nil {
+		lines = l.parityPost(inst, nextPC, lines, start)
+	}
 	if err == nil && inst.Inst.Op == x86asm.CALL {
 		// Flags are dead after a call (System V ABI); any sense is consistent.
 		l.cpol = carrySub
 	}
+	if err == nil && l.x87F80 {
+		lines = x87AliasMmx(lines, start)
+	}
+	if err == nil && fpWasRaw {
+		lines = l.fpRawAfter(inst, lines, start)
+	}
 	if err == nil {
-		lines = fixUpperHalves(inst.Inst, lines, start, fn != nil && fn.UsesYmm)
-		if !l.noTSO {
+		if fn != nil && fn.VecLive && !l.noVecLive {
+			l.vecZero.begin(fn, inst.Address, nextPC)
+			lines = fixUpperHalvesLive(inst.Inst, lines, start, inst.VecDead, &l.vecZero, &l.uhCounter)
+			l.vecZero.update(lines[start:])
+		} else {
+			lines = fixUpperHalvesCtr(inst.Inst, lines, start, fn != nil && fn.UsesYmm, &l.uhCounter)
+		}
+		lines = l.peephole(lines, start)
+		if !l.noTSO && !(fn != nil && l.tsoRelax[fn.EntryAddr]) {
 			lines = l.applyTSO(inst, lines, start)
 		}
 	}
@@ -803,6 +916,37 @@ func vecArg0IsSource(op x86asm.Op) bool {
 //     upper half is live (YMM registers are caller-saved), so the scratch use is harmless.
 //     Restoring also makes legacy SSE instructions keep their destination's upper half.
 func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []string {
+	var ctr uint64
+	return fixUpperHalvesMode(inst, lines, start, ymmFn, false, 0, &ctr)
+}
+
+// fixUpperHalvesCtr is fixUpperHalves with the label counter owned by the caller (the lifter),
+// so the text of a chunk does not depend on what was lifted before it (parallel, cached chunks).
+func fixUpperHalvesCtr(inst x86asm.Inst, lines []string, start int, ymmFn bool, ctr *uint64) []string {
+	return fixUpperHalvesMode(inst, lines, start, ymmFn, false, 0, ctr)
+}
+
+// fixUpperHalvesLive is fixUpperHalves driven by vector lane liveness (dead: the lanes that
+// are dead after the instruction, disasm.Instruction.VecDead) instead of the per-function
+// "uses YMM" rule; see arm64_lifter_veclive.go.
+func fixUpperHalvesLive(inst x86asm.Inst, lines []string, start int, dead uint64, zero *vecZero, ctr *uint64) []string {
+	lines = append(lines[:start], vecLivePeephole(inst, lines[start:], dead, zero)...)
+	if inst.Op == x86asm.VZEROUPPER || inst.Op == x86asm.VZEROALL {
+		return lines // names v16-v31 as the upper halves themselves, not as scratch
+	}
+	return fixUpperHalvesMode(inst, lines, start, false, true, dead, ctr)
+}
+
+func fixUpperHalvesMode(inst x86asm.Inst, lines []string, start int, ymmFn, live bool, dead uint64, ctr *uint64) []string {
+	// liveU: the host registers v16-v31 whose guest upper half is live after the instruction.
+	var liveU uint32
+	if live {
+		for n := 0; n < 16; n++ {
+			if dead&disasm.VecLanes(n, disasm.VecU) == 0 {
+				liveU |= 1 << uint(16+n)
+			}
+		}
+	}
 	body := lines[start:]
 	var opnd, scratch uint32
 	for _, ln := range body {
@@ -824,7 +968,7 @@ func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []s
 			scratch |= 1 << uint(n)
 		}
 	}
-	if opnd == 0 && (scratch == 0 || !ymmFn) {
+	if opnd == 0 && (scratch == 0 || !(ymmFn || live)) {
 		return lines
 	}
 	// The upper halves the instruction legitimately reads or writes: those of its YMM operands
@@ -841,7 +985,7 @@ func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []s
 		}
 		if r >= x86asm.Y0 && r <= x86asm.Y15 {
 			legit |= 1 << (16 + uint(r-x86asm.Y0))
-		} else if i == 0 && vex && !vecArg0IsSource(inst.Op) && r >= x86asm.X0 && r <= x86asm.X15 {
+		} else if vex && ((i == 0 && !vecArg0IsSource(inst.Op)) || (i == 2 && isGatherOp(inst.Op))) && r >= x86asm.X0 && r <= x86asm.X15 {
 			legit |= 1 << (16 + uint(r-x86asm.X0))
 		}
 	}
@@ -852,15 +996,29 @@ func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []s
 	free := ^(reserved | scratch) & 0xffff0000
 	for n := 16; n < 32; n++ {
 		if scratch&reserved&(1<<uint(n)) == 0 {
-			continue
+			// Liveness: a scratch register that holds a live upper half moves to one that
+			// holds a dead one, if there is one (otherwise it is saved and restored below).
+			if !live || scratch&liveU&(1<<uint(n)) == 0 || free&^liveU == 0 {
+				continue
+			}
 		}
+		// Prefer a register whose upper half is dead (all of them without liveness).
+		pick := -1
 		for m := 31; m >= 16; m-- {
-			if free&(1<<uint(m)) != 0 {
-				free &^= 1 << uint(m)
-				rename[n] = m
-				scratch = scratch&^(1<<uint(n)) | 1<<uint(m)
+			if free&^liveU&(1<<uint(m)) != 0 {
+				pick = m
 				break
 			}
+		}
+		for m := 31; m >= 16 && pick < 0; m-- {
+			if free&(1<<uint(m)) != 0 {
+				pick = m
+			}
+		}
+		if pick >= 0 {
+			free &^= 1 << uint(pick)
+			rename[n] = pick
+			scratch = scratch&^(1<<uint(n)) | 1<<uint(pick)
 		}
 	}
 	for i := start; i < len(lines); i++ {
@@ -881,21 +1039,16 @@ func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []s
 		}
 		lines[i] = upperTokRe.ReplaceAllString(ln, "$1$2")
 	}
-	if !ymmFn || inst.Op == x86asm.VZEROUPPER || inst.Op == x86asm.VZEROALL {
+	if !(ymmFn || live) || inst.Op == x86asm.VZEROUPPER || inst.Op == x86asm.VZEROALL {
 		return lines
 	}
 
-	// 2. Save and restore the upper halves the lowering is not meant to change.
-	for _, ln := range lines[start:] {
-		f := strings.Fields(strings.TrimSpace(ln))
-		if len(f) == 0 || strings.HasPrefix(f[0], "//") {
-			continue
-		}
-		if f[0] == "ret" || f[0] == "br" || ((f[0] == "b" || strings.HasPrefix(f[0], "b.")) && len(f) > 1 && strings.HasPrefix(f[1], "L_fn_")) {
-			return lines // control leaves the instruction: no single restore point
-		}
-	}
+	// 2. Save and restore the upper halves the lowering is not meant to change (with
+	// liveness: only those that can still be read).
 	spill := (scratch | opnd) &^ legit
+	if live {
+		spill &= liveU
+	}
 	if spill == 0 {
 		return lines
 	}
@@ -923,9 +1076,85 @@ func fixUpperHalves(inst x86asm.Inst, lines []string, start int, ymmFn bool) []s
 		body = body[1:]
 	}
 	out = append(out, save...)
-	out = append(out, body...)
+	// Control may leave the lowering from the middle (ret, br, a branch to another block of the
+	// function): the saved uppers must be restored on that path too, before the transfer. The
+	// restore pops the save area, so a conditional exit is inverted around it and the path that
+	// stays in the lowering keeps its save area for the restore at the end.
+	for i, ln := range body {
+		if kind, label := controlLeaves(ln); kind != leaveNone {
+			// A function epilogue "ldr x30, [sp], #16" right before the exit reads the host
+			// stack: the restore must come before it, while the save area is on top.
+			if n := len(out); n > 0 && kind == leaveAlways && strings.TrimSpace(out[n-1]) == "ldr x30, [sp], #16" && i > 0 && body[i-1] == out[n-1] {
+				last := out[n-1]
+				out = append(out[:n-1], restore...)
+				out = append(out, last, ln)
+				continue
+			}
+			out = append(out, leaveWithRestore(ln, kind, label, restore, ctr)...)
+			continue
+		}
+		out = append(out, ln)
+	}
 	out = append(out, restore...)
 	return out
+}
+
+type leaveKind int
+
+const (
+	leaveNone leaveKind = iota
+	leaveAlways
+	leaveCond
+)
+
+// controlLeaves classifies an asm line that transfers control out of the instruction's
+// lowering: ret, br, branches to a block label of the function (L_fn_*) and to global symbols
+// (tail calls, the indirect-jump dispatcher).
+func controlLeaves(ln string) (leaveKind, string) {
+	if i := strings.Index(ln, "//"); i >= 0 {
+		ln = ln[:i]
+	}
+	f := strings.Fields(ln)
+	if len(f) == 0 {
+		return leaveNone, ""
+	}
+	op := f[0]
+	switch {
+	case op == "ret" || op == "br" || op == "braa" || op == "brab" || op == "retaa" || op == "retab":
+		return leaveAlways, ""
+	case op == "b" && len(f) > 1 && (strings.HasPrefix(f[1], "L_fn_") || strings.HasPrefix(f[1], "_")):
+		// A block of the function, a tail call (_fn_0x...) or the dispatcher.
+		return leaveAlways, f[1]
+	case (strings.HasPrefix(op, "b.") || op == "cbz" || op == "cbnz" || op == "tbz" || op == "tbnz") &&
+		strings.HasPrefix(f[len(f)-1], "L_fn_"):
+		return leaveCond, f[len(f)-1]
+	}
+	return leaveNone, ""
+}
+
+func leaveWithRestore(ln string, kind leaveKind, label string, restore []string, ctr *uint64) []string {
+	if kind == leaveAlways {
+		return append(append([]string(nil), restore...), ln)
+	}
+	code := ln
+	if i := strings.Index(code, "//"); i >= 0 {
+		code = code[:i]
+	}
+	f := strings.Fields(code)
+	*ctr++
+	skip := fmt.Sprintf("L_uh_skip_%d", *ctr)
+	var inv string
+	switch {
+	case strings.HasPrefix(f[0], "b."):
+		inv = fmt.Sprintf("    b.%s %s", invertArm64Cond(f[0][2:]), skip)
+	case f[0] == "cbz" || f[0] == "cbnz":
+		inv = fmt.Sprintf("    %s %s, %s", map[string]string{"cbz": "cbnz", "cbnz": "cbz"}[f[0]], strings.TrimSuffix(f[1], ","), skip)
+	default: // tbz, tbnz
+		inv = fmt.Sprintf("    %s %s, %s, %s", map[string]string{"tbz": "tbnz", "tbnz": "tbz"}[f[0]], strings.TrimSuffix(f[1], ","), strings.TrimSuffix(f[2], ","), skip)
+	}
+	out := []string{inv}
+	out = append(out, restore...)
+	return append(out, "    b "+label, skip+":")
 }
 
 func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC uint64, fn *disasm.Function, dst []string) ([]string, error) {
@@ -937,16 +1166,35 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	args := inst.Inst.Args
 	lines := dst
 
-	comment := fmt.Sprintf("    // 0x%x: %s", inst.Address, disasm.InstString(inst.Inst))
-	lines = append(lines, comment)
+	if !l.noComments {
+		// (about 8% of a translation spent formatting text the lean output drops again)
+		lines = append(lines, fmt.Sprintf("    // 0x%x: %s", inst.Address, disasm.InstString(inst.Inst)))
+	}
+
+	if l.fuseSkip != 0 && inst.Address == l.fuseSkip {
+		l.fuseSkip = 0
+		if !l.noComments {
+			lines = append(lines, "    // fused into the instruction above")
+		}
+		return lines, nil
+	}
 
 	if reason := unsupportedAddressing(inst.Inst); reason != "" {
 		lines = append(lines, l.emitUnsupported(inst, reason)...)
 		return lines, nil
 	}
 
+	lines = l.parityPre(inst, nextPC, lines)
+	lines = l.parityShiftCount(inst, lines)
+
 	if HasLockPrefix(inst.Inst) {
 		if out, ok := l.liftLocked(inst, nextPC, lines); ok {
+			return out, nil
+		}
+	}
+
+	if l.x87F80 {
+		if out, ok := l.liftX87F80(inst, nextPC, lines); ok {
 			return out, nil
 		}
 	}
@@ -957,15 +1205,15 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		lines = append(lines, "    nop")
 		return lines, nil
 
-	case x86asm.CLD:
-		// DF is not modelled: string instructions always run forward (DF = 0, as the System V
-		// ABI requires at calls).
-		lines = append(lines, "    nop")
-		return lines, nil
-
-	case x86asm.STD:
-		// DF = 1 (backward string operations) is not modelled; STD has no site in TLOU or U4.
-		lines = append(lines, l.emitUnsupported(inst, "std: backward string operations not lowered")...)
+	case x86asm.CLD, x86asm.STD:
+		// DF is guest state (GuestContext.df, 0 or 1) that the string instructions read. FEX
+		// keeps it the same way, as a stored stride (OpcodeDispatcher.cpp FLAGControlOp:1208).
+		lines = append(lines, l.emitLoadCtxPtr("x17")...)
+		if op == x86asm.STD {
+			lines = append(lines, "    mov w16, #1", fmt.Sprintf("    strb w16, [x17, #0x%x] // df", ctxDF))
+		} else {
+			lines = append(lines, fmt.Sprintf("    strb wzr, [x17, #0x%x] // df", ctxDF))
+		}
 		return lines, nil
 
 	case x86asm.CLC, x86asm.STC, x86asm.CMC, x86asm.LAHF, x86asm.SAHF:
@@ -1017,6 +1265,9 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 			return lines, nil
 		}
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
+		if inst.Inst.AddrSize == 32 {
+			lines = append(lines, "    mov w16, w16") // addr32: the effective address wraps at 4 GiB
+		}
 		if desc.Size == 4 {
 			lines = append(lines, fmt.Sprintf("    mov %s, w16", desc.W))
 		} else if desc.Size == 2 {
@@ -1027,10 +1278,10 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		return lines, nil
 
 	case x86asm.ADD, x86asm.SUB, x86asm.AND, x86asm.OR, x86asm.XOR:
-		return l.liftAlu(inst, nextPC, lines)
+		return l.liftAlu(inst, nextPC, fn, lines)
 
 	case x86asm.CMP, x86asm.TEST:
-		return l.liftCmpTest(inst, nextPC, lines)
+		return l.liftCmpTest(inst, nextPC, fn, lines)
 
 	case x86asm.INC, x86asm.DEC:
 		return l.liftIncDec(inst, nextPC, lines)
@@ -1113,6 +1364,11 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		return lines, nil
 
 	case x86asm.BSF, x86asm.TZCNT, x86asm.BSR, x86asm.LZCNT:
+		if bmiPeep {
+			if out, ok := l.liftBitScanFast(inst, nextPC, lines); ok {
+				return out, nil
+			}
+		}
 		return l.liftBitScan(inst, nextPC, lines)
 
 	case x86asm.JMP:
@@ -1121,16 +1377,16 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 			// A target outside the function is a tail call to a function (flags dead, so the
 			// liveness pass marks CF dead) or, for a target that is no function entry, an
 			// unknown continuation that starts in the block-boundary sense.
-			if !inst.CarryDead {
-				lines = append(lines, l.normalizeCarry()...)
-			}
+			lines = append(lines, l.exitFlags(inst)...)
 			lines = append(lines, l.branchTo(fn, target)...)
 			return lines, nil
 		}
 		// emitLocalJumpTable dispatches an indirect jump to a block of the function. The table
 		// targets start in the block-boundary carry sense, and the flags (which may be live into
-		// them) survive the dispatch: the range check saves and restores NZCV, the block compare
-		// chain uses EOR/CBNZ/B.
+		// them) survive the dispatch: it uses SUB/EOR and CBZ only, never NZCV. The target is
+		// reduced to its offset in the function once (x16), so a block compare is one or two
+		// instructions; a target outside the function matches no block and falls through to the
+		// global dispatch.
 		emitLocalJumpTable := func(targetReg string) {
 			if fn == nil || fn.EndAddr <= fn.EntryAddr {
 				return
@@ -1150,46 +1406,46 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 			if len(targets) == 0 {
 				return
 			}
-			if !inst.CarryDead {
-				lines = append(lines, l.normalizeCarry()...)
-			}
-			outside := fmt.Sprintf("L_fn_0x%x_outside_0x%x", fn.EntryAddr, inst.Address)
-			skipLocal := fmt.Sprintf("L_fn_0x%x_not_local_0x%x", fn.EntryAddr, inst.Address)
-			lines = append(lines, "    mrs x17, nzcv")
+			lines = append(lines, l.exitFlags(inst)...)
 			lines = append(lines, loadImm64("x16", fn.EntryAddr)...)
-			lines = append(lines, fmt.Sprintf("    cmp %s, x16", targetReg))
-			lines = append(lines, fmt.Sprintf("    b.lo %s", outside))
-			lines = append(lines, loadImm64("x16", fn.EndAddr)...)
-			lines = append(lines, fmt.Sprintf("    cmp %s, x16", targetReg))
-			lines = append(lines, fmt.Sprintf("    b.hs %s", outside))
-			lines = append(lines, "    msr nzcv, x17")
-
+			lines = append(lines, fmt.Sprintf("    sub x16, %s, x16", targetReg))
 			for _, blockAddr := range targets {
-				lines = append(lines, loadImm64("x16", blockAddr)...)
-				lines = append(lines, fmt.Sprintf("    eor x16, x16, %s", targetReg))
-				lines = append(lines, fmt.Sprintf("    cbz x16, L_fn_0x%x_loc_0x%x", fn.EntryAddr, blockAddr))
+				label := fmt.Sprintf("L_fn_0x%x_loc_0x%x", fn.EntryAddr, blockAddr)
+				off := blockAddr - fn.EntryAddr
+				switch {
+				case blockAddr < fn.EntryAddr || off >= 1<<24:
+					lines = append(lines, loadImm64("x17", off)...)
+					lines = append(lines, "    eor x17, x17, x16", "    cbz x17, "+label)
+				case off == 0:
+					lines = append(lines, "    cbz x16, "+label)
+				case off < 1<<12:
+					lines = append(lines, fmt.Sprintf("    sub x17, x16, #%d", off), "    cbz x17, "+label)
+				case off&0xfff == 0:
+					lines = append(lines, fmt.Sprintf("    sub x17, x16, #%d, lsl #12", off>>12), "    cbz x17, "+label)
+				default:
+					lines = append(lines, fmt.Sprintf("    sub x17, x16, #%d, lsl #12", off>>12),
+						fmt.Sprintf("    sub x17, x17, #%d", off&0xfff), "    cbz x17, "+label)
+				}
 			}
-			lines = append(lines, fmt.Sprintf("    b %s", skipLocal))
-			lines = append(lines, fmt.Sprintf("%s:", outside))
-			lines = append(lines, "    msr nzcv, x17")
-			lines = append(lines, fmt.Sprintf("%s:", skipLocal))
 		}
 
 		if reg, ok := args[0].(x86asm.Reg); ok {
 			if desc, okDesc := arm64RegMap[reg]; okDesc {
 				lines = append(lines, fmt.Sprintf("    mov x0, %s", desc.X))
+				lines = append(lines, l.indirectJumpPrefix(fn, inst)...)
 				emitLocalJumpTable("x0")
-				lines = append(lines, "    ldr x30, [sp], #16")
-				lines = append(lines, "    b _recomp_indirect_jump")
+				lines = append(lines, leaveFrame()...)
+				lines = append(lines, l.indirectJumpDispatch(fn, inst))
 				return lines, nil
 			}
 		}
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr x0, [x28, x16]")
+			lines = append(lines, "    ldr x0, "+l.gm("x16"))
+			lines = append(lines, l.indirectJumpPrefix(fn, inst)...)
 			emitLocalJumpTable("x0")
-			lines = append(lines, "    ldr x30, [sp], #16")
-			lines = append(lines, "    b _recomp_indirect_jump")
+			lines = append(lines, leaveFrame()...)
+			lines = append(lines, l.indirectJumpDispatch(fn, inst))
 			return lines, nil
 		}
 		lines = append(lines, "    brk #0 // unsupported indirect jmp")
@@ -1199,87 +1455,91 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		if rel, ok := args[0].(x86asm.Rel); ok {
 			target := uint64(int64(nextPC) + int64(rel))
 			lines = append(lines, "    sub x26, x26, #8")
-			lines = append(lines, loadImm64("x16", nextPC)...)
-			lines = append(lines, "    str x16, [x28, x26]")
+			lines = append(lines, loadImm64(raReg(), nextPC)...)
+			lines = append(lines, "    str "+raReg()+", "+l.gm("x26"))
 			if l.IsKnownFunc(target) {
 				lines = append(lines, fmt.Sprintf("    bl _fn_0x%x", target))
+			} else if lbl := localLabel(fn, target); lbl != "" && callModel == CallFlat {
+				lines = append(lines, flatLocalCall(lbl)...)
 			} else {
 				lines = append(lines, loadImm64("x0", target)...)
-				lines = append(lines, "    bl _recomp_indirect_call")
+				lines = indirectCallLines(lines)
 			}
 			return lines, nil
 		}
 		if reg, ok := args[0].(x86asm.Reg); ok {
 			if desc, okDesc := arm64RegMap[reg]; okDesc {
 				lines = append(lines, "    sub x26, x26, #8")
-				lines = append(lines, loadImm64("x16", nextPC)...)
-				lines = append(lines, "    str x16, [x28, x26]")
+				lines = append(lines, loadImm64(raReg(), nextPC)...)
+				lines = append(lines, "    str "+raReg()+", "+l.gm("x26"))
 				lines = append(lines, fmt.Sprintf("    mov x0, %s", desc.X))
-				lines = append(lines, "    bl _recomp_indirect_call")
+				lines = indirectCallLines(lines)
 				return lines, nil
 			}
 		}
 		if mem, ok := args[0].(x86asm.Mem); ok {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr x0, [x28, x16]")
+			lines = append(lines, "    ldr x0, "+l.gm("x16"))
 			lines = append(lines, "    sub x26, x26, #8")
-			lines = append(lines, loadImm64("x16", nextPC)...)
-			lines = append(lines, "    str x16, [x28, x26]")
-			lines = append(lines, "    bl _recomp_indirect_call")
+			lines = append(lines, loadImm64(raReg(), nextPC)...)
+			lines = append(lines, "    str "+raReg()+", "+l.gm("x26"))
+			lines = indirectCallLines(lines)
 			return lines, nil
 		}
 		lines = append(lines, "    brk #0 // unsupported indirect call")
 		return lines, nil
 
 	case x86asm.RET:
-		lines = append(lines, "    ldr x16, [x28, x26]")
-		lines = append(lines, "    add x26, x26, #8")
-		lines = append(lines, "    ldr x30, [sp], #16")
-		lines = append(lines, "    ret")
-		return lines, nil
+		return l.liftRet(inst, fn, 0, lines), nil
 
 	case x86asm.PUSH:
+		if out, ok := l.liftPushPopRun(inst, lines); ok {
+			return out, nil
+		}
 		if reg, ok := args[0].(x86asm.Reg); ok {
 			if reg == x86asm.RSP {
 				// PUSH RSP stores the value RSP had before the instruction.
-				lines = append(lines, "    sub x16, x26, #8", "    str x26, [x28, x16]", "    mov x26, x16")
+				lines = append(lines, "    sub x16, x26, #8", "    str x26, "+l.gm("x16"), "    mov x26, x16")
 				return lines, nil
 			}
 			if desc, okDesc := arm64RegMap[reg]; okDesc {
 				lines = append(lines, "    sub x26, x26, #8")
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x26]", desc.X))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x26"), desc.X))
 				return lines, nil
 			}
 		} else if imm, ok := args[0].(x86asm.Imm); ok {
 			lines = append(lines, "    sub x26, x26, #8")
 			lines = append(lines, loadImm64("x16", uint64(imm))...)
-			lines = append(lines, "    str x16, [x28, x26]")
+			lines = append(lines, "    str x16, "+l.gm("x26"))
 			return lines, nil
 		} else if mem, ok := args[0].(x86asm.Mem); ok {
-			lines = append(lines, readMemTo(mem, nextPC, 8, "x16", "w16")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, 8, "x16", "w16")...)
 			lines = append(lines, "    sub x26, x26, #8")
-			lines = append(lines, "    str x16, [x28, x26]")
+			lines = append(lines, "    str x16, "+l.gm("x26"))
 			return lines, nil
 		}
 		lines = append(lines, "    brk #0 // unsupported push")
 		return lines, nil
 
 	case x86asm.POP:
+		if out, ok := l.liftPushPopRun(inst, lines); ok {
+			return out, nil
+		}
 		if reg, ok := args[0].(x86asm.Reg); ok {
 			if reg == x86asm.RSP {
 				// POP RSP: RSP is the value loaded from the old top; the increment is lost.
-				lines = append(lines, "    ldr x26, [x28, x26]")
+				lines = append(lines, "    ldr x26, "+l.gm("x26"))
 				return lines, nil
 			}
 			if desc, okDesc := arm64RegMap[reg]; okDesc {
-				lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x26]", desc.X))
+				lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x26"), desc.X))
 				lines = append(lines, "    add x26, x26, #8")
 				return lines, nil
 			}
 		} else if mem, ok := args[0].(x86asm.Mem); ok {
-			lines = append(lines, "    ldr x16, [x28, x26]")
+			lines = append(lines, "    ldr x16, "+l.gm("x26"))
 			lines = append(lines, "    add x26, x26, #8")
-			lines = append(lines, writeMemFrom(mem, nextPC, 8, "x16", "w16")...)
+			lines = append(lines, l.writeMemFrom(mem, nextPC, 8, "x16", "w16")...)
 			return lines, nil
 		}
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pop")...)
@@ -1330,6 +1590,11 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		return l.liftMovlpsMovhps(inst, nextPC, lines)
 
 	case x86asm.BEXTR:
+		if bmiPeep {
+			if out, ok := l.liftBextrFast(inst, nextPC, lines); ok {
+				return out, nil
+			}
+		}
 		return l.liftBextr(inst, nextPC, lines)
 
 	case x86asm.ANDN:
@@ -1337,6 +1602,11 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 
 	case x86asm.BLSI, x86asm.BLSR, x86asm.BLSMSK, x86asm.BZHI,
 		x86asm.SHLX, x86asm.SHRX, x86asm.SARX, x86asm.RORX, x86asm.MULX:
+		if bmiPeep {
+			if out, ok := l.liftBmiFast(inst, nextPC, lines); ok {
+				return out, nil
+			}
+		}
 		return l.liftBmi(inst, nextPC, lines)
 
 	case x86asm.ROUNDSD, x86asm.ROUNDSS, x86asm.VROUNDSD, x86asm.VROUNDSS,
@@ -1419,6 +1689,9 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		lines = l.liftCpuid(lines)
 		return lines, nil
 
+	case x86asm.SYSCALL:
+		return l.liftSyscall(inst.Address, nextPC, lines), nil
+
 	case x86asm.XGETBV:
 		lines = l.liftXgetbv(lines)
 		return lines, nil
@@ -1434,8 +1707,8 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		x86asm.PMAXUW, x86asm.PMINUW, x86asm.PMAXSW, x86asm.PMINSW,
 		x86asm.PMAXUD, x86asm.PMINUD, x86asm.PMAXSD, x86asm.PMINSD,
 		x86asm.PMULLD, x86asm.PMULLW,
-		x86asm.PADDSB, x86asm.PADDSW, x86asm.PADDUSB,
-		x86asm.PSUBSB, x86asm.PSUBUSB,
+		x86asm.PADDSB, x86asm.PADDSW, x86asm.PADDUSB, x86asm.PADDUSW,
+		x86asm.PSUBSB, x86asm.PSUBSW, x86asm.PSUBUSB, x86asm.PSUBUSW,
 		x86asm.PCMPGTB, x86asm.PCMPGTW, x86asm.PCMPGTQ:
 		return l.liftVectorBinary(inst, nextPC, lines)
 
@@ -1474,7 +1747,7 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	case x86asm.VBROADCASTSD:
 		return l.liftVbroadcastsd(inst, nextPC, lines)
 
-	case x86asm.VBROADCASTF128:
+	case x86asm.VBROADCASTF128, x86asm.VBROADCASTI128:
 		return l.liftVbroadcastf128(inst, nextPC, lines)
 
 	case x86asm.VEXTRACTF128, x86asm.VEXTRACTI128:
@@ -1489,8 +1762,26 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	case x86asm.INSERTPS, x86asm.VINSERTPS:
 		return l.liftInsertps(inst, nextPC, lines)
 
-	case x86asm.VPERM2F128:
+	case x86asm.VPERM2F128, x86asm.VPERM2I128:
 		return l.liftVperm2f128(inst, nextPC, lines)
+
+	case x86asm.VPBROADCASTB, x86asm.VPBROADCASTW, x86asm.VPBROADCASTD, x86asm.VPBROADCASTQ:
+		return l.liftVpbroadcast(inst, nextPC, lines)
+
+	case x86asm.VPERMQ, x86asm.VPERMPD:
+		return l.liftVpermq(inst, nextPC, lines)
+
+	case x86asm.VPERMD, x86asm.VPERMPS:
+		return l.liftVpermd(inst, nextPC, lines)
+
+	case x86asm.VPSLLVD, x86asm.VPSLLVQ, x86asm.VPSRLVD, x86asm.VPSRLVQ, x86asm.VPSRAVD:
+		return l.liftVpshiftv(inst, nextPC, lines)
+
+	case x86asm.VFMADD132SS, x86asm.VFMADD132SD, x86asm.VFMADD132PS, x86asm.VFMADD132PD, x86asm.VFMADD213SS, x86asm.VFMADD213SD, x86asm.VFMADD213PS, x86asm.VFMADD213PD, x86asm.VFMADD231SS, x86asm.VFMADD231SD, x86asm.VFMADD231PS, x86asm.VFMADD231PD, x86asm.VFNMADD132SS, x86asm.VFNMADD132SD, x86asm.VFNMADD132PS, x86asm.VFNMADD132PD, x86asm.VFNMADD213SS, x86asm.VFNMADD213SD, x86asm.VFNMADD213PS, x86asm.VFNMADD213PD, x86asm.VFNMADD231SS, x86asm.VFNMADD231SD, x86asm.VFNMADD231PS, x86asm.VFNMADD231PD, x86asm.VFMSUB132SS, x86asm.VFMSUB132SD, x86asm.VFMSUB132PS, x86asm.VFMSUB132PD, x86asm.VFMSUB213SS, x86asm.VFMSUB213SD, x86asm.VFMSUB213PS, x86asm.VFMSUB213PD, x86asm.VFMSUB231SS, x86asm.VFMSUB231SD, x86asm.VFMSUB231PS, x86asm.VFMSUB231PD, x86asm.VFNMSUB132SS, x86asm.VFNMSUB132SD, x86asm.VFNMSUB132PS, x86asm.VFNMSUB132PD, x86asm.VFNMSUB213SS, x86asm.VFNMSUB213SD, x86asm.VFNMSUB213PS, x86asm.VFNMSUB213PD, x86asm.VFNMSUB231SS, x86asm.VFNMSUB231SD, x86asm.VFNMSUB231PS, x86asm.VFNMSUB231PD:
+		return l.liftFma(inst, nextPC, lines)
+
+	case x86asm.VPMULHUW:
+		return l.liftVpmulhuw(inst, nextPC, lines)
 
 	case x86asm.VPERMILPS:
 		return l.liftVpermil(inst, nextPC, false, lines)
@@ -1542,6 +1833,9 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 
 	case x86asm.DPPS, x86asm.VDPPS:
 		return l.liftDpps(inst, nextPC, lines)
+
+	case x86asm.DPPD, x86asm.VDPPD:
+		return l.liftDppd(inst, nextPC, lines)
 
 	case x86asm.ADDPS, x86asm.VADDPS:
 		return l.liftAvx3Op(inst, nextPC, "fadd", false, lines)
@@ -1611,6 +1905,14 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 
 	case x86asm.VMAXSD, x86asm.VMINSD, x86asm.VMAXSS, x86asm.VMINSS:
 		return l.liftAvxMinMax(inst, nextPC, lines)
+
+	case x86asm.MAXSD, x86asm.MINSD, x86asm.MAXSS, x86asm.MINSS, x86asm.ANDNPS, x86asm.ANDNPD:
+		return l.liftSseViaVex(inst, nextPC, lines)
+
+	case x86asm.CMPSD_XMM:
+		// the SSE2 scalar-double compare (the string compare CMPSD has memory operands)
+		inst.Inst.Op = x86asm.CMPSD
+		return l.liftFpVectorCmp(inst, nextPC, lines)
 
 	case x86asm.VPADDQ, x86asm.VPADDD, x86asm.VPADDW, x86asm.VPADDB:
 		return l.liftAvxIntAlu(inst, nextPC, "add", lines)
@@ -1779,7 +2081,8 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		x86asm.FADD, x86asm.FADDP, x86asm.FSUB, x86asm.FSUBP, x86asm.FSUBR, x86asm.FSUBRP,
 		x86asm.FMUL, x86asm.FMULP, x86asm.FDIV, x86asm.FDIVP, x86asm.FDIVR, x86asm.FDIVRP,
 		x86asm.FIADD, x86asm.FISUB, x86asm.FIMUL, x86asm.FIDIV,
-		x86asm.FUCOMI, x86asm.FUCOMIP, x86asm.FCOMI,
+		x86asm.FUCOMI, x86asm.FUCOMIP, x86asm.FCOMI, x86asm.FCOMIP,
+		x86asm.FLDPI, x86asm.FLDL2E, x86asm.FLDLG2, x86asm.FLDLN2,
 		x86asm.FCMOVB, x86asm.FCMOVE, x86asm.FCMOVBE, x86asm.FCMOVU,
 		x86asm.FCMOVNB, x86asm.FCMOVNE, x86asm.FCMOVNBE, x86asm.FCMOVNU,
 		x86asm.FNSTSW, x86asm.FLDCW, x86asm.FNSTCW, x86asm.FNCLEX,
@@ -1806,6 +2109,9 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		}
 		lines = append(lines, "    brk #0")
 		return lines, nil
+
+	case x86asm.PSHUFW:
+		return l.liftMmxPshufw(inst, nextPC, lines)
 
 	case x86asm.EMMS:
 		lines = append(lines, "    // emms")
@@ -1854,7 +2160,7 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 		return l.liftMxcsr(inst, nextPC, lines)
 
 	// Masked Vector Moves
-	case x86asm.VMASKMOVPS, x86asm.VMASKMOVPD:
+	case x86asm.VMASKMOVPS, x86asm.VMASKMOVPD, x86asm.VPMASKMOVD, x86asm.VPMASKMOVQ:
 		return l.liftMaskmov(inst, nextPC, lines)
 	case x86asm.MASKMOVDQU, x86asm.VMASKMOVDQU:
 		return l.liftMaskmovdqu(inst, nextPC, lines)
@@ -1866,7 +2172,15 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	case x86asm.PMULDQ, x86asm.VPMULDQ:
 		return l.liftPmuldq(inst, nextPC, lines)
 
-	case x86asm.PMULHW, x86asm.VPMULHW:
+	case x86asm.VGATHERDPS, x86asm.VGATHERDPD, x86asm.VGATHERQPS, x86asm.VGATHERQPD,
+		x86asm.VPGATHERDD, x86asm.VPGATHERDQ, x86asm.VPGATHERQD, x86asm.VPGATHERQQ:
+		return l.liftGather(inst, nextPC, lines)
+
+	case x86asm.SHA1NEXTE, x86asm.SHA1MSG1, x86asm.SHA1MSG2, x86asm.SHA1RNDS4,
+		x86asm.SHA256MSG1, x86asm.SHA256MSG2, x86asm.SHA256RNDS2:
+		return l.liftSha(inst, nextPC, lines)
+
+	case x86asm.PMULHW, x86asm.VPMULHW, x86asm.PMULHUW:
 		return l.liftPmulhw(inst, nextPC, lines)
 
 	case x86asm.VPHMINPOSUW:
@@ -1898,6 +2212,9 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 
 	// Far return
 	case x86asm.LRET:
+		if callModel == CallFlat {
+			return l.liftRet(inst, fn, 8, lines), nil
+		}
 		lines = append(lines, "    ldr x30, [sp], #16", "    ret")
 		return lines, nil
 
@@ -1937,26 +2254,74 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	default:
 		if cc, ok := x86CondIndex(op); ok {
 			opName := op.String()
-			if strings.HasPrefix(opName, "SET") {
-				pre, cond := l.condFor(cc)
-				lines = append(lines, pre...)
-				return l.liftSetcc(inst, nextPC, cond, lines)
+			if fpCmpFuse && inst.FpRaw && l.fpRawLive {
+				if out, ok, err := l.liftFpRawConsumer(inst, nextPC, fn, cc, lines); ok {
+					return out, err
+				}
 			}
-			if strings.HasPrefix(opName, "CMOV") {
+			if strings.HasPrefix(opName, "SET") || strings.HasPrefix(opName, "CMOV") {
 				pre, cond := l.condFor(cc)
 				lines = append(lines, pre...)
-				return l.liftCmovcc(inst, nextPC, cond, lines)
+				var post []string
+				if isParityCond(cc) && !inst.ParityInV {
+					// PF is in the context byte: bring it into V around the lowering.
+					pre, post = l.parityToV()
+					lines = append(lines, pre...)
+				}
+				var err error
+				if strings.HasPrefix(opName, "SET") {
+					lines, err = l.liftSetcc(inst, nextPC, cond, lines)
+				} else {
+					lines, err = l.liftCmovcc(inst, nextPC, cond, lines)
+				}
+				return append(lines, post...), err
 			}
 		}
 
 		// Check conditional branches
 		if cc, ok := x86CondIndex(op); ok {
 			// The targets start in the block-boundary carry sense; invert first if CF is live.
-			if !inst.CarryDead {
-				lines = append(lines, l.normalizeCarry()...)
+			lines = append(lines, l.exitFlags(inst)...)
+			if ps, ok := l.patchSites[inst.Address]; ok {
+				pp, err := l.patchPointPrefix(inst, nextPC, fn, ps)
+				if err != nil {
+					return nil, err
+				}
+				lines = append(lines, pp...)
+			}
+			if l.cbzAt == inst.Address && l.cbzReg != "" {
+				// The compare before this branch loaded the tested value instead of computing flags (bmi-peep).
+				reg := l.cbzReg
+				l.cbzAt, l.cbzReg = 0, ""
+				if rel, ok := args[0].(x86asm.Rel); ok {
+					if lbl := localLabel(fn, uint64(int64(nextPC)+int64(rel))); lbl != "" && (op == x86asm.JE || op == x86asm.JNE) {
+						br := "cbz"
+						if op == x86asm.JNE {
+							br = "cbnz"
+						}
+						return append(lines, fmt.Sprintf("    %s %s, %s", br, reg, lbl)), nil
+					}
+				}
+				return nil, fmt.Errorf("fused compare at 0x%x: its branch is not a local je/jne", inst.Address)
 			}
 			pre, cond := l.condFor(cc)
 			lines = append(lines, pre...)
+			if rel, ok := args[0].(x86asm.Rel); ok && isParityCond(cc) && !inst.ParityInV {
+				// JP/JNP with PF in the context byte: test the parity bit (1 = PF clear)
+				// without touching NZCV, which stays live into both successors.
+				target := uint64(int64(nextPC) + int64(rel))
+				lines = append(lines, l.loadParityBit()...)
+				skipLabel := fmt.Sprintf("L_jp_skip_0x%x_%d", inst.Address, l.labelCounter)
+				l.labelCounter++
+				notTaken := "tbnz" // JP is not taken when the bit is 1
+				if cc == 11 {
+					notTaken = "tbz"
+				}
+				lines = append(lines, fmt.Sprintf("    %s w16, #0, %s", notTaken, skipLabel))
+				lines = append(lines, l.branchTo(fn, target)...)
+				lines = append(lines, fmt.Sprintf("%s:", skipLabel))
+				return lines, nil
+			}
 			if rel, ok := args[0].(x86asm.Rel); ok {
 				target := uint64(int64(nextPC) + int64(rel))
 				if lbl := localLabel(fn, target); lbl != "" {
@@ -2017,3 +2382,44 @@ func isStringCmpsd(inst disasm.Instruction) bool {
 	}
 	return false
 }
+
+// Clone returns a lifter with the same configuration (known functions, address mode, TSO, x87,
+// unsupported policy) and fresh per-translation state, for lifting chunks on several goroutines.
+// The known-function set is shared and must not change while clones are in use.
+func (l *Arm64Lifter) Clone() *Arm64Lifter {
+	c := *l
+	c.ResetChunk()
+	return &c
+}
+
+// ResetChunk starts a chunk: label counters restart (labels are local to the assembled file, so
+// the text of a chunk depends on its functions only) and the unsupported-site list is emptied
+// (TakeUnsupported hands it over).
+func (l *Arm64Lifter) ResetChunk() {
+	l.currentFn = nil
+	l.cpol = carrySub
+	l.unsuppCounter, l.labelCounter, l.uhCounter = 0, 0, 0
+	l.unsupported = nil
+	l.pfSpilled = false
+	l.cold = nil
+}
+
+// AddUnsupported appends sites recorded by a clone (or restored from a chunk cache).
+func (l *Arm64Lifter) AddUnsupported(s []UnsupportedSite) {
+	l.unsupported = append(l.unsupported, s...)
+}
+
+// ConfigKey names every lifter option that changes the emitted text (chunk cache key).
+func (l *Arm64Lifter) ConfigKey() string {
+	// every knob that changes the lowering must be here: it keys the chunk cache
+	key := fmt.Sprintf("addr=%s tso=%t x87f80=%t unsupp=%t call=%s ic=%t vecl=%t peep=%t relax=%x fpfuse=%t ppfuse=%t jmpic=%t cold=%t", l.addrMode.String(), !l.noTSO, l.x87F80, l.allowUnsupported, GetCallModel(), GetCallIC(), !l.noVecLive, !l.noPeephole, l.TSORelaxed(), fpCmpFuse, pushPopFuse, GetJmpIC(), coldOutline)
+	if l.tsoElide != TSOElideOff {
+		// Appended only when elision is on: the key of the "off" configuration is what it was before the option existed.
+		key += " elide=" + l.tsoElide.String() + " priv=" + disasm.StackPrivRulesID()
+	}
+	key += lift2Key(l.tsoElide != TSOElideOff)
+	return key
+}
+
+// SetComments selects whether the lowering of an instruction starts with its "// 0xADDR: INST" line.
+func (l *Arm64Lifter) SetComments(on bool) { l.noComments = !on }

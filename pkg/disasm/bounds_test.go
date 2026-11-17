@@ -12,7 +12,7 @@ import (
 
 func imageELF(img []byte, bounds []elfloader.AddrRange) *elfloader.LoadedELF {
 	return &elfloader.LoadedELF{
-		MemoryImage:  img,
+		MemoryImage:  elfloader.NewImage(0, img),
 		ExecRanges:   []elfloader.AddrRange{{Start: 0, End: uint64(len(img))}},
 		FuncBounds:   bounds,
 		SymbolByAddr: map[uint64]elfloader.Symbol{},
@@ -90,11 +90,57 @@ func TestSeedIgnoresNonPointerAddend(t *testing.T) {
 		t.Fatalf("seeds = %v", entries)
 	}
 
-	// Same pointer, but not an unwind entry: do not invent a function.
+	// Same pointer outside every FDE extent: unwind coverage elsewhere must not veto it (the
+	// 0x40 target is code the FDEs do not cover). The FDE start is a seed too.
 	loaded.FuncBounds = []elfloader.AddrRange{{Start: 0x50, End: 0x60}}
 	entries = SeedEntryPoints(loaded, false)
-	if len(entries) != 0 {
-		t.Fatalf("non-entry pointer seeded: %v", entries)
+	if len(entries) != 2 || entries[0] != 0x40 || entries[1] != 0x50 {
+		t.Fatalf("seeds = %v, want the gap target 0x40 and the FDE start 0x50", entries)
+	}
+
+	// A pointer strictly inside an FDE extent is a label, not an entry; one at its start is.
+	binary.LittleEndian.PutUint64(img[0x80:], 0x54)
+	entries = SeedEntryPoints(loaded, false)
+	if len(entries) != 1 || entries[0] != 0x50 {
+		t.Fatalf("seeds = %v, want only the FDE start 0x50", entries)
+	}
+}
+
+// A relocation target that is 16-aligned behind int3 padding is a function whatever its first
+// instruction is (virtual methods often start with cmp/test/xor/movzx or a VEX load); an
+// unaligned target, or one that does not decode, still needs the prologue filter.
+func TestSeedAlignedEntryBehindPaddingAnyFirstInstruction(t *testing.T) {
+	img := make([]byte, 0x200)
+	for i := range img {
+		img[i] = 0xcc
+	}
+	copy(img[0x40:], []byte{0x80, 0x7f, 0x48, 0x00, 0x74, 0x01, 0xc3, 0xc3}) // cmp byte [rdi+0x48],0 ; je ; ret ; ret
+	copy(img[0x60:], []byte{0x85, 0xff, 0x0f, 0x94, 0xc0, 0xc3})             // test edi,edi ; sete al ; ret
+	copy(img[0x80:], []byte{0xc5, 0xf8, 0x10, 0x06, 0xc3})                   // vmovups xmm0,[rsi] ; ret
+	copy(img[0xa0:], []byte{0x31, 0xc0, 0xc3})                               // xor eax,eax ; ret
+	copy(img[0xc3:], []byte{0x31, 0xc0, 0xc3})                               // same, unaligned
+	copy(img[0xe0:], []byte{0x06, 0x06, 0x06})                               // invalid in 64-bit mode
+	copy(img[0x100:], []byte{0x55, 0xc3})                                    // FDE-covered function
+	targets := []uint64{0x40, 0x60, 0x80, 0xa0, 0xc3, 0xe0, 0x120 /* padding */}
+	loaded := imageELF(img, []elfloader.AddrRange{{Start: 0x100, End: 0x102}})
+	for i, a := range targets {
+		binary.LittleEndian.PutUint64(img[0x180+i*8:], a) // the applied slot is the pointer
+		loaded.Relocations = append(loaded.Relocations,
+			elfloader.Relocation{Type: elfloader.R_X86_64_RELATIVE, Offset: 0x180 + uint64(i)*8, Addend: int64(a)})
+	}
+	got := map[uint64]bool{}
+	for _, e := range SeedEntryPoints(loaded, false) {
+		got[e] = true
+	}
+	for _, a := range []uint64{0x40, 0x60, 0x80, 0xa0, 0x100} {
+		if !got[a] {
+			t.Errorf("entry 0x%x was not seeded", a)
+		}
+	}
+	for _, a := range []uint64{0xc3, 0xe0, 0x120} {
+		if got[a] {
+			t.Errorf("0x%x was seeded", a)
+		}
 	}
 }
 
@@ -253,5 +299,53 @@ func TestFuncSymbolSizeStillBoundsDecode(t *testing.T) {
 	}
 	if total != 4 || lastEnd != 0x44 {
 		t.Fatalf("STT_FUNC size 4: %d instructions ending at 0x%x, want 4 ending at 0x44", total, lastEnd)
+	}
+}
+
+func TestSeedFromFDEsAndFiniArray(t *testing.T) {
+	img := make([]byte, 0x100)
+	img[0x40] = 0x55
+	img[0x60] = 0x55
+	img[0x70] = 0x55
+	binary.LittleEndian.PutUint64(img[0x90:], 0x70) // DT_FINI_ARRAY slot
+	loaded := imageELF(img, []elfloader.AddrRange{{Start: 0x40, End: 0x50}, {Start: 0x60, End: 0x68}, {Start: 0x70, End: 0x78}})
+	loaded.DynamicTags = map[int64]uint64{26: 0x90, 28: 8}
+	got := map[uint64]bool{}
+	for _, a := range SeedEntryPoints(loaded, false) {
+		got[a] = true
+	}
+	for _, want := range []uint64{0x40, 0x60, 0x70} {
+		if !got[want] {
+			t.Errorf("seed 0x%x missing: %v", want, got)
+		}
+	}
+}
+
+// A direct branch from one function onto another known entry in code without unwind extents is
+// a tail call: the target body is decoded once (as its own function), not again inside the
+// branching function.
+func TestTailBranchToKnownEntryNotDuplicated(t *testing.T) {
+	img := make([]byte, 0x100)
+	img[0x40], img[0x41] = 0xEB, 0x0E // jmp 0x50
+	img[0x50], img[0x51], img[0x52] = 0x90, 0x90, 0xC3
+	loaded := imageELF(img, nil)
+	d, err := NewDisassembler(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insts := 0
+	funcs := 0
+	err = d.WalkReachable([]uint64{0x40, 0x50}, func(fn *Function) error {
+		funcs++
+		for _, b := range fn.Blocks {
+			insts += len(b.Insts)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if funcs != 2 || insts != 4 {
+		t.Fatalf("funcs=%d insts=%d, want 2 and 4 (jmp, nop, nop, ret)", funcs, insts)
 	}
 }

@@ -30,13 +30,26 @@ var shimAliases = map[string]string{
 	"3GPpjQdAMTw":         "shim_cxa_guard_acquire",
 	"9rAeANT2tyE":         "shim_cxa_guard_release",
 	"2emaaluWzUw":         "shim_cxa_guard_abort",
-	// Non-local control transfers end with an x86 RET to another frame, which recompiled code
-	// cannot follow (see the guest-state contract at recomp_enter_guest): stop with a report.
-	"longjmp":       "shim_guest_nonlocal_jump",
-	"_longjmp":      "shim_guest_nonlocal_jump",
-	"siglongjmp":    "shim_guest_nonlocal_jump",
-	"__cxa_throw":   "shim_guest_cxa_throw",
-	"__cxa_rethrow": "shim_guest_cxa_throw",
+	// ASTRO BOT: NIDs the name DB does not know (names from rps5e/Kyty tables)
+	"00oCq0RwSAY": "shim_nps5_json_set_null_access_cb",        // sce::Json::Initializer::setGlobalNullAccessCallBack
+	"X+4jdIS75P0": "shim_nps5_audioin_is_pad_embedded_mic",    // sceAudioInIsPadEmbeddedMic
+	"cfwBSQyr5Ys": "shim_nps5_debug_write_cpp_exception_info", // sceKernelDebugWriteCppExceptionInfo
+	"Hc4CaR6JBL0": "shim_nps5_sync_on_address_wait",           // sceKernelSyncOnAddressWait
+	"q2y-wDIVWZA": "shim_nps5_sync_on_address_wake",           // sceKernelSyncOnAddressWake
+	"4h6F1LLbTiw": "shim_sceKernelMapNamedFlexibleMemory",     // sceKernelMapNamedFlexibleMemoryInternal
+	// Non-local control transfers: setjmp/longjmp and the unwinder's context install are
+	// intercepted (pkg/runtime/core/nps5_eh.c, docs/m1/setjmp-eh.md). libc++abi and libunwind
+	// themselves are guest code and run recompiled.
+	"setjmp":      "shim_guest_setjmp",
+	"_setjmp":     "shim_guest_setjmp",
+	"sigsetjmp":   "shim_guest_setjmp",
+	"gNQ1V2vfXDE": "shim_guest_setjmp", // PS4 libc sigsetjmp NID
+	"longjmp":     "shim_guest_longjmp",
+	"_longjmp":    "shim_guest_longjmp",
+	"siglongjmp":  "shim_guest_longjmp",
+	// LLVM libunwind's Registers_x86_64::jumpto: loads the target frame's registers and "ret"s to
+	// the landing pad, which recompiled code cannot follow.
+	"__libunwind_Registers_x86_64_jumpto": "shim_guest_unwind_jumpto",
 	// Direct Memory & VMM
 	"sceKernelMapDirectMemory2":       "shim_sceKernelMapDirectMemory",
 	"sceKernelMapNamedDirectMemory":   "shim_sceKernelMapDirectMemory",
@@ -133,9 +146,9 @@ var shimAliases = map[string]string{
 	"sceKernelStat":          "shim_sceKernelStat",
 	"kBwCPsYX-m4":            "shim_sceKernelFstat",
 	"sceKernelFstat":         "shim_sceKernelFstat",
-	"sceKernelChmod":         "shim_chmod",
-	"sceKernelUtimes":        "shim_utimes",
-	"sceKernelGetdents":      "shim_getdents",
+	"sceKernelChmod":         "shim_sceKernelChmod",
+	"sceKernelUtimes":        "shim_sceKernelUtimes",
+	"sceKernelGetdents":      "shim_sceKernelGetdents",
 	"sceKernelGetdirentries": "shim_sceKernelGetdirentries",
 	"sceKernelFsync":         "shim_sceKernelFsync",
 	"sceKernelFtruncate":     "shim_sceKernelFtruncate",
@@ -299,12 +312,13 @@ var shimAliases = map[string]string{
 	"QBi7HCK03hw": "shim_sceKernelClockGettime",
 	"Xjoosiw+XPI": "shim_sceKernelUuidCreate",
 	"ca7v6Cxulzs": "shim_sceKernelSetGPO",
+	"4oXYe9Xmk0Q": "shim_sceKernelGetGPI",
 	"mpxAdqW7dKY": "shim_sceKernelIsProspero",
 	// File system aliases
-	"sceKernelMkdir":    "shim_mkdir",
-	"sceKernelRename":   "shim_rename",
-	"sceKernelUnlink":   "shim_unlink",
-	"sceKernelTruncate": "shim_truncate",
+	"sceKernelMkdir":    "shim_sceKernelMkdir",
+	"sceKernelRename":   "shim_sceKernelRename",
+	"sceKernelUnlink":   "shim_sceKernelUnlink",
+	"sceKernelTruncate": "shim_sceKernelTruncate",
 	"sceKernelMlock":    "shim_mlock",
 	// libkernel & POSIX Pthread / Synchronization NIDs
 	"yOfGg-I1ZII": "shim_scePthreadRwlockattrInit",
@@ -344,11 +358,11 @@ var shimAliases = map[string]string{
 	"W6OrTBO95UY": "shim_scePthreadMutexIsownedNp",
 	// libkernel File System NIDs
 	"uWyW3v98sU4": "shim_sceKernelCheckReachability",
-	"1-LFLmRFxxM": "shim_mkdir",
+	"1-LFLmRFxxM": "shim_sceKernelMkdir",
 	"c7ZnT7V1B98": "shim_rmdir",
-	"52NcYU9+lEo": "shim_rename",
-	"AUXVxWeJU-A": "shim_unlink",
-	"WlyEA-sLDf0": "shim_truncate",
+	"52NcYU9+lEo": "shim_sceKernelRename",
+	"AUXVxWeJU-A": "shim_sceKernelUnlink",
+	"WlyEA-sLDf0": "shim_sceKernelTruncate",
 	"3k6kx-zOOSQ": "shim_mlock",
 	// libkernel RTLD, Atexit & Memory NIDs
 	"PGhQHd-dzv8": "shim_sceKernelMmap",
@@ -1750,6 +1764,7 @@ var knownDirectShims = []string{
 	"sceKernelClockGettime",
 	"sceKernelUuidCreate",
 	"sceKernelSetGPO",
+	"sceKernelGetGPI",
 	"sceKernelIsProspero",
 	// File system
 	"chmod",
@@ -1766,6 +1781,13 @@ var knownDirectShims = []string{
 	"mkdir",
 	"rmdir",
 	"sceKernelRmdir",
+	"sceKernelMkdir",
+	"sceKernelUnlink",
+	"sceKernelRename",
+	"sceKernelTruncate",
+	"sceKernelChmod",
+	"sceKernelUtimes",
+	"sceKernelGetdents",
 	"rename",
 	"truncate",
 	"mlock",

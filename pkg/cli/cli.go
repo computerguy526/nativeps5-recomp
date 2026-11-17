@@ -28,9 +28,11 @@ import (
 	"ps4-recomp/pkg/elfloader"
 	"ps4-recomp/pkg/emitter"
 	"ps4-recomp/pkg/events"
+	"ps4-recomp/pkg/guestmem"
 	"ps4-recomp/pkg/lifter"
 	recompruntime "ps4-recomp/pkg/runtime"
 	"ps4-recomp/pkg/sfo"
+	"ps4-recomp/pkg/tcache"
 	"ps4-recomp/pkg/thirdparty"
 )
 
@@ -51,8 +53,77 @@ type Config struct {
 	Asan          bool
 	// TSO: acquire loads and release stores for non-stack guest memory (x86 memory ordering).
 	TSO bool
+	// CallIC: per-call-site inline caches for indirect/virtual calls (flat model; docs/m3/callic.md).
+	CallIC bool
+	// FpCmpFuse, PushPopFuse, JmpIC: the m3-liftmisc lifter speedups (docs/m3/liftmisc.md); each is on by default.
+	FpCmpFuse, PushPopFuse, JmpIC bool
+	// ROLoads, RedZoneLeaf, BMIPeep: the m3-lift2 lifter options (docs/m3/lift2.md); each is on by default.
+	ROLoads, RedZoneLeaf, BMIPeep bool
+	// TSOElide: "off" (every RSP/RBP-based access is plain) or "stack" (only accesses the stack
+	// privacy pass proves thread-private are plain; docs/m3/tsoelide.md).
+	TSOElide string
+	// ColdOutline moves the rare paths of the TSO lowering to a cold area at the end of each chunk (docs/m3/coldpath.md).
+	ColdOutline bool
+	// AllowUnsupported keeps unsupported guest instructions as diagnostic stubs; by default they
+	// fail the translation with a list.
+	AllowUnsupported bool
+	// SeedsFrom: tier1_misses.jsonl / run bundle / runs dir (comma separated) whose served
+	// misses are added to the CFG entry points (docs/m1/tier1.md).
+	SeedsFrom string
+	CacheDir  string // translation cache (chunk index); default <out>/.nps5cache
+	NoCache   bool
+	ObjStore  string // content-addressed zstd object store (optional)
+	// AddrMode: "base" (x28 + guest address) or "identity" (guest VA == host VA).
+	AddrMode string
+	// X87: "f80" (80-bit x87 registers on SoftFloat, the default) or "f64" (stack of doubles).
+	X87 string
+	// SimdLiveness: vector lane liveness in the lifter: "abi" (default), "strict" or "off"
+	// (docs/m3/simdregs.md).
+	SimdLiveness string
+	// GPU: "off" (default) or "anyps5" (see gpu.go).
+	GPU string
+	// CallModel: "flat" (guest stack authoritative, shadow return stack) or "nested" (host bl/ret).
+	CallModel string
 	// JSON emits progress as JSON lines on stdout; the human log goes to stderr.
 	JSON bool
+	// KeepAsm keeps the generated .s files (by default each chunk's assembly is deleted once it
+	// is assembled). AsmComments puts the per-instruction guest comments into the assembly; it
+	// is implied by KeepAsm unless -asm-comments=false is given.
+	KeepAsm     bool
+	AsmComments bool
+	// AsmOnly translates and assembles the code chunks (streaming, as with -compile) but builds
+	// no runtime and does not link.
+	AsmOnly        bool
+	asmCommentsSet bool
+	// ExcludeModules names companion modules left out of the translation (-exclude-module,
+	// repeatable). Their imports bind to a logged stub returning 0.
+	ExcludeModules []string
+	// HLEMalloc replaces the engine's allocator by a native one ("ue5-binned3"); HLEReplace is a
+	// JSON table of function replacements (docs/m3/function-hle.md).
+	HLEMalloc  string
+	HLEReplace string
+	// Patches is a game patch profile: guest patches lowered as run-time settings (pkg/emitter/patchpoints.go).
+	Patches string
+}
+
+// asmComments reports whether the emitted assembly carries per-instruction comments.
+func (c *Config) asmComments() bool {
+	if c.asmCommentsSet {
+		return c.AsmComments
+	}
+	return c.KeepAsm
+}
+
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error {
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			*s = append(*s, p)
+		}
+	}
+	return nil
 }
 
 const banner = `
@@ -83,7 +154,43 @@ Options:
   -v, -verbose            Enable verbose output and detailed timing breakdown (default: false)
       -asan               Compile with AddressSanitizer and LeakSanitizer (default: false)
       -json               Emit progress as JSON lines on stdout (the log goes to stderr)
+      -allow-unsupported  Keep unsupported guest instructions as diagnostic stubs (default: fail the build with a list)
+      -addr-mode <mode>   Guest memory addressing: base (host = guest + bias, default), identity (guest VA == host VA),
+                          or auto (identity when the title has no fixed-address evidence, else base)
+      -keep-asm           Keep the generated .s files (default: each chunk is assembled and its .s deleted at once);
+                          implies -asm-comments
+      -asm-only           Translate and assemble the code chunks only: no runtime build, no link
+      -asm-comments       Annotate the assembly with the guest instruction behind each host instruction
+                          (default: lean output, the pc map used by crash diagnostics does not need them)
+      -x87 <mode>         x87 model: f80 (80-bit extended precision on SoftFloat, default) or f64 (doubles, faster, not
+                          bit-exact; for titles whose x87 use is hot and does not need 80 bits)
+      -simd-liveness <m>  Vector lane liveness (drops dead YMM-upper zeroing, scalar lane merges and scratch spills):
+                          abi (default: System V at calls and returns), strict (no calling convention assumed) or off
+      -call-model <model> Call/return model: flat (default: the guest stack is the only call stack, flat host stack,
+                          shadow return stack) or nested (guest CALL = host bl, host stack mirrors the guest's; A/B)
+      -seeds-from <path>  Fold the tier-1 misses of earlier runs (tier1_misses.jsonl, a run bundle or a runs dir) into the entry points
+      -cache-dir <dir>    Translation cache (chunk index, tier-1 fragments); default <out>/.nps5cache
+      -no-cache           Do not reuse or record cached chunks
+      -obj-store <dir>    Content-addressed zstd store of assembled objects (reused across output directories)
+      -hle-malloc <mode>  Replace the engine allocator by a native one: ue5-binned3 (default: off; the binary must match a known
+                          profile, docs/m3/function-hle.md)
+      -hle-replace <file> JSON table of guest functions to run as host shims instead of being translated (docs/m3/function-hle.md)
+      -patches <file>     Game patch profile (profiles/patches/<title id>.json): each patch becomes a run-time setting; the
+                          sites test a flag instead of being patched in (the build's instruction bytes are asserted)
+      -call-ic            Per-call-site inline caches for indirect/virtual calls (flat model; default: true, -call-ic=false to disable)
+      -fp-cmp-fuse        UCOMIS/COMIS followed by Jcc/SETcc/CMOVcc use the FCMP flags directly (default: true)
+      -pushpop-fuse       Runs of PUSH/POP r64 become STP/LDP with one rsp update (default: true)
+      -jmp-ic             Inline caches at jmp reg / jmp [mem] sites, needs -call-ic (default: true)
+      -ro-loads           Constant-address loads from read-only image memory (RELRO, stack guard) are plain (default: true)
+      -redzone-leaf       Under -tso-elide stack, the red zone of a call-entered function is private (default: true)
+      -bmi-peep           BMI (blsi/blsr/blsmsk/andn/bextr/lzcnt/tzcnt) and narrow-flag peepholes (default: true)
+      -cold-outline       Move rare paths (16-byte-crossing and unaligned TSO accesses) out of the hot code (default: true)
       -tso                x86 memory ordering: acquire/release for non-stack guest memory (default: true)
+      -tso-elide <mode>   Stack accesses without ordering: stack (default: plain only where the access is proven thread-private),
+                          off (escape hatch: every RSP/RBP-based access plain, no analysis; unsound for escaped frames) or stack-region (stack, plus slots
+                          below every escaping frame address); docs/m3/tsoelide.md
+      -gpu <backend>      Graphics/video/input: off (default, PS4Recomp HLE) or anyps5 (AnyPS5 AGC driver, VideoOut, Pad,
+                          UserService; needs NPS5_ANYPS5_BUILD, see docs/m2/anyps5-integration.md)
   -h, -help               Show this help message
 `
 
@@ -98,6 +205,21 @@ func normalizeArgs(args []string) ([]string, []string) {
 		"-O": true, "-opt": true, "--opt": true,
 		"-k": true, "-chunk-size": true, "--chunk-size": true,
 		"-app-dir": true, "--app-dir": true,
+		"-data-dir": true, "--data-dir": true,
+		"-dump-dir": true, "--dump-dir": true,
+		"-addr-mode": true, "--addr-mode": true,
+		"-x87": true, "--x87": true,
+		"-simd-liveness": true, "--simd-liveness": true,
+		"-exclude-module": true, "--exclude-module": true,
+		"-gpu": true, "--gpu": true,
+		"-call-model": true, "--call-model": true,
+		"-tso-elide": true, "--tso-elide": true,
+		"-seeds-from": true, "--seeds-from": true,
+		"-cache-dir": true, "--cache-dir": true,
+		"-obj-store": true, "--obj-store": true,
+		"-hle-malloc": true, "--hle-malloc": true,
+		"-hle-replace": true, "--hle-replace": true,
+		"-patches": true, "--patches": true,
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -126,10 +248,17 @@ func ParseArgs(args []string) (*Config, error) {
 	cfg := &Config{
 		OutDir:    "build",
 		Compile:   true,
-		Jobs:      runtime.NumCPU(),
+		Jobs:      defaultJobs(),
 		OptLevel:  "2",
 		ChunkSize: 250,
 		TSO:       true,
+		CallIC:    true,
+		FpCmpFuse: true, PushPopFuse: true, JmpIC: true, ColdOutline: true,
+		ROLoads: true, RedZoneLeaf: true, BMIPeep: true,
+		TSOElide:  "stack",
+		AddrMode:  "base",
+		X87:       "f80",
+		CallModel: "flat",
 	}
 
 	var help bool
@@ -153,13 +282,43 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.IntVar(&cfg.ChunkSize, "chunk-size", cfg.ChunkSize, "Number of functions per C chunk")
 	fs.IntVar(&cfg.ChunkSize, "k", cfg.ChunkSize, "Chunk size (short)")
 	fs.StringVar(&cfg.AppDir, "app-dir", "", "Host directory mapping to /app0 for game assets")
+	// --data-dir / --dump-dir: aliases of --app-dir for a title whose data lives on a separate READ-ONLY volume
+	// (the eboot may then be a local file, positional or -e). NPS5_APP0_DIR is the same thing as an env var.
+	fs.StringVar(&cfg.AppDir, "data-dir", "", "Alias of --app-dir: read-only data folder mapped to /app0 (never written)")
+	fs.StringVar(&cfg.AppDir, "dump-dir", "", "Alias of --app-dir")
 	fs.BoolVar(&cfg.CopyResources, "standalone", false, "Create self-contained macOS .app bundle with all assets and dylibs")
 	fs.BoolVar(&cfg.CopyResources, "bundle", false, "Alias for --standalone")
 	fs.BoolVar(&cfg.CopyResources, "copy-resources", false, "Copy all game assets/resources into macOS .app bundle SharedSupport/")
 	fs.BoolVar(&cfg.CopyResources, "bundle-resources", false, "Copy all game assets/resources into macOS .app bundle SharedSupport/ (alias)")
 	fs.BoolVar(&cfg.Asan, "asan", false, "Compile with AddressSanitizer and LeakSanitizer")
+	fs.BoolVar(&cfg.CallIC, "call-ic", cfg.CallIC, "Inline caches at indirect/virtual call sites (flat call model)")
+	fs.BoolVar(&cfg.FpCmpFuse, "fp-cmp-fuse", cfg.FpCmpFuse, "UCOMIS/COMIS + Jcc/SETcc/CMOVcc: consume the FCMP flags directly")
+	fs.BoolVar(&cfg.PushPopFuse, "pushpop-fuse", cfg.PushPopFuse, "Runs of PUSH/POP r64 become STP/LDP with one rsp update")
+	fs.BoolVar(&cfg.ColdOutline, "cold-outline", cfg.ColdOutline, "Move rare paths out of the hot code into a cold area at the end of each chunk")
+	fs.BoolVar(&cfg.JmpIC, "jmp-ic", cfg.JmpIC, "Inline caches at jmp reg / jmp [mem] sites (needs -call-ic)")
+	fs.BoolVar(&cfg.ROLoads, "ro-loads", cfg.ROLoads, "Constant-address loads from read-only image memory (RELRO, stack guard) are plain")
+	fs.BoolVar(&cfg.RedZoneLeaf, "redzone-leaf", cfg.RedZoneLeaf, "With -tso-elide stack: the red zone of a call-entered function is private")
+	fs.BoolVar(&cfg.BMIPeep, "bmi-peep", cfg.BMIPeep, "BMI and narrow-flag peepholes")
 	fs.BoolVar(&cfg.TSO, "tso", cfg.TSO, "x86 memory ordering: acquire/release for non-stack guest memory")
+	fs.StringVar(&cfg.TSOElide, "tso-elide", cfg.TSOElide, "Stack accesses without ordering: off, stack or stack-region")
+	fs.BoolVar(&cfg.AllowUnsupported, "allow-unsupported", false, "Keep unsupported guest instructions as diagnostic stubs")
+	fs.StringVar(&cfg.AddrMode, "addr-mode", cfg.AddrMode, "Guest memory addressing: base, identity or auto")
+	fs.StringVar(&cfg.X87, "x87", cfg.X87, "x87 model: f80 (80-bit, default) or f64 (doubles)")
+	fs.StringVar(&cfg.SimdLiveness, "simd-liveness", cfg.SimdLiveness, "Vector lane liveness: abi (default), strict or off")
+	fs.Var((*stringList)(&cfg.ExcludeModules), "exclude-module", "Companion module to leave out of the translation (repeatable); its imports bind to a stub returning 0")
+	fs.StringVar(&cfg.GPU, "gpu", gpuOff, "Graphics/video/input backend: off or anyps5")
+	fs.StringVar(&cfg.CallModel, "call-model", cfg.CallModel, "Call/return model: flat or nested")
+	fs.StringVar(&cfg.CacheDir, "cache-dir", "", "Translation cache directory (default <out>/.nps5cache)")
+	fs.BoolVar(&cfg.NoCache, "no-cache", false, "Do not reuse or record cached chunks")
+	fs.StringVar(&cfg.ObjStore, "obj-store", "", "Directory of a content-addressed, zstd-compressed store of assembled objects")
+	fs.StringVar(&cfg.SeedsFrom, "seeds-from", "", "Fold tier-1 misses of earlier runs into the entry points")
+	fs.StringVar(&cfg.HLEMalloc, "hle-malloc", "", "Replace the engine's allocator by a native one: ue5-binned3 (default: off)")
+	fs.StringVar(&cfg.HLEReplace, "hle-replace", "", "JSON table of guest functions to run as host shims (docs/m3/function-hle.md)")
+	fs.StringVar(&cfg.Patches, "patches", "", "Game patch profile (JSON): guest patches lowered as run-time settings")
 	fs.BoolVar(&cfg.JSON, "json", false, "Emit progress as JSON lines on stdout")
+	fs.BoolVar(&cfg.KeepAsm, "keep-asm", false, "Keep the generated .s files")
+	fs.BoolVar(&cfg.AsmOnly, "asm-only", false, "Translate and assemble the code chunks only (no runtime build, no link)")
+	fs.BoolVar(&cfg.AsmComments, "asm-comments", false, "Annotate the assembly with guest instructions")
 	fs.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "Verbose logging")
 	fs.BoolVar(&cfg.Verbose, "v", cfg.Verbose, "Verbose logging (short)")
 	fs.BoolVar(&help, "help", false, "Show help message")
@@ -177,6 +336,14 @@ func ParseArgs(args []string) (*Config, error) {
 		fmt.Print(banner + usageText)
 		return nil, flag.ErrHelp
 	}
+	if cfg.AsmOnly {
+		cfg.Compile = false
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "asm-comments" {
+			cfg.asmCommentsSet = true
+		}
+	})
 
 	// "build" is an optional alias of the default command.
 	if len(posArgs) > 0 && posArgs[0] == "build" {
@@ -209,10 +376,27 @@ func ParseArgs(args []string) (*Config, error) {
 		}
 	}
 
+	if cfg.ElfPath == "" && cfg.AppDir != "" {
+		// data-dir only: the eboot sits in the data folder
+		for _, candidate := range []string{"eboot.bin", "EBOOT.BIN"} {
+			if fi, err := os.Stat(filepath.Join(cfg.AppDir, candidate)); err == nil && fi.Size() > 0 {
+				cfg.ElfPath = filepath.Join(cfg.AppDir, candidate)
+				break
+			}
+		}
+	}
 	if cfg.ElfPath == "" {
 		return nil, fmt.Errorf("no input PS4 ELF binary specified\n%s", usageText)
 	}
 
+	// NPS5_APP0_DIR (same variable the runtime VFS reads) names the data folder when no flag did.
+	if cfg.AppDir == "" {
+		if v := os.Getenv("NPS5_APP0_DIR"); v != "" {
+			if abs, err := filepath.Abs(v); err == nil {
+				cfg.AppDir = abs
+			}
+		}
+	}
 	// Auto-detect AppDir (directory containing game files/assets if omitted)
 	if cfg.AppDir == "" && cfg.ElfPath != "" {
 		elfDir := filepath.Dir(cfg.ElfPath)
@@ -276,6 +460,15 @@ func Execute(args []string) (err error) {
 		fmt.Fprintf(stdout, "ps4-recomp %s\n", Version)
 		return nil
 	}
+	if handled, derr := diagCommand(args); handled {
+		return derr
+	}
+	if len(args) > 0 && args[0] == "fragment-serve" {
+		return fragmentServeCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "fragment" {
+		return fragmentCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "analyze" {
 		if len(args) < 2 {
 			return errors.New("usage: ps4-recomp analyze <binary.elf | eboot.bin | module.prx>")
@@ -328,6 +521,28 @@ func Execute(args []string) (err error) {
 
 	totalStart := time.Now()
 	fmt.Fprintln(logw, banner)
+	ds := diagStart(cfg)
+	defer func() { ds.close(err) }()
+
+	if noOpRebuild(cfg) {
+		// Same inputs and lowering as the translation in the output directory: refresh the runtime
+		// sources (the only part that may have changed) and stop.
+		stepStart := time.Now()
+		if runtimeDir, err := findRuntimeDir(); err == nil {
+			if err := copyDir(runtimeDir, filepath.Join(cfg.OutDir, "runtime")); err != nil {
+				return fmt.Errorf("failed to copy runtime files: %w", err)
+			}
+		}
+		fmt.Fprintf(logw, "[ps4-recomp] Up to date: translation stamp unchanged (lowering %s); runtime sources refreshed in %v\n",
+			emitter.LoweringID(), time.Since(stepStart).Round(time.Millisecond))
+		ev.Done(buildResult{BuiltWith: Version})
+		return nil
+	}
+
+	// -gpu rebinds the import table: before the loader resolves a single import.
+	if err := setGPU(cfg.GPU); err != nil {
+		return err
+	}
 
 	// Step 1: Load ELF
 	stepStart := time.Now()
@@ -337,8 +552,17 @@ func Execute(args []string) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to load ELF '%s': %w", cfg.ElfPath, err)
 	}
+	// Guest memory model (docs/m1/memory.md): pick the addressing mode from the title's own
+	// evidence, then place the executable in that mode's guest layout before anything reads
+	// addresses out of it. Everything downstream (CFG, lifter, emitter) sees final guest addresses.
+	memPlan, err := planGuestMemory(cfg, loaded)
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(logw, "             Entry point: 0x%x | Segments: %d | Relocations: %d | Unwind functions: %d | Time: %v\n",
 		loaded.EntryPoint, len(loaded.Segments), len(loaded.Relocations), len(loaded.FuncBounds), time.Since(stepStart).Round(time.Millisecond))
+	fmt.Fprintf(logw, "             Memory model: %s (%s) | image 0x%x-0x%x | host bias 0x%x\n",
+		memPlan.layout.Mode, memPlan.reason, loaded.MinVAddr, loaded.MaxVAddr, memPlan.layout.HostBase)
 
 	if ctx.Err() != nil {
 		return errBuildCancelled
@@ -351,9 +575,17 @@ func Execute(args []string) (err error) {
 	for _, p := range elfloader.AddTLSModule(loaded, loaded) {
 		fmt.Fprintf(os.Stderr, "             Warning: %s\n", p)
 	}
-	moduleInfos, err := loadCompanionModules(cfg, loaded)
+	moduleInfos, err := loadCompanionModules(cfg, loaded, memPlan.layout)
 	if err != nil {
 		return err
+	}
+	if len(cfg.ExcludeModules) > 0 {
+		var linked []elfloader.Symbol
+		for _, m := range moduleInfos {
+			linked = append(linked, m.Exports...)
+		}
+		loaded.ClearExcluded(linked)
+		fmt.Fprintf(logw, "             Excluded modules: %s (%d exported NIDs stubbed)\n", strings.Join(cfg.ExcludeModules, ", "), len(loaded.ExcludedImports))
 	}
 	elfloader.LayoutStaticTLS(loaded.TLSModules)
 	for _, p := range elfloader.ApplyTLSOffsets(loaded) {
@@ -376,8 +608,37 @@ func Execute(args []string) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to initialize disassembler: %w", err)
 	}
+	d.ROLoads = cfg.ROLoads
+	d.LeafRedZone = cfg.RedZoneLeaf // before discovery: it records the jump-entered functions
+	vecLive, okVec := disasm.ParseVecLiveMode(cfg.SimdLiveness)
+	if !okVec {
+		return fmt.Errorf("-simd-liveness %q: want abi, strict or off", cfg.SimdLiveness)
+	}
+	cfg.SimdLiveness = vecLive.String()
+	d.VecLive = vecLive
 
 	entries := disasm.SeedEntryPoints(loaded, cfg.AllSymbols)
+	if cfg.SeedsFrom != "" {
+		seeds, err := readTier1Seeds(cfg.SeedsFrom)
+		if err != nil {
+			return err
+		}
+		added := 0
+		for _, a := range seeds {
+			if d.InCode(a) && !slices.Contains(entries, a) {
+				entries = append(entries, a)
+				added++
+			} else if !d.InCode(a) {
+				fmt.Fprintf(os.Stderr, "             Warning: tier-1 seed 0x%x is not in executable guest code of this title; ignored\n", a)
+			}
+		}
+		fmt.Fprintf(logw, "             Tier-1 seeds: %d read from %s, %d new entry points\n", len(seeds), cfg.SeedsFrom, added)
+	}
+	for _, a := range emitter.ReplacementSeeds(loaded, cfg.HLEMalloc, cfg.HLEReplace) {
+		if d.InCode(a) && !slices.Contains(entries, a) {
+			entries = append(entries, a) // a function only a vtable reaches still needs its stub
+		}
+	}
 	lastReport := time.Now()
 	funcs, err := d.DiscoverReachable(entries, func(nFn, nInst int) {
 		if time.Since(lastReport) >= 2*time.Second {
@@ -511,21 +772,125 @@ func Execute(args []string) (err error) {
 		knownFuncs[f.Addr] = true
 	}
 
-	l := lifter.NewArm64Lifter(knownFuncs)
+	mode, err := lifter.ParseAddrMode(cfg.AddrMode)
+	if err != nil {
+		return err
+	}
+	callModel, err := lifter.ParseCallModel(cfg.CallModel)
+	if err != nil {
+		return err
+	}
+	lifter.SetCallModel(callModel)
+	lifter.SetCallIC(cfg.CallIC)
+	lifter.SetFpCmpFuse(cfg.FpCmpFuse)
+	lifter.SetPushPopFuse(cfg.PushPopFuse)
+	lifter.SetJmpIC(cfg.JmpIC)
+	lifter.SetROLoads(cfg.ROLoads)
+	lifter.SetRedZoneLeaf(cfg.RedZoneLeaf)
+	lifter.SetBMIPeep(cfg.BMIPeep)
+	lifter.SetColdOutline(cfg.ColdOutline)
+	l := lifter.NewArm64LifterMode(knownFuncs, mode)
 	l.SetTSO(cfg.TSO)
+	elide, err := lifter.ParseTSOElide(cfg.TSOElide)
+	if err != nil {
+		return err
+	}
+	l.SetTSOElide(elide)
+	cfg.TSOElide = elide.String()
+	if cfg.X87 == "" {
+		cfg.X87 = "f80"
+	}
+	if err := l.SetX87Mode(cfg.X87); err != nil {
+		return err
+	}
+	fmt.Fprintf(logw, "             x87 model: %s\n", cfg.X87)
+	l.SetVecLiveness(vecLive != disasm.VecLiveOff)
+	fmt.Fprintf(logw, "             simd liveness: %s\n", cfg.SimdLiveness)
+	l.SetAllowUnsupported(cfg.AllowUnsupported)
 	em := emitter.NewAsmEmitter(loaded, d, l)
 	em.AppDir = cfg.AppDir
 	em.Modules = moduleInfos
 	em.ChunkSize = cfg.ChunkSize
 	em.Funcs = funcs
 	em.HLE = hle
+	em.FuncInfoOf = ds.funcInfoFn()
+	em.Workers = cfg.Jobs
+	if err := applyFuncRepl(em, cfg.HLEMalloc, cfg.HLEReplace, false, logw); err != nil {
+		return err
+	}
+	if err := applyPatches(em, cfg.Patches, logw); err != nil {
+		return err
+	}
+	mem := memPlan.manifest(loaded, moduleInfos)
+	em.Mem = &mem
+	em.Comments = cfg.asmComments()
+	em.PCMap = ds != nil && os.Getenv("NPS5_NO_PCMAP") == ""
+	em.PCMapStrict = os.Getenv("NPS5_PCMAP_STRICT") != ""
+	// Streaming build: with compilation on, each chunk is assembled as it is emitted and its
+	// .s deleted (unless -keep-asm); with -compile=false the .s files are the product.
+	var pipe *asmPipeline
+	if cfg.Compile || cfg.AsmOnly {
+		pipe = newAsmPipeline(ctx, cfg.Jobs, cfg.KeepAsm)
+		em.ChunkSink = pipe
+		if !cfg.NoCache {
+			cacheDir := cfg.CacheDir
+			if cacheDir == "" {
+				cacheDir = filepath.Join(cfg.OutDir, ".nps5cache")
+			}
+			em.Cache = tcache.Open(cacheDir)
+			if cfg.ObjStore != "" {
+				pipe.store = tcache.OpenObjStore(cfg.ObjStore)
+			}
+		}
+	}
+	emitStart := time.Now()
 	cFiles, err := em.EmitAll(cfg.OutDir)
+	if ds != nil {
+		ds.infos = em.FuncInfos
+	}
+	if err == nil && em.Cache != nil {
+		keep := map[string]bool{}
+		for i := range em.ChunkStats.Chunks {
+			keep[fmt.Sprintf("code_%03d", i)] = true
+		}
+		em.Cache.Drop("chunk", keep)
+		if serr := em.Cache.Save(); serr != nil {
+			fmt.Fprintf(os.Stderr, "             Warning: translation cache index not saved: %v\n", serr)
+		}
+	}
+	cs := em.ChunkStats
+	fmt.Fprintf(logw, "             Lifting: %d chunks on %d workers (%d lifted, %d served from the cache) | lowering %s | Time: %v\n",
+		cs.Chunks, cs.Workers, cs.Lifted, cs.FromCache, emitter.LoweringID(), time.Since(emitStart).Round(time.Millisecond))
+	var asmObjs []string
+	var asmSt asmStats
+	if pipe != nil {
+		var perr error
+		asmObjs, asmSt, perr = pipe.Finish(cfg.OutDir, err)
+		if err == nil {
+			err = perr
+		}
+		fmt.Fprintf(logw, "             Assembly: %d chunks (%d assembled, %d up to date) | generated %s | peak assembly on disk %s, with objects %s | objects %s | Time: %v\n",
+			asmSt.Chunks, asmSt.Assembled, asmSt.Reused, humanBytes(asmSt.TotalAsmBytes), humanBytes(asmSt.PeakAsmBytes), humanBytes(asmSt.PeakDiskBytes), humanBytes(asmSt.ObjBytes), time.Since(stepStart).Round(time.Millisecond))
+		if len(asmSt.FailedChunkSrc) > 0 {
+			fmt.Fprintf(logw, "             Kept for diagnosis: %s\n", strings.Join(asmSt.FailedChunkSrc, ", "))
+		}
+	}
 	if err != nil {
+		if errors.Is(err, errBuildCancelled) {
+			return errBuildCancelled
+		}
 		return fmt.Errorf("failed to emit ARM64 assembly: %w", err)
 	}
+	cFiles = append(cFiles, asmObjs...)
 	hlePath := filepath.Join(cfg.OutDir, "hle_report.txt")
 	if err := hle.WriteFile(hlePath); err != nil {
 		return fmt.Errorf("failed to write HLE report: %w", err)
+	}
+	diagExtra := ds.afterEmit(cfg, loaded, hle, &em.Facts, asmSt, pipe != nil)
+	if tc, terr := writeTier1Artifacts(cfg, funcs); terr != nil {
+		fmt.Fprintf(os.Stderr, "             Warning: tier-1 miss fallback disabled for this build: %v\n", terr)
+	} else {
+		diagExtra = append(diagExtra, tc)
 	}
 	fmt.Fprint(logw, hle.SyscallSummary())
 	fmt.Fprintf(logw, "             Unresolved imports bound to the abort stub: %d calls, %d data (GLOB_DAT/R_64)\n",
@@ -548,18 +913,24 @@ func Execute(args []string) (err error) {
 	}
 
 	cFiles = append(cFiles, runtimeCFiles...)
+	cFiles = append(cFiles, diagExtra...)
 	tso := "on (acquire/release for non-stack guest memory)"
 	if !cfg.TSO {
 		tso = "off"
+	} else if cfg.TSOElide != "off" {
+		tso = "on (acquire/release except proven thread-private stack slots)"
 	}
-	nAsm := 0
+	nAsm, nObj := 0, 0
 	for _, f := range cFiles {
-		if strings.HasSuffix(f, ".s") {
+		switch filepath.Ext(f) {
+		case ".s":
 			nAsm++
+		case ".o":
+			nObj++
 		}
 	}
-	fmt.Fprintf(logw, "             Emitted %d source files (%d assembly, %d C) | TSO: %s | Time: %v\n",
-		len(cFiles), nAsm, len(cFiles)-nAsm, tso, time.Since(stepStart).Round(time.Millisecond))
+	fmt.Fprintf(logw, "             Emitted %d source files (%d assembly, %d assembled objects, %d C) | TSO: %s | Time: %v\n",
+		len(cFiles), nAsm, nObj, len(cFiles)-nAsm-nObj, tso, time.Since(stepStart).Round(time.Millisecond))
 
 	if ctx.Err() != nil {
 		return errBuildCancelled
@@ -568,12 +939,19 @@ func Execute(args []string) (err error) {
 	// Step 4: Compile with Clang
 	targetBin := filepath.Join(cfg.OutDir, "ps4_app")
 	appBundle := ""
-	if cfg.Compile {
+	if cfg.AsmOnly && !cfg.Compile {
+		fmt.Fprintln(logw, "[ps4-recomp] [4/4] Skipped (-asm-only): the code chunks are assembled in the output directory.")
+		if err := generateNinjaBuild(cFiles, cfg.OutDir, runtimeIncludeDirs, targetBin, cfg.OptLevel, cfg.Asan, cfg.AddrMode == "identity"); err != nil {
+			fmt.Fprintf(logw, "             Warning: failed to generate build.ninja: %v\n", err)
+		} else {
+			writeStamp(cfg)
+		}
+	} else if cfg.Compile {
 		stepStart = time.Now()
 		ev.Progress("compile", 0, int64(len(cFiles)), "files", "compiling")
 		fmt.Fprintf(logw, "[ps4-recomp] [4/4] Compiling native ARM64 binary with clang (-O%s, %d workers)...\n",
 			cfg.OptLevel, cfg.Jobs)
-		if err := compileParallel(ctx, cFiles, cfg.OutDir, runtimeIncludeDirs, targetBin, cfg.Jobs, cfg.OptLevel, cfg.Asan, func(done, total int64) {
+		if err := compileParallel(ctx, cFiles, cfg.OutDir, runtimeIncludeDirs, targetBin, cfg.Jobs, cfg.OptLevel, cfg.Asan, cfg.AddrMode == "identity", func(done, total int64) {
 			ev.Progress("compile", done, total, "files", "compiling")
 		}); err != nil {
 			return fmt.Errorf("compilation failed: %w", err)
@@ -596,7 +974,7 @@ func Execute(args []string) (err error) {
 		}
 	} else {
 		fmt.Fprintln(logw, "[ps4-recomp] [4/4] Clang compilation skipped (--compile=false). Generating build.ninja...")
-		if err := generateNinjaBuild(cFiles, cfg.OutDir, runtimeIncludeDirs, targetBin, cfg.OptLevel, cfg.Asan); err != nil {
+		if err := generateNinjaBuild(cFiles, cfg.OutDir, runtimeIncludeDirs, targetBin, cfg.OptLevel, cfg.Asan, cfg.AddrMode == "identity"); err != nil {
 			fmt.Fprintf(logw, "             Warning: failed to generate build.ninja: %v\n", err)
 		} else {
 			fmt.Fprintf(logw, "             Generated %s\n", filepath.Join(cfg.OutDir, "build.ninja"))
@@ -628,7 +1006,7 @@ func finishBuild(ctx context.Context, ev *events.Writer, cfg *Config, targetBin,
 	return nil
 }
 
-func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, targetBin string, optLevel string, asan bool) error {
+func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, targetBin string, optLevel string, asan bool, identityAddr bool) error {
 	ftCflags, ftLibs := findFreeType()
 	ffCflags, ffLibs := findFFmpeg()
 
@@ -650,7 +1028,7 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 
 	hasAsm := false
 	for _, f := range cFiles {
-		if filepath.Ext(f) == ".s" {
+		if ext := filepath.Ext(f); ext == ".s" || ext == ".o" {
 			hasAsm = true
 			break
 		}
@@ -658,7 +1036,7 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 
 	// -ffp-contract=off: keep clang from fusing a*b+c into an arm64 FMA in C runtime code
 	// (x86 SSE/AVX without FMA never fuses, and runtime helpers emulate guest float math).
-	cflags := []string{"-O" + optLevel, "-ffp-contract=off", "-fvisibility=hidden", "-Wno-parentheses-equality"}
+	cflags := []string{"-O" + optLevel, "-ffp-contract=off", "-Wno-parentheses-equality"}
 	if asan {
 		cflags = append(cflags, "-fsanitize=address,undefined", "-fno-omit-frame-pointer")
 	}
@@ -669,6 +1047,15 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 		}
 		cflags = append(darwinFlags, cflags...)
 	}
+	// The runtime's guest<->host pointer translation is a compile-time no-op in identity mode
+	// (nps5_mem.h); the mode is a property of the translated title, so it is a build flag.
+	if identityAddr {
+		cflags = append(cflags, "-DNPS5_ADDR_MODE_IDENTITY=1")
+	}
+	if checkedPtr() {
+		cflags = append(cflags, "-DNPS5_CHECKED_PTR=1")
+	}
+	cflags = append(cflags, gpuCFlags()...)
 
 	fmt.Fprintf(&sb, "cflags = %s\n\n", ninjaShellArgs(append(cflags, incFlags...)))
 
@@ -707,7 +1094,7 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 		ldflags = append(ldflags, "-fsanitize=address,undefined")
 	}
 	if runtime.GOOS == "darwin" {
-		ldflags = append(ldflags, "-target", "arm64-apple-darwin", "-Wl,-dead_strip", "-Wl,-x",
+		ldflags = append(ldflags, "-target", "arm64-apple-darwin", "-Wl,-dead_strip", "-Wl,-export_dynamic", "-Wl,-x",
 			"-framework", "Metal", "-framework", "Cocoa", "-framework", "QuartzCore", "-framework", "GameController", "-framework", "AudioToolbox", "-framework", "ImageIO", "-framework", "MetalFX", "-framework", "VideoToolbox", "-framework", "CoreMedia", "-framework", "CoreVideo", "-lz")
 	} else {
 		ldflags = append(ldflags, "-Wl,--gc-sections", "-Wl,-s", "-lpthread", "-lm")
@@ -729,6 +1116,11 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 	}
 	ldflags = append(ldflags, ftLibs...)
 	ldflags = append(ldflags, ffLibs...)
+	if gl, err := gpuLDFlags(); err != nil {
+		return err
+	} else {
+		ldflags = append(ldflags, gl...)
+	}
 
 	fmt.Fprintf(&sb, "ldflags = %s\n\n", ninjaShellArgs(ldflags))
 	sb.WriteString("rule link_bin\n")
@@ -744,6 +1136,9 @@ func generateNinjaBuild(cFiles []string, outDir string, includeDirs []string, ta
 		ext := filepath.Ext(relCFile)
 		objFile := strings.TrimSuffix(relCFile, ext) + ".o"
 		objFiles = append(objFiles, objFile)
+		if ext == ".o" {
+			continue // already assembled by the streaming pipeline
+		}
 		rule := "compile_c"
 		if ext == ".s" {
 			rule = "compile_s"
@@ -868,7 +1263,7 @@ func ninjaLinkBuild(target string, objs, libs []string) string {
 // compileParallel compiles cFiles and links targetBin. progress, when non-nil, is called with
 // the number of files compiled so far and the total, as files complete. When ctx ends, the
 // running ninja or clang process groups are stopped and errBuildCancelled is returned.
-func compileParallel(ctx context.Context, cFiles []string, outDir string, includeDirs []string, targetBin string, numWorkers int, optLevel string, asan bool, progress func(done, total int64)) error {
+func compileParallel(ctx context.Context, cFiles []string, outDir string, includeDirs []string, targetBin string, numWorkers int, optLevel string, asan bool, identityAddr bool, progress func(done, total int64)) error {
 	ftCflags, ftLibs := findFreeType()
 	if len(ftCflags)+len(ftLibs) == 0 {
 		fmt.Fprintln(logw, "             FreeType: not found")
@@ -884,7 +1279,7 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 	// Try building with Ninja first if available
 	if ninjaPath := findNinja(); ninjaPath != "" {
 		fmt.Fprintf(logw, "             ninja: %s\n", ninjaPath)
-		if err := generateNinjaBuild(cFiles, outDir, includeDirs, targetBin, optLevel, asan); err != nil {
+		if err := generateNinjaBuild(cFiles, outDir, includeDirs, targetBin, optLevel, asan, identityAddr); err != nil {
 			fmt.Fprintf(logw, "             ninja: cannot write build.ninja (%v); compiling with clang directly\n", err)
 		} else {
 			err := runNinja(ctx, ninjaPath, outDir, numWorkers, progress)
@@ -920,6 +1315,14 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 		flagsKey.WriteByte(' ')
 		flagsKey.WriteString(f)
 	}
+	// The addressing mode changes what the runtime's translation macros expand to.
+	if identityAddr {
+		flagsKey.WriteString(" -DNPS5_ADDR_MODE_IDENTITY=1")
+	}
+	if checkedPtr() {
+		flagsKey.WriteString(" -DNPS5_CHECKED_PTR=1")
+	}
+	flagsKey.WriteString(" " + gpuKey())
 	flagsFingerprint := flagsKey.String()
 
 	objFiles := make([]string, len(cFiles))
@@ -938,6 +1341,10 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 				objFile := strings.TrimSuffix(cFile, ext) + ".o"
 				flagsFile := objFile + ".flags"
 				objFiles[idx] = objFile
+				if ext == ".o" { // already assembled by the streaming pipeline
+					fileDone()
+					continue
+				}
 
 				// Check if object is up-to-date:
 				// 1. .o must exist and be newer than .c
@@ -958,7 +1365,6 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 				clangArgs := []string{
 					"-O" + optLevel,
 					"-ffp-contract=off",
-					"-fvisibility=hidden",
 					"-Wno-parentheses-equality",
 					"-I" + outDir,
 				}
@@ -967,6 +1373,13 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 				}
 				clangArgs = append(clangArgs, ftCflags...)
 				clangArgs = append(clangArgs, ffCflags...)
+				if identityAddr {
+					clangArgs = append(clangArgs, "-DNPS5_ADDR_MODE_IDENTITY=1")
+				}
+				if checkedPtr() {
+					clangArgs = append(clangArgs, "-DNPS5_CHECKED_PTR=1")
+				}
+				clangArgs = append(clangArgs, gpuCFlags()...)
 				if asan {
 					clangArgs = append(clangArgs, "-fsanitize=address,undefined", "-fno-omit-frame-pointer")
 				}
@@ -1020,7 +1433,7 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 		linkArgs = append(linkArgs, "-fsanitize=address,undefined")
 	}
 	if runtime.GOOS == "darwin" {
-		linkArgs = append(linkArgs, "-target", "arm64-apple-darwin", "-Wl,-dead_strip", "-Wl,-x",
+		linkArgs = append(linkArgs, "-target", "arm64-apple-darwin", "-Wl,-dead_strip", "-Wl,-export_dynamic", "-Wl,-x",
 			"-framework", "Metal", "-framework", "Cocoa", "-framework", "QuartzCore", "-framework", "GameController", "-framework", "AudioToolbox", "-framework", "ImageIO", "-framework", "MetalFX", "-framework", "VideoToolbox", "-framework", "CoreMedia", "-framework", "CoreVideo", "-lz")
 	} else {
 		linkArgs = append(linkArgs, "-Wl,--gc-sections", "-Wl,-s", "-lpthread", "-lm")
@@ -1039,6 +1452,11 @@ func compileParallel(ctx context.Context, cFiles []string, outDir string, includ
 	linkArgs = append(linkArgs, ftLibs...)
 	linkArgs = append(linkArgs, ffLibs...)
 	linkArgs = append(linkArgs, objFiles...)
+	if gl, err := gpuLDFlags(); err != nil {
+		return err
+	} else {
+		linkArgs = append(linkArgs, gl...)
+	}
 
 	cmd := groupCommand(ctx, "clang", linkArgs...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -1077,8 +1495,32 @@ func runBinary(ctx context.Context, targetBin string, timeoutSec int, appDir str
 	return err
 }
 
-func loadCompanionModules(cfg *Config, main *elfloader.LoadedELF) ([]emitter.GuestModule, error) {
-	refs := elfloader.DiscoverCompanionModules(cfg.ElfPath, cfg.AppDir, main.MemoryImage)
+// excludeRefs drops the modules named by -exclude-module. Only their export NIDs are read (the
+// image is parsed and discarded, never biased, merged, discovered or lifted) so imports of
+// them can be stubbed by name.
+func excludeRefs(cfg *Config, main *elfloader.LoadedELF, refs []elfloader.ModuleRef) []elfloader.ModuleRef {
+	if len(cfg.ExcludeModules) == 0 {
+		return refs
+	}
+	var keep []elfloader.ModuleRef
+	for _, ref := range refs {
+		if !elfloader.ExcludedModuleMatch(ref.Path, cfg.ExcludeModules) {
+			keep = append(keep, ref)
+			continue
+		}
+		mod, err := elfloader.LoadELF(ref.Path)
+		if err != nil {
+			fmt.Fprintf(logw, "             Excluded module %s: cannot read exports: %v\n", filepath.Base(ref.Path), err)
+			continue
+		}
+		main.MarkExcludedExports(filepath.Base(ref.Path), mod.ExportedFunctions())
+		fmt.Fprintf(logw, "             Excluded module %s (%d exports)\n", filepath.Base(ref.Path), len(mod.ExportedFunctions()))
+	}
+	return keep
+}
+
+func loadCompanionModules(cfg *Config, main *elfloader.LoadedELF, layout guestmem.Layout) ([]emitter.GuestModule, error) {
+	refs := excludeRefs(cfg, main, elfloader.DiscoverCompanionModules(cfg.ElfPath, cfg.AppDir, main.MemoryImage))
 	referenced := elfloader.ReferencedModuleNames(main.MemoryImage)
 	found := make(map[string]struct{})
 	for _, ref := range refs {
@@ -1112,8 +1554,11 @@ func loadCompanionModules(cfg *Config, main *elfloader.LoadedELF) ([]emitter.Gue
 			fmt.Fprintf(logw, "             Skipping module %s: %v\n", filepath.Base(ref.Path), err)
 			continue
 		}
-		if elfloader.Overlaps(main, mod) {
-			if err := mod.ApplyBias(nextBase - mod.MinVAddr); err != nil {
+		// A module linked below the layout's first valid address (relocatable PRXs are linked at
+		// 0) must be placed even when it does not overlap the executable: nothing may live in
+		// the null guard, and in identity mode nothing may live outside the arena.
+		if elfloader.Overlaps(main, mod) || mod.MinVAddr < layout.GuestLo {
+			if err := mod.ApplyBias(nextBase - mod.MinVAddr&^0xFFFF); err != nil {
 				return nil, fmt.Errorf("failed to relocate module %s: %w", filepath.Base(ref.Path), err)
 			}
 		}
@@ -1129,7 +1574,7 @@ func loadCompanionModules(cfg *Config, main *elfloader.LoadedELF) ([]emitter.Gue
 			FileName:       mod.FileName,
 			Aliases:        ref.Aliases,
 			Exports:        exports,
-			Init:           append([]uint64(nil), mod.InitArray...),
+			Init:           mod.InitRunList(),
 			StartAddr:      mod.MinVAddr,
 			EndAddr:        mod.MaxVAddr,
 			Seg0Addr:       mod.Seg0Addr,
@@ -1834,7 +2279,6 @@ func bundleDylibDependencies(contentsDir, bundleBin string) error {
 	return nil
 }
 
-
 var (
 	custom3rdPartyMu   sync.Mutex
 	custom3rdPartyDirs []string
@@ -2074,4 +2518,30 @@ func findMinimp3(extraDirs ...string) string {
 		}
 	}
 	return ""
+}
+
+// checkedPtr reports NPS5_CHECKED_PTR=1: build the runtime with range-checked guest-to-host pointer
+// translation (nps5_thunk.h). Off by default; the default path stays a bare add.
+func checkedPtr() bool { return os.Getenv("NPS5_CHECKED_PTR") == "1" }
+
+// humanBytes formats a byte count for the build log.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
+}
+
+// defaultJobs is the default parallelism: NPS5_JOBS when set (shared machines), else the CPU count.
+func defaultJobs() int {
+	if v, err := strconv.Atoi(os.Getenv("NPS5_JOBS")); err == nil && v > 0 {
+		return v
+	}
+	return runtime.NumCPU()
 }

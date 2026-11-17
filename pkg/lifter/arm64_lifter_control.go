@@ -20,7 +20,7 @@ func (l *Arm64Lifter) liftSetcc(inst disasm.Instruction, nextPC uint64, cond str
 	}
 
 	if mem, ok := dst.(x86asm.Mem); ok {
-		lines = append(lines, writeMemFrom(mem, nextPC, 1, "x16", "w16")...)
+		lines = append(lines, l.writeMemFrom(mem, nextPC, 1, "x16", "w16")...)
 		return lines, nil
 	}
 
@@ -47,7 +47,7 @@ func (l *Arm64Lifter) liftCmovcc(inst disasm.Instruction, nextPC uint64, cond st
 				s16 = descSrc.W
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
-			lines = append(lines, readMemTo(mem, nextPC, 2, "x16", "w16")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, 2, "x16", "w16")...)
 			s16 = "w16"
 		}
 		if s16 == "" {
@@ -71,7 +71,7 @@ func (l *Arm64Lifter) liftCmovcc(inst disasm.Instruction, nextPC uint64, cond st
 	}
 
 	if mem, okMem := src.(x86asm.Mem); okMem {
-		lines = append(lines, readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
+		lines = append(lines, l.readMemTo(mem, nextPC, descDst.Size, "x16", "w16")...)
 		if descDst.Size == 4 {
 			lines = append(lines, fmt.Sprintf("    csel %s, w16, %s, %s", descDst.W, descDst.W, cond))
 		} else {

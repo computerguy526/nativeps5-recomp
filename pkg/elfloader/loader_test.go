@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadELF(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)
@@ -40,7 +40,7 @@ func TestLoadELF(t *testing.T) {
 }
 
 func TestPLTRelocations(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)

@@ -7,13 +7,17 @@ import (
 	"ps4-recomp/pkg/disasm"
 )
 
-// Helper to load context pointer into a GPR (e.g. x16).
+// Helper to load context pointer into a GPR (e.g. x16). The TCB slot is thread-private: the
+// load is marked so that the TSO pass leaves it plain (tcbMark).
 func (l *Arm64Lifter) emitLoadCtxPtr(reg string) []string {
 	return []string{
 		fmt.Sprintf("    add  %s, x27, #0x70", reg),
-		fmt.Sprintf("    ldr  %s, [x28, %s]", reg, reg),
+		fmt.Sprintf("    ldr  %s, %s %s", reg, l.gm(reg), tcbMark),
 	}
 }
+
+// tcbMark is the trailing comment of the load of the GuestContext pointer from the TCB.
+const tcbMark = "// tcb: ctx"
 
 // mmxOffset returns the byte offset of mmx[idx] within GuestContext.
 func mmxOffset(idx int) int {
@@ -46,12 +50,12 @@ func (l *Arm64Lifter) liftMmxMovdMovq(inst disasm.Instruction, nextPC uint64, li
 			lines = append(lines, l.emitLoadCtxPtr("x5")...)
 			if is64 {
 				lines = append(lines,
-					"    ldr x17, [x28, x16]",
+					"    ldr x17, "+l.gm("x16"),
 					fmt.Sprintf("    str x17, [x5, #%d]", mmxOffset(mmxIdx(dstReg))),
 				)
 			} else {
 				lines = append(lines,
-					"    ldr w17, [x28, x16]",
+					"    ldr w17, "+l.gm("x16"),
 					"    uxtw x17, w17",
 					fmt.Sprintf("    str x17, [x5, #%d]", mmxOffset(mmxIdx(dstReg))),
 				)
@@ -67,12 +71,12 @@ func (l *Arm64Lifter) liftMmxMovdMovq(inst disasm.Instruction, nextPC uint64, li
 		if is64 {
 			lines = append(lines,
 				fmt.Sprintf("    ldr x17, [x5, #%d]", mmxOffset(mmxIdx(srcReg))),
-				"    str x17, [x28, x16]",
+				"    str x17, "+l.gm("x16"),
 			)
 		} else {
 			lines = append(lines,
 				fmt.Sprintf("    ldr w17, [x5, #%d]", mmxOffset(mmxIdx(srcReg))),
-				"    str w17, [x28, x16]",
+				"    str w17, "+l.gm("x16"),
 			)
 		}
 		return lines, true, nil
@@ -158,7 +162,7 @@ func (l *Arm64Lifter) liftMmxLogic(inst disasm.Instruction, armOp string, nextPC
 		lines = append(lines, fmt.Sprintf("    ldr d17, [x5, #%d]", mmxOffset(mmxIdx(srcReg))))
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr d17, [x28, x16]")
+		lines = append(lines, "    ldr d17, "+l.gm("x16"))
 	} else {
 		return lines, false, nil
 	}
@@ -195,7 +199,7 @@ func (l *Arm64Lifter) liftMmxBinary(inst disasm.Instruction, nextPC uint64, line
 		lines = append(lines, fmt.Sprintf("    ldr d17, [x5, #%d]", mmxOffset(mmxIdx(srcReg))))
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr d17, [x28, x16]")
+		lines = append(lines, "    ldr d17, "+l.gm("x16"))
 	} else {
 		return lines, false, nil
 	}
@@ -238,7 +242,7 @@ func (l *Arm64Lifter) liftMmxBinary(inst disasm.Instruction, nextPC uint64, line
 	case x86asm.PMULHW:
 		lines = append(lines,
 			"    smull v18.4s, v16.4h, v17.4h",
-			"    uzp2 v16.4h, v18.4h, v18.4h",
+			"    shrn v16.4h, v18.4s, #16",
 		)
 	case x86asm.PMADDUBSW:
 		lines = append(lines,
@@ -252,7 +256,7 @@ func (l *Arm64Lifter) liftMmxBinary(inst disasm.Instruction, nextPC uint64, line
 	case x86asm.PMULHUW:
 		lines = append(lines,
 			"    umull v18.4s, v16.4h, v17.4h",
-			"    uzp2 v16.4h, v18.4h, v18.4h",
+			"    shrn v16.4h, v18.4s, #16",
 		)
 	case x86asm.PMAXSW:
 		lines = append(lines, "    smax v16.4h, v16.4h, v17.4h")
@@ -359,7 +363,7 @@ func (l *Arm64Lifter) liftMmxShift(inst disasm.Instruction, nextPC uint64, lines
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x17")...)
-			lines = append(lines, "    ldr x16, [x28, x17]")
+			lines = append(lines, "    ldr x16, "+l.gm("x17"))
 		}
 		// Clamp and shift
 		lines = append(lines,
@@ -462,7 +466,7 @@ func (l *Arm64Lifter) liftMmxUnpck(inst disasm.Instruction, nextPC uint64, lines
 		lines = append(lines, fmt.Sprintf("    ldr d17, [x5, #%d]", mmxOffset(mmxIdx(sReg))))
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr d17, [x28, x16]")
+		lines = append(lines, "    ldr d17, "+l.gm("x16"))
 	} else {
 		return lines, false, nil
 	}
@@ -503,7 +507,7 @@ func (l *Arm64Lifter) liftMmxPack(inst disasm.Instruction, nextPC uint64, lines 
 		lines = append(lines, fmt.Sprintf("    ldr d17, [x5, #%d]", mmxOffset(mmxIdx(sReg))))
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr d17, [x28, x16]")
+		lines = append(lines, "    ldr d17, "+l.gm("x16"))
 	} else {
 		return lines, false, nil
 	}
@@ -533,4 +537,42 @@ func (l *Arm64Lifter) liftMmxPack(inst disasm.Instruction, nextPC uint64, lines 
 
 	lines = append(lines, fmt.Sprintf("    str d16, [x5, #%d]", mmxOffset(mmxIdx(dstReg))))
 	return lines, true, nil
+}
+
+// liftMmxPshufw handles PSHUFW mm, mm/m64, imm8 (NP 0F 70): word i of the result is word
+// imm8[2i+1:2i] of the source. One TBL with a single table register and a byte-index constant
+// built from the immediate (word selector s -> bytes 2s, 2s+1).
+// FEX: OpcodeDispatcher/Vector.cpp PSHUFW8ByteOp:968 (table entry SecondaryTables.h:90); the
+// 66/F2/F3 0F 70 forms are the XMM shuffles handled elsewhere.
+func (l *Arm64Lifter) liftMmxPshufw(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
+	dstReg, okDst := inst.Inst.Args[0].(x86asm.Reg)
+	imm, okImm := inst.Inst.Args[2].(x86asm.Imm)
+	if !okDst || !isMmx(dstReg) || !okImm {
+		return append(lines, l.emitUnsupported(inst, "pshufw operands")...), nil
+	}
+	var idx uint64
+	for i := 0; i < 4; i++ {
+		sel := uint64(imm) >> (2 * i) & 3
+		idx |= (2*sel | (2*sel+1)<<8) << (16 * i)
+	}
+	switch src := inst.Inst.Args[1].(type) {
+	case x86asm.Reg:
+		if !isMmx(src) {
+			return append(lines, l.emitUnsupported(inst, "pshufw source")...), nil
+		}
+		lines = append(lines, l.emitLoadCtxPtr("x5")...)
+		lines = append(lines, fmt.Sprintf("    ldr d17, [x5, #%d]", mmxOffset(mmxIdx(src))))
+	case x86asm.Mem:
+		lines = append(lines, computeEffAddr(src, nextPC, "x16")...)
+		lines = append(lines, "    ldr d17, "+l.gm("x16"))
+		lines = append(lines, l.emitLoadCtxPtr("x5")...)
+	default:
+		return append(lines, l.emitUnsupported(inst, "pshufw source")...), nil
+	}
+	lines = append(lines, loadImm64("x16", idx)...)
+	lines = append(lines,
+		"    fmov d16, x16",
+		"    tbl v16.8b, {v17.16b}, v16.8b",
+		fmt.Sprintf("    str d16, [x5, #%d]", mmxOffset(mmxIdx(dstReg))))
+	return lines, nil
 }

@@ -48,31 +48,61 @@
 .set RES_THR_MAIN, RES + 0x1400
 .set RES_THR_MAIN_FP, RES + 0x1500
 .set RES_THR_CHILD, RES + 0x1600
+.set RES_LEAN, RES + 0x1700
+.set RES_LEAN_EXC_PRE, RES + 0x1800
+.set RES_LEAN_EXC, RES + 0x1900
+.set LEAN_THR_H, D + 0xa00        // three pthread handles
+.set LEAN_THR_RES, D + 0xa40      // three 0x40-byte result blocks
+.set LEAN_THR_RET, D + 0xb00
+.set ADDR_LEAN_THREAD_ENTRY, 0x401500
 
 .macro LI reg, val
     movz \reg, #((\val) & 0xffff)
     movk \reg, #(((\val) >> 16) & 0xffff), lsl #16
 .endm
 
+// CALL_MODEL_FLAT (0 or 1) is set by boundary_test.go: the same guest functions run in the
+// nested call model (one 16-byte host stack slot per active function for x30) and in the flat
+// one (no host frame, shadow return stack in x29; docs/m1/flatstack.md).
 .macro GUEST_FN name
 .globl \name
 .p2align 2
 \name:
+.if CALL_MODEL_FLAT
+    stp  x7, x26, [x29, #-32]!   // call entry: shadow entry {guest return address, rsp, host continuation}
+    str  x30, [x29, #16]
+.else
     str  x30, [sp, #-16]!
+.endif
 .endm
 
 // x86 RET as the lifter emits it.
 .macro GUEST_RET
+.if CALL_MODEL_FLAT
+    ldr  x7, [x28, x26]
+    ldp  x17, x0, [x29], #32
+    cmp  x7, x17
+    ccmp x26, x0, #0, eq
+    add  x26, x26, #8
+    b.eq 771f
+    b    _recomp_ret_slow
+771:
+    ldur x30, [x29, #-16]
+    ret
+.else
     ldr  x16, [x28, x26]
     add  x26, x26, #8
     ldr  x30, [sp], #16
     ret
+.endif
 .endm
 
-// x86 CALL of a shim: push a return address, branch to the shim stub.
+// x86 CALL of a shim: push a return address (x7 names it at a flat call entry), branch to the
+// shim stub.
 .macro GUEST_CALL target
     sub  x26, x26, #8
     str  xzr, [x28, x26]
+    mov  x7, xzr
     bl   \target
 .endm
 
@@ -468,3 +498,93 @@ _host_enter_guest_d8_d15:
     ldp  d14, d15, [sp, #64]
     ldp  x29, x30, [sp], #80
     ret
+
+// ---- Lean HLE calls (docs/m3/leanshim.md; harness.c test_lean_*).
+
+// One call of shim_test_lean_mix with distinct values in the GPRs a call must not change (and, as
+// the bridge restores them from the context, in r8-r11 too): rdi, rsi, rdx, rcx come from the
+// context the harness set up; r8 and r9 (the 5th and 6th argument) are 0x5108 and 0x5109.
+GUEST_FN _guest_lean_mix
+    SET_PATTERN 0x5100
+    STORE_REGS RES_LEAN_EXC_PRE
+    GUEST_CALL _stub_test_lean_mix
+    STORE_REGS RES_LEAN
+    GUEST_RET
+
+// A SIGUSR1 handler runs while the thread is inside a lean function (shim_test_lean_wait).
+GUEST_FN _guest_lean_exc_main
+    SET_PATTERN 0xe000
+    STORE_REGS RES_LEAN_EXC_PRE
+    GUEST_CALL _stub_test_lean_wait
+    STORE_REGS RES_LEAN_EXC
+    GUEST_RET
+
+// Calls one lean stub of the wrongly-marked set (rdi = 7, rsi = 8) and returns.
+.macro LEAN_BAD name
+GUEST_FN _guest_lean_\name
+    SET_PATTERN 0x5100
+    movz x24, #7
+    movz x23, #8
+    GUEST_CALL _stub_test_lean_\name
+    GUEST_RET
+.endm
+LEAN_BAD bad_x19
+LEAN_BAD bad_x28
+LEAN_BAD bad_x29
+LEAN_BAD bad_d9
+LEAN_BAD bad_callback
+LEAN_BAD fault
+
+// void *entry(void *arg) for three threads at once: 40000 calls of shim_test_lean_mix with varying
+// arguments, the results xor-ed into r12; rbx, rbp (the counter), r13, r14, r15 must survive every
+// call. arg = the guest address of this thread's result block: [0] acc, [1] r13, [2] r14, [3] r15,
+// [4] rbx, [5] FS base, [6] errno (FS:[0x100]), [7] rbp.
+GUEST_FN _guest_lean_thread_entry
+    mov  x20, x24
+    LI   x25, 40000
+    movz x12, #0
+    LI   x13, 0x13131313
+    mov  x14, x24
+    LI   x15, 0x15151515
+1:  mov  x24, x25
+    mov  x23, x20
+    movz x22, #3
+    movz x21, #4
+    movz x8,  #5
+    movz x9,  #6
+    GUEST_CALL _stub_test_lean_mix
+    eor  x12, x12, x19
+    subs x25, x25, #1
+    b.ne 1b
+    add  x16, x28, x20
+    stp  x12, x13, [x16, #0]
+    stp  x14, x15, [x16, #16]
+    stp  x20, x27, [x16, #32]
+    add  x1, x27, #0x100
+    ldr  w0, [x28, x1]
+    stp  x0, x25, [x16, #48]
+    movz x19, #0
+    GUEST_RET
+
+.macro LEAN_SPAWN i
+    LI   x24, LEAN_THR_H + 8 * \i
+    movz x23, #0
+    LI   x22, ADDR_LEAN_THREAD_ENTRY
+    LI   x21, LEAN_THR_RES + 0x40 * \i
+    GUEST_CALL _stub_pthread_create
+.endm
+.macro LEAN_JOIN i
+    LI   x16, LEAN_THR_H + 8 * \i
+    add  x16, x28, x16
+    ldr  x24, [x16]
+    LI   x23, LEAN_THR_RET
+    GUEST_CALL _stub_pthread_join
+.endm
+GUEST_FN _guest_lean_threads_main
+    LEAN_SPAWN 0
+    LEAN_SPAWN 1
+    LEAN_SPAWN 2
+    LEAN_JOIN 0
+    LEAN_JOIN 1
+    LEAN_JOIN 2
+    GUEST_RET

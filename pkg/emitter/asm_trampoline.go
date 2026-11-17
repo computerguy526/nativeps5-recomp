@@ -110,9 +110,10 @@ const trampolineAsm = `// ARM64 assembly bridge between the host C runtime and r
 // thread. The runtime must point the TCB slot of a guest thread at the GuestContext of the
 // endpoint it switches to, before the switch.
 //
-// Not supported: guest non-local transfers (longjmp, C++ unwinding) RET to another frame,
-// but each guest RET returns through its own host frame; libc's longjmp and __cxa_throw
-// are shims that report and abort (shim_guest_nonlocal_jump, shim_guest_cxa_throw).
+// Guest non-local transfers (longjmp, C++ unwinding) RET to another frame, but each guest RET
+// returns through its own host frame. They are shims (nps5_eh.c) that find the target's host
+// frame - each guest function's host frame is [x30, entry guest rsp] - and leave through
+// _recomp_resume_guest.
 // Helpers the lifter calls inside one instruction (recomp_vpcmpistri, recomp_vpcmpe_stri,
 // recomp_vaeskeygenassist below) keep every vector register.
 // --------------------------------------------------------------------------------------
@@ -166,10 +167,10 @@ Lenter_guest_ret:
     ldr  x0, [sp, #160]
     SAVE_GPRS x0
     SAVE_XMM0_7 x0
-    b    Lenter_guest_tail
+    b    _nps5_xs_enter_guest_tail
 
 HOST_SECTION
-Lenter_guest_tail:
+_nps5_xs_enter_guest_tail:
     ldr  x2, [sp, #168]          // host FPCR
     mrs  x3, fpcr
     cmp  x2, x3
@@ -204,10 +205,10 @@ _recomp_call_shim:
     str  x1, [x2, #0x80]         // rip
     SAVE_GPRS x2
     SAVE_XMM0_7 x2
-    b    Lcall_shim_host
+    b    _nps5_xs_call_shim_host
 
 HOST_SECTION
-Lcall_shim_host:
+_nps5_xs_call_shim_host:
     // Host code runs with round to nearest. FZ stays as the guest set it (flush to zero only
     // changes denormal results of host float math), so a guest with the default rounding mode
     // - TLOU's threads run with FTZ|DAZ - costs no FPCR write (msr fpcr serialises: ~12 ns).
@@ -221,7 +222,23 @@ Lcall_shim_host:
 
     mov  x0, x2
     ldr  x3, [sp, #16]
+    // Diagnostics hook (nps5_diag.c): per-shim call counts and HLE trace. x4 is null when off.
+    adrp x4, _g_nps5_hle_hook@PAGE
+    ldr  x4, [x4, _g_nps5_hle_hook@PAGEOFF]
+    cbz  x4, 3f
+    mov  x1, x3
+    blr  x4
+    ldr  x0, [sp, #24]
+    ldr  x3, [sp, #16]
+3:
     blr  x3
+    // Performance trace (nps5_perf.c, NPS5_PERF=1): time spent in the shim. Null when off.
+    adrp x4, _g_nps5_hle_exit_hook@PAGE
+    ldr  x4, [x4, _g_nps5_hle_exit_hook@PAGEOFF]
+    cbz  x4, 4f
+    ldp  x1, x0, [sp, #16]
+    blr  x4
+4:
 
     // The ctx this call stored into. A context switch inside the shim may have changed the
     // TCB slot, and x27 may name another guest thread's TCB by now.
@@ -312,23 +329,23 @@ _recomp_vpcmpistri:
     stp  x29, x30, [sp, #-16]!
     mov  x29, sp
     HELPER_SAVE_GPRS
-    b    Lvpcmpistri_host
+    b    _nps5_xs_vpcmpistri_host
 .globl _recomp_vpcmpe_stri
 _recomp_vpcmpe_stri:
     stp  x29, x30, [sp, #-16]!
     mov  x29, sp
     HELPER_SAVE_GPRS
-    b    Lvpcmpe_stri_host
+    b    _nps5_xs_vpcmpe_stri_host
 
 HOST_SECTION
-Lvpcmpistri_host:
+_nps5_xs_vpcmpistri_host:
     SAVE_Q0_31
     bl   _recomp_vpcmpistri_impl
     LOAD_Q0_31
     HELPER_LOAD_R8_R15
     ldp  x29, x30, [sp], #16
     ret
-Lvpcmpe_stri_host:
+_nps5_xs_vpcmpe_stri_host:
     SAVE_Q0_31
     bl   _recomp_vpcmpe_stri_impl
     LOAD_Q0_31
@@ -347,10 +364,10 @@ _recomp_vaeskeygenassist:
     mrs  x16, nzcv
     str  x16, [sp, #16]
     HELPER_SAVE_GPRS
-    b    Lvaeskeygenassist_host
+    b    _nps5_xs_vaeskeygenassist_host
 
 HOST_SECTION
-Lvaeskeygenassist_host:
+_nps5_xs_vaeskeygenassist_host:
     SAVE_Q0_31
     and  w2, w0, #0xff
     fmov x0, d0
@@ -425,86 +442,24 @@ _recomp_indirect_jump:
 99:
     DISPATCH_EXTERNAL
 
-// Non-local control transfer: setjmp / longjmp
-.globl _recomp_guest_setjmp
-_recomp_guest_setjmp:
-    ldr  x17, [x28, x26]
-    add  x26, x26, #8
-
-    add  x16, x28, x24
-    str  x17, [x16, #0]        // env[0] = RIP
-    str  x20, [x16, #8]        // env[1] = RBX
-    str  x26, [x16, #16]       // env[2] = RSP
-    str  x25, [x16, #24]       // env[3] = RBP
-    str  x12, [x16, #32]       // env[4] = R12
-    str  x13, [x16, #40]       // env[5] = R13
-    str  x14, [x16, #48]       // env[6] = R14
-    str  x15, [x16, #56]       // env[7] = R15
-    mov  w1, #0x037f
-    strh w1, [x16, #64]        // env[8] fpu cw
-    mov  w1, #0x1f80
-    str  w1, [x16, #68]        // env[8] mxcsr
-
-    stp  x29, x30, [sp, #-256]!
-    mov  x29, sp
-
-    add  x16, sp, #256         // caller's host sp
-    str  x24, [sp, #16]        // env
-    str  x16, [sp, #24]        // host_sp
-    ldr  x16, [sp, #8]         // caller's host x30
-    str  x16, [sp, #32]        // host_x30
-    ldr  x16, [sp, #0]         // caller's host x29
-    str  x16, [sp, #40]        // host_x29
-    str  x26, [sp, #48]        // guest_rsp
-    str  x25, [sp, #56]        // guest_rbp
-    str  x20, [sp, #64]        // guest_rbx
-    str  x12, [sp, #72]        // guest_r12
-    str  x13, [sp, #80]        // guest_r13
-    str  x14, [sp, #88]        // guest_r14
-    str  x15, [sp, #96]        // guest_r15
-    str  x17, [sp, #104]       // guest_rip
-
-    // Save caller-saved ARM64 registers that map to guest registers (x8..x15)
-    stp  x8,  x9,  [sp, #112]
-    stp  x10, x11, [sp, #128]
-    stp  x12, x13, [sp, #144]
-    stp  x14, x15, [sp, #160]
-
-    add  x2, x27, #0x70
-    ldr  x0, [x28, x2]         // ctx
-    add  x1, sp, #16           // &rec
-    bl   _recomp_save_jmp_record
-
-    // Restore guest registers x8..x15
-    ldp  x8,  x9,  [sp, #112]
-    ldp  x10, x11, [sp, #128]
-    ldp  x12, x13, [sp, #144]
-    ldp  x14, x15, [sp, #160]
-
-    ldp  x29, x30, [sp], #256
-    mov  x19, #0               // guest RAX = 0
-    ret
-
-.globl _recomp_guest_do_longjmp
-_recomp_guest_do_longjmp:
-    ldr  x26, [x1, #32]        // guest_rsp
-    ldr  x25, [x1, #40]        // guest_rbp
-    ldr  x20, [x1, #48]        // guest_rbx
-    ldr  x12, [x1, #56]        // guest_r12
-    ldr  x13, [x1, #64]        // guest_r13
-    ldr  x14, [x1, #72]        // guest_r14
-    ldr  x15, [x1, #80]        // guest_r15
-
+// Non-local control transfer (setjmp/longjmp, C++ landing pads): see pkg/runtime/core/nps5_eh.c and
+// docs/m1/setjmp-eh.md. Called from a shim (C, host code) that has decided where to resume:
+//   void _recomp_resume_guest(GuestContext *ctx, uintptr_t host_sp, uintptr_t host_pc, uint64_t fpcr)
+// Loads the guest registers from ctx (the shim stored the target state there), sets the guest FPCR,
+// moves the host stack pointer to host_sp (the [x30, guest rsp] slot of the target guest function,
+// as if its prologue had just run) and branches to host_pc inside that function. Never returns;
+// the abandoned host frames (the shim, the bridge, the callee guest frames) are simply dropped.
+HOST_SECTION
+.globl _recomp_resume_guest
+_recomp_resume_guest:
+    mrs  x4, fpcr
+    cmp  x3, x4
+    b.eq 1f
+    msr  fpcr, x3
+1:
+    LOAD_GPRS x0
     ldr  x27, [x0, #0x88]      // fs_base
     ldr  x28, [x0, #0x330]     // mem_base
-
-    ldr  x16, [x1, #8]         // host_sp
-    ldr  x30, [x1, #16]        // host_x30
-    ldr  x29, [x1, #24]        // host_x29
-
-    cmp  w2, #0
-    csinc w19, w2, wzr, ne     // x19 = val ? val : 1
-
-    mov  sp, x16
-    ret
+    mov  sp, x1
+    br   x2
 `

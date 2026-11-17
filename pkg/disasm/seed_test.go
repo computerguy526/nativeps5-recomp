@@ -8,7 +8,7 @@ import (
 )
 
 func TestSeedEntryPointsHelloWorld(t *testing.T) {
-	loaded, err := elfloader.LoadELF("../../hello_world.elf")
+	loaded, err := elfloader.LoadELF(helloELF(t))
 	if err != nil {
 		t.Fatal(err)
 	}

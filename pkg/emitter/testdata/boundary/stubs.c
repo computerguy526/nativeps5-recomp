@@ -37,3 +37,25 @@ int ps4_vfs_resolve(const char *guest_path, char *host_path, size_t host_path_sz
   (void)host_path_sz;
   return -1;
 }
+
+/* The x87=f80 helper the bridge in asm_x87.go calls; the boundary cases run no x87 code. */
+#include <stdint.h>
+uint64_t recomp_x87_impl(void *ctx, uint32_t op, uint64_t arg) {
+  (void)ctx; (void)op; (void)arg;
+  return 0;
+}
+uint64_t recomp_x87_run_impl(void *ctx, const uint64_t *pairs, uint64_t n) {
+  (void)ctx; (void)pairs; (void)n;
+  return 0;
+}
+typedef struct { uint64_t ret, done; } x87_fast_ret;
+x87_fast_ret recomp_x87_fast(void *ctx, uint32_t op, uint64_t arg) {
+  x87_fast_ret r = {0, 0};
+  (void)ctx; (void)op; (void)arg;
+  return r;
+}
+x87_fast_ret recomp_x87_run_fast(void *ctx, const uint64_t *pairs, uint64_t n) {
+  x87_fast_ret r = {0, 0};
+  (void)ctx; (void)pairs; (void)n;
+  return r;
+}

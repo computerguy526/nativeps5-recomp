@@ -60,8 +60,21 @@ type execCase struct {
 	// compares none (flags x86 leaves undefined).
 	cmpFlags uint64
 	noFlags  bool
+	ymm      bool // the function uses YMM registers (lifts as such: upper halves are preserved)
 	// prep, when set, adjusts the lifted instruction (liveness bits the disasm pass would set).
 	prep func(i int, in *disasm.Instruction)
+	// cfg lifts the sequence the way the emitter does: split into blocks at branches and
+	// their targets (which must lie inside the sequence or at its end), with the disasm flag
+	// passes run on it (liveness, PF location) and block labels emitted.
+	cfg bool
+	// vec ("abi", "strict"; implies cfg) also runs the vector lane liveness pass in that mode,
+	// so the sequence is lifted with it (docs/m3/simdregs.md).
+	vec string
+	// block (with cfg): tell the lifter the block it is lifting (SetBlock), as the emitter does; push/pop
+	// fusion looks ahead in it.
+	block bool
+	// wantRegs (runExecExpect only): GPR values required after the sequence.
+	wantRegs map[x86asm.Reg]uint64
 }
 
 // execState mirrors struct st in the drivers.
@@ -86,6 +99,9 @@ func execSkip(t *testing.T) {
 	if _, err := exec.LookPath("clang"); err != nil {
 		t.Skip("clang not found")
 	}
+	if os.Getenv("LIFTER_NO_X86") != "" {
+		t.Skip("LIFTER_NO_X86 set: the x86 reference (Rosetta 2) is not run")
+	}
 	if err := exec.Command("arch", "-x86_64", "/usr/bin/true").Run(); err != nil {
 		t.Skip("Rosetta 2 not installed")
 	}
@@ -97,8 +113,11 @@ func execSkip(t *testing.T) {
 func liftSeq(t *testing.T, l *Arm64Lifter, c execCase, pc uint64) ([]string, *disasm.Function) {
 	t.Helper()
 	fn := &disasm.Function{EntryAddr: pc, EndAddr: pc + 0x100,
-		Blocks: map[uint64]*disasm.BasicBlock{pc: {StartAddr: pc}}, BlockOrder: []uint64{pc}}
+		Blocks: map[uint64]*disasm.BasicBlock{pc: {StartAddr: pc}}, BlockOrder: []uint64{pc}, UsesYmm: c.ymm}
 	var out []string
+	if c.cfg || c.vec != "" {
+		return liftSeqCFG(t, l, c, pc), fn
+	}
 	for i, h := range c.code {
 		b, err := hex.DecodeString(h)
 		if err != nil {
@@ -121,6 +140,110 @@ func liftSeq(t *testing.T, l *Arm64Lifter, c execCase, pc uint64) ([]string, *di
 	}
 	return out, fn
 }
+
+// liftSeqCFG is liftSeq for execCase.cfg: a small copy of the emitter's block loop.
+func liftSeqCFG(t *testing.T, l *Arm64Lifter, c execCase, entry uint64) []string {
+	t.Helper()
+	var insts []disasm.Instruction
+	pc := entry
+	for _, h := range c.code {
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			t.Fatalf("%s: bad hex %q", c.name, h)
+		}
+		inst, err := disasm.Decode(b)
+		if err != nil {
+			t.Fatalf("%s: decode %s: %v", c.name, h, err)
+		}
+		insts = append(insts, disasm.Instruction{Address: pc, Inst: inst})
+		pc += uint64(inst.Len)
+	}
+	end := pc
+	starts := map[uint64]bool{entry: true, end: true}
+	for _, in := range insts {
+		if rel, ok := in.Inst.Args[0].(x86asm.Rel); ok {
+			next := in.Address + uint64(in.Inst.Len)
+			target := uint64(int64(next) + int64(rel))
+			if target < entry || target > end {
+				t.Fatalf("%s: branch target %#x outside the sequence", c.name, target)
+			}
+			starts[target], starts[next] = true, true
+		}
+	}
+	fn := &disasm.Function{EntryAddr: entry, EndAddr: end + 0x100, Blocks: map[uint64]*disasm.BasicBlock{},
+		JumpTables: map[uint64][]uint64{}, UsesYmm: c.ymm}
+	var cur *disasm.BasicBlock
+	for _, in := range insts {
+		if starts[in.Address] {
+			cur = &disasm.BasicBlock{StartAddr: in.Address}
+			fn.Blocks[in.Address] = cur
+			fn.BlockOrder = append(fn.BlockOrder, in.Address)
+		}
+		cur.Insts = append(cur.Insts, in)
+		cur.EndAddr = in.Address + uint64(in.Inst.Len)
+	}
+	fn.Blocks[end] = &disasm.BasicBlock{StartAddr: end, EndAddr: end} // where the readout continues
+	fn.BlockOrder = append(fn.BlockOrder, end)
+	disasm.AnalyzeFlags(fn, nil)
+	if c.vec != "" {
+		m, ok := disasm.ParseVecLiveMode(c.vec)
+		if !ok {
+			t.Fatalf("%s: bad vec mode %q", c.name, c.vec)
+		}
+		disasm.AnalyzeVecLiveness(fn, m)
+	}
+	var out []string
+	for bi, addr := range fn.BlockOrder {
+		b := fn.Blocks[addr]
+		out = append(out, fmt.Sprintf("L_fn_0x%x_loc_0x%x:", entry, addr))
+		l.ResetFlags()
+		if c.block {
+			l.SetBlock(b)
+		}
+		if c.prep != nil {
+			for i := range b.Insts {
+				c.prep(i, &b.Insts[i]) // in the block itself: the lowerings that look ahead see it
+			}
+		}
+		for _, in := range b.Insts {
+			var err error
+			out, err = l.LiftInstructionToBuf(in, in.Address+uint64(in.Inst.Len), fn, out)
+			if err != nil {
+				t.Fatalf("%s: lift %v: %v", c.name, in.Inst, err)
+			}
+		}
+		if n := len(b.Insts); n > 0 {
+			out = append(out, l.EndBlock(b.Insts[n-1])...)
+			out = append(out, l.FallThrough(fn, b.Insts[n-1], fn.BlockOrder[bi+1], true)...)
+		}
+	}
+	return out
+}
+
+// execNoPeephole lifts the exec cases without the peephole pass (the A/B of arm64_peephole_test.go).
+var execNoPeephole bool
+
+// execCapture, when set, receives the raw output of the lifted side (state + window per case)
+// instead of the comparison; used by tests that compare two lowerings with each other.
+var execCapture *[]byte
+
+// execNoTSO lifts the cases with the TSO rewrite off.
+var execNoTSO bool
+
+// execTSOElide is the stack elision mode the cases are lifted in (arm64_tsoelide_test.go).
+var execTSOElide TSOElideMode
+// execCold lifts the cases with cold-section outlining on; the outlined bodies are placed after the
+// host function's return, as the emitter places them after the chunk's functions.
+var execCold bool
+
+// execAddrMode is the address mode the exec cases are lifted in (test harness knob).
+var execAddrMode = func() AddrMode {
+	// LIFTER_EXEC_ADDR_MODE=identity runs every exec suite in identity mode (and lints it).
+	if m, err := ParseAddrMode(os.Getenv("LIFTER_EXEC_ADDR_MODE")); err == nil {
+		return m
+	}
+	return AddrBase
+}()
 
 func runExecCases(t *testing.T, cases []execCase) {
 	t.Helper()
@@ -159,10 +282,21 @@ func runExec(t *testing.T, cases []execCase, want []map[int][]byte) {
 	host.WriteString(".text\n")
 	native.WriteString(".intel_syntax noprefix\n.text\n")
 	data.WriteString("#include <stdint.h>\nstruct init { int off, len; const uint8_t *b; };\n")
-	l := NewArm64Lifter(nil)
+	l := NewArm64LifterMode(nil, execAddrMode)
+	l.SetPeephole(!execNoPeephole)
+	l.SetTSO(!execNoTSO)
+	l.SetTSOElide(execTSOElide)
+	defer SetColdOutline(GetColdOutline())
+	SetColdOutline(execCold)
 	for i, c := range cases {
 		pc := uint64(0x10000 + i*0x1000)
 		lines, fn := liftSeq(t, l, c, pc)
+		cold := l.TakeCold()
+		if l.AddrMode() == AddrIdentity {
+			for _, bad := range identityViolations(lines) {
+				t.Errorf("%s: identity lowering references x28: %q", c.name, bad)
+			}
+		}
 		for _, ln := range lines {
 			if strings.Contains(ln, "_recomp_unsupported") {
 				t.Fatalf("%s: not lifted:\n%s", c.name, strings.Join(lines, "\n"))
@@ -202,6 +336,9 @@ func runExec(t *testing.T, cases []execCase, want []map[int][]byte) {
 		host.WriteString("    ldr x1, [sp, #104]\n    msr fpcr, x1\n" +
 			"    ldp x19, x20, [sp, #16]\n    ldp x21, x22, [sp, #32]\n    ldp x23, x24, [sp, #48]\n" +
 			"    ldp x25, x26, [sp, #64]\n    ldp x27, x28, [sp, #80]\n    ldp x29, x30, [sp], #128\n    ret\n")
+		for _, ln := range cold {
+			host.WriteString(ln + "\n")
+		}
 
 		// Native function: rdi = state.
 		fmt.Fprintf(&native, ".globl _native_%d\n_native_%d:\n", i, i)
@@ -362,6 +499,10 @@ int main(int argc, char **argv) {
 	}
 	got := run("host.out", hostBin)
 	rec := stSize + execMemSize
+	if execCapture != nil && want != nil {
+		*execCapture = got
+		return
+	}
 	if want != nil {
 		if len(got) != n*rec {
 			t.Fatalf("output size: host %d, want %d", len(got), n*rec)
@@ -371,6 +512,13 @@ int main(int argc, char **argv) {
 			for off, wb := range want[i] {
 				if !bytes.Equal(gm[off:off+len(wb)], wb) {
 					t.Errorf("%s: memory at +%#x: lifted % x, want % x", c.name, off, gm[off:off+len(wb)], wb)
+				}
+			}
+			for k, r := range execRegs {
+				if wv, ok := c.wantRegs[r]; ok {
+					if gv := binary.LittleEndian.Uint64(got[i*rec+stRegs+8*k:]); gv != wv {
+						t.Errorf("%s: %v = %#x, want %#x", c.name, r, gv, wv)
+					}
 				}
 			}
 		}

@@ -2,7 +2,6 @@ package elfloader
 
 import (
 	"debug/elf"
-	"encoding/binary"
 	"fmt"
 )
 
@@ -71,17 +70,17 @@ func AddTLSModule(main, mod *LoadedELF) []string {
 				mod.FileName, rel.Type, rel.Offset, rel.SymName))
 			continue
 		}
-		if rel.Offset+8 > uint64(len(mod.MemoryImage)) {
+		if !mod.MemoryImage.Has(rel.Offset, 8) {
 			problems = append(problems, fmt.Sprintf("%s: TLS relocation type %d at 0x%x lies outside the image (0x%x bytes)",
-				mod.FileName, rel.Type, rel.Offset, len(mod.MemoryImage)))
+				mod.FileName, rel.Type, rel.Offset, mod.MemoryImage.Size()))
 			continue
 		}
 		value := tlsSymbolValue(mod, rel.SymIdx) + uint64(rel.Addend)
 		switch rel.Type {
 		case R_X86_64_DTPMOD64:
-			binary.LittleEndian.PutUint64(mod.MemoryImage[rel.Offset:rel.Offset+8], id)
+			mod.MemoryImage.PutU64(rel.Offset, id)
 		case R_X86_64_DTPOFF64:
-			binary.LittleEndian.PutUint64(mod.MemoryImage[rel.Offset:rel.Offset+8], value)
+			mod.MemoryImage.PutU64(rel.Offset, value)
 		case R_X86_64_TPOFF64:
 			main.tlsTPOFF = append(main.tlsTPOFF, pendingTPOFF{module: len(main.TLSModules) - 1, file: mod.FileName,
 				offset: rel.Offset, value: value})
@@ -113,11 +112,11 @@ func ApplyTLSOffsets(main *LoadedELF) []string {
 		switch {
 		case m.Offset == 0:
 			problems = append(problems, fmt.Sprintf("%s: R_X86_64_TPOFF64 at 0x%x: static TLS is not laid out", p.file, p.offset))
-		case p.offset+8 > uint64(len(main.MemoryImage)):
+		case !main.MemoryImage.Has(p.offset, 8):
 			problems = append(problems, fmt.Sprintf("%s: R_X86_64_TPOFF64 at 0x%x lies outside the merged image (0x%x bytes)",
-				p.file, p.offset, len(main.MemoryImage)))
+				p.file, p.offset, main.MemoryImage.Size()))
 		default:
-			binary.LittleEndian.PutUint64(main.MemoryImage[p.offset:p.offset+8], p.value-m.Offset)
+			main.MemoryImage.PutU64(p.offset, p.value-m.Offset)
 		}
 	}
 	main.tlsTPOFF = nil

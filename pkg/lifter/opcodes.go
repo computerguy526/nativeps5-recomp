@@ -46,6 +46,11 @@ func isCmovcc(op x86asm.Op) bool {
 }
 
 // IsOpcodeSupported returns true if the x86 opcode is supported by the recompiler.
+//
+// Deprecated: this is a hand-kept opcode list that has drifted from the lowerings (it marks
+// whole opcodes, not operand forms, and misses most of what the lifter handles), so counts
+// derived from it overstate unsupported code about 5x. Use Arm64Lifter.Probe, which lifts the
+// instruction and reports whether it became a stub; the analyzer does.
 func IsOpcodeSupported(op x86asm.Op) bool {
 	switch op {
 	case x86asm.NOP, x86asm.MOV, x86asm.CBW, x86asm.CWDE, x86asm.CDQE, x86asm.CDQ, x86asm.CQO,
@@ -67,7 +72,7 @@ func IsOpcodeSupported(op x86asm.Op) bool {
 		x86asm.BT, x86asm.BTR, x86asm.BTS, x86asm.BTC,
 		x86asm.BSWAP, x86asm.POPCNT, x86asm.LZCNT, x86asm.TZCNT,
 		x86asm.SHLD, x86asm.SHRD,
-		x86asm.CPUID, x86asm.PAUSE, x86asm.EMMS, x86asm.PUSHFQ, x86asm.POPFQ, x86asm.XGETBV,
+		x86asm.CPUID, x86asm.SYSCALL, x86asm.PAUSE, x86asm.EMMS, x86asm.PUSHFQ, x86asm.POPFQ, x86asm.XGETBV,
 		x86asm.PREFETCHT0, x86asm.PREFETCHNTA, x86asm.PREFETCHT1, x86asm.PREFETCHT2, x86asm.PREFETCHW,
 		x86asm.DIV, x86asm.IDIV,
 		x86asm.HLT, x86asm.MOVSD_XMM, x86asm.MOVSD, x86asm.PANDN,
@@ -77,7 +82,7 @@ func IsOpcodeSupported(op x86asm.Op) bool {
 		x86asm.PSUBB, x86asm.PSUBW, x86asm.PSUBD, x86asm.PSUBQ,
 		x86asm.PSUBUSB, x86asm.PADDSW, x86asm.PADDSB, x86asm.PMAXUB, x86asm.PSUBSB,
 		x86asm.PMADDUBSW, x86asm.PADDUSB, x86asm.PCMPGTB, x86asm.VPABSB,
-		x86asm.PMULLW, x86asm.PMULHW, x86asm.PMADDWD,
+		x86asm.PMULLW, x86asm.PMULHW, x86asm.PMULHUW, x86asm.PADDUSW, x86asm.PSUBSW, x86asm.PSUBUSW, x86asm.PMADDWD,
 		x86asm.PACKSSDW, x86asm.PACKUSWB, x86asm.PACKSSWB,
 		x86asm.PINSRB, x86asm.PINSRW, x86asm.PINSRD, x86asm.PINSRQ,
 		x86asm.PSLLW, x86asm.PSRLW, x86asm.PSRAW, x86asm.PSRAD,

@@ -21,6 +21,45 @@ type Instruction struct {
 	// conservative default.
 	CarryDead    bool
 	OverflowDead bool
+	// ZeroDead / SignDead: the same for ZF / SF (zeroSignEffect, carry_liveness.go).
+	ZeroDead bool
+	SignDead bool
+	// ParityDead / AdjustDead: the same for PF / AF (see parity.go).
+	ParityDead bool
+	AdjustDead bool
+	// ParityInV: before this instruction the last PF writer on every path was an FP compare
+	// and the lifter still has PF in host V. False: PF is in the lazy GuestContext bytes.
+	ParityInV bool
+	// ParitySpillPre: PF is in host V, stays live across this instruction, and the lowering
+	// may rewrite V; the lifter stores PF to the context first.
+	ParitySpillPre bool
+	// ParitySpillExit (last instruction of a block): PF is in host V when the block is left,
+	// is live, and some successor expects it in the context.
+	ParitySpillExit bool
+	// VecDead: the lanes of the guest vector registers that cannot be read after this
+	// instruction before being rewritten (bit 4*n+k: lane k of register n; see
+	// vec_liveness.go). Zero, the conservative default, means everything is live; it is only
+	// meaningful when Function.VecLive is set.
+	VecDead uint64
+	// FpFlagsLocal (an SSE FP compare): every reader of its flags is a consumer in this block that
+	// the lifter can map to a direct ARM condition, and the flags are dead afterwards (fpfuse.go).
+	FpFlagsLocal bool
+	// FpRaw (a consumer): the flags it reads come from such a compare, as raw FCMP NZCV.
+	FpRaw bool
+	// FpRawIn (first instruction of a block): the fused compare's raw FCMP flags are still live on entry.
+	FpRawIn bool
+	// FpRawLast (a consumer): the last reader of the raw flags; they are dead after it.
+	FpRawLast bool
+	// FpWhy (an SSE FP compare): the outcome of the fusion analysis, one of the FpWhy constants.
+	FpWhy uint8
+	// StackPriv: stack privacy bits (StackPrivMem, StackPrivPop, StackPrivSeen; stackpriv.go).
+	// Zero means "not analysed": nothing is known to be private.
+	StackPriv uint8
+	// ROLoad: the instruction only reads its memory operand, and the operand addresses a
+	// translate-time constant in read-only image memory (RELRO, read-only PT_LOAD) or the
+	// stack-guard value. The lifter emits it without acquire ordering (roload.go; only set
+	// when Disassembler.ROLoads is on).
+	ROLoad bool
 }
 
 // BasicBlock represents a straight-line sequence of instructions.
@@ -39,10 +78,15 @@ type Function struct {
 	Blocks     map[uint64]*BasicBlock
 	BlockOrder []uint64            // Topologically or address-sorted block start addresses
 	JumpTables map[uint64][]uint64 // Map of indirect jump PC -> target addresses
+	// Tables records the recovered table behind each JumpTables entry (jump PC -> table), for
+	// diagnostics and the discovery metrics.
+	Tables map[uint64]ResolvedJumpTable
 	// UsesYmm: some instruction names a YMM register. Only then can a YMM upper half be live
 	// inside the function (they are caller-saved), so only then must the lifter keep the upper
 	// halves it uses as scratch registers.
 	UsesYmm bool
+	// VecLive: AnalyzeVecLiveness ran on the function and Instruction.VecDead is valid.
+	VecLive bool
 }
 
 // CapHitInfo records diagnostic information about a function decode that hit safety caps.
@@ -66,6 +110,16 @@ type Disassembler struct {
 	// SkipFlagLiveness omits dead-flag analysis. The opcode coverage analyzer
 	// uses this; the recompiler leaves it false so SkipFlags stays accurate.
 	SkipFlagLiveness bool
+	// ROLoads turns the read-only-memory load analysis on (roload.go, -ro-loads).
+	ROLoads bool
+	// LeafRedZone: the stack privacy pass treats the red zone of a call-entered function as the
+	// function's own from its first instruction (stackpriv.go, -redzone-leaf).
+	LeafRedZone bool
+	// jumpIn: functions entered by a jump from unlowered code, recorded by discovery (jumpin.go).
+	jumpIn *jumpInfo
+	// VecLive selects the vector lane liveness pass (vec_liveness.go); the zero value is the
+	// default, VecLiveABI.
+	VecLive VecLiveMode
 
 	// funcSymAddrs is the sorted unique set of STT_FUNC addresses, used to
 	// bound jump-table recovery when a function has no symbol size.
@@ -74,6 +128,9 @@ type Disassembler struct {
 	// noReturnAddrs contains PLT, GOT, and symbol addresses for functions that never return
 	// (e.g. abort, exit, __stack_chk_fail, __cxa_throw).
 	noReturnAddrs map[uint64]bool
+
+	// cleanImports: PLT stub and GOT slot addresses of imports that keep no pointer (cleanimports.go).
+	cleanImports map[uint64]bool
 
 	// CapHits counts functions whose decode stopped on the safety cap
 	// (maxFnInsts) rather than on control flow or an unwind bound.
@@ -88,6 +145,32 @@ type Disassembler struct {
 	// decoded. The ranges are dropped with the function: keeping them would
 	// hide a later entry on the second disassembly pass.
 	pendingData []elfloader.AddrRange
+
+	// entries is every address known to start a function: the walk's seeds, call targets found
+	// by a linear sweep of code the unwind tables do not cover, and targets queued so far. A
+	// direct branch from another function onto one of them is a tail call, not a block of the
+	// branching function, so a function body is decoded once instead of once per branch into it.
+	entries   map[uint64]struct{}
+	sweepDone bool
+	// rejected holds weak entries dropped as mid-instruction (see dropMidInstructionEntries).
+	rejected       map[uint64]struct{}
+	droppedEntries int
+	// sortedEntries is entries in address order: in code without unwind extents a function ends
+	// where the next known function starts.
+	sortedEntries []uint64
+
+	// emit clone state (CloneForEmit): entry drops made while decoding one function are undone
+	// afterwards, so the decode of a function does not depend on which functions the clone saw.
+	isClone bool
+	undo    []uint64
+}
+
+func (d *Disassembler) isOtherEntry(addr, self uint64) bool {
+	if addr == self || d.entries == nil {
+		return false
+	}
+	_, ok := d.entries[addr]
+	return ok
 }
 
 // NewDisassembler creates a new disassembler for the given loaded ELF.
@@ -97,6 +180,8 @@ func NewDisassembler(loaded *elfloader.LoadedELF) (*Disassembler, error) {
 		return nil, fmt.Errorf("ELF has no executable mapped segments")
 	}
 
+	clean := collectCleanImportAddrs(loaded)
+	addCleanStubs(loaded, start, end, clean)
 	return &Disassembler{
 		elf:           loaded,
 		textStart:     start,
@@ -105,6 +190,7 @@ func NewDisassembler(loaded *elfloader.LoadedELF) (*Disassembler, error) {
 		Blocks:        make(map[uint64]*BasicBlock, 4096),
 		funcSymAddrs:  collectFuncSymAddrs(loaded),
 		noReturnAddrs: collectNoReturnAddrs(loaded),
+		cleanImports:  clean,
 	}, nil
 }
 
@@ -210,6 +296,11 @@ func (d *Disassembler) functionEnd(entry, size uint64) uint64 {
 			end = ceil
 		}
 	}
+	if len(d.sortedEntries) > 0 && d.elf != nil && !d.elf.InFuncExtent(entry) {
+		if next := d.nextEntry(entry); next > entry && next < end {
+			end = next
+		}
+	}
 	n := len(d.funcSymAddrs)
 	i, found := slices.BinarySearch(d.funcSymAddrs, entry)
 	if found {
@@ -253,7 +344,7 @@ func (d *Disassembler) inCode(addr uint64) bool {
 	if d == nil || d.elf == nil {
 		return false
 	}
-	if addr >= uint64(len(d.elf.MemoryImage)) {
+	if !d.elf.MemoryImage.Contains(addr) {
 		return false
 	}
 	exec := addr >= d.textStart && addr < d.textEnd
@@ -323,8 +414,12 @@ type ReachableFunc struct {
 func (d *Disassembler) WalkReachable(entryAddrs []uint64, visit func(fn *Function) error) error {
 	queue := make([]uint64, 0, len(entryAddrs)*2)
 	visited := make(map[uint64]bool, len(entryAddrs)*2)
+	d.collectEntries(entryAddrs)
 
 	for _, addr := range entryAddrs {
+		if _, bad := d.rejected[addr]; bad {
+			continue
+		}
 		if !visited[addr] && d.inCode(addr) {
 			queue = append(queue, addr)
 			visited[addr] = true
@@ -333,10 +428,16 @@ func (d *Disassembler) WalkReachable(entryAddrs []uint64, visit func(fn *Functio
 
 	for head := 0; head < len(queue); head++ {
 		curr := queue[head]
+		if _, bad := d.rejected[curr]; bad {
+			continue
+		}
 
 		fn, newCalls, err := d.disasmFunction(curr)
 		if err != nil {
 			continue
+		}
+		if d.LeafRedZone && !d.isClone {
+			d.noteJumpOuts(fn)
 		}
 		if visit != nil {
 			if err := visit(fn); err != nil {
@@ -345,13 +446,23 @@ func (d *Disassembler) WalkReachable(entryAddrs []uint64, visit func(fn *Functio
 		}
 
 		for _, target := range newCalls {
+			if _, bad := d.rejected[target]; bad {
+				continue
+			}
 			if !visited[target] && d.inCode(target) {
 				visited[target] = true
 				queue = append(queue, target)
+				d.entries[target] = struct{}{}
 			}
 		}
 	}
 	d.flushData()
+	if d.LeafRedZone && !d.isClone {
+		if d.jumpIn == nil {
+			d.jumpIn = &jumpInfo{entered: map[uint64]struct{}{}}
+		}
+		d.jumpIn.complete = true
+	}
 	return nil
 }
 
@@ -369,8 +480,14 @@ func (d *Disassembler) seedableFunc(addr uint64) bool {
 	if d == nil || d.elf == nil || !d.inCode(addr) {
 		return false
 	}
-	if d.elf.InUnwindScope(addr) {
-		return d.elf.IsFuncEntry(addr)
+	if d.elf.IsFuncEntry(addr) {
+		return true
+	}
+	if d.elf.InFuncExtent(addr) {
+		return false
+	}
+	if len(d.elf.FuncBounds) > 0 {
+		return gapEntryOK(d.elf.MemoryImage, addr)
 	}
 	return looksLikeFuncStart(d.elf.MemoryImage, addr)
 }
@@ -462,6 +579,7 @@ func (d *Disassembler) disasmLinearFunction(entryAddr uint64, size uint64) (*Fun
 		Blocks:     make(map[uint64]*BasicBlock, 8),
 		BlockOrder: make([]uint64, 0, 8),
 		JumpTables: make(map[uint64][]uint64),
+		Tables:     make(map[uint64]ResolvedJumpTable),
 	}
 
 	fnEnd := entryAddr + size
@@ -474,7 +592,7 @@ func (d *Disassembler) disasmLinearFunction(entryAddr uint64, size uint64) (*Fun
 			break
 		}
 
-		inst, err := Decode(d.elf.MemoryImage[pc:])
+		inst, err := Decode(d.elf.MemoryImage.From(pc))
 		if err != nil || inst.Len == 0 {
 			// Do not truncate the rest of the function on an unexpected byte or decode failure.
 			// Insert a 1-byte UD2 placeholder so execution traps if reached, and continue
@@ -551,6 +669,7 @@ func (d *Disassembler) disasmLinearFunction(entryAddr uint64, size uint64) (*Fun
 			}, nil, entryAddr, fnEnd); ok && len(sw.Targets) > 0 {
 				// An indirect jmp through a jump table.
 				fn.JumpTables[inst.Address] = sw.Targets
+				fn.Tables[inst.Address] = sw
 				for _, target := range sw.Targets {
 					if target >= entryAddr && target < fnEnd {
 						leaders[target] = true
@@ -637,7 +756,14 @@ func (d *Disassembler) disasmLinearFunction(entryAddr uint64, size uint64) (*Fun
 	fn.UsesYmm = usesYmm(fn)
 	d.analyzeBlockFlagLiveness(fn)
 	if !d.SkipFlagLiveness {
+		AnalyzeStackPrivacyOpts(fn, StackPrivOpts{ImportClean: d.ImportCleanFn(), CallEntered: d.callEntered(fn.EntryAddr)}, nil)
+		if d.ROLoads {
+			AnalyzeROLoads(fn, d.roInfo())
+		}
+	}
+	if !d.SkipFlagLiveness {
 		analyzeCarryOverflowLiveness(fn, d.isTailCallTarget)
+		AnalyzeVecLiveness(fn, d.VecLive)
 	}
 	return fn, discoveredCalls, nil
 }
@@ -647,6 +773,72 @@ func (d *Disassembler) disasmLinearFunction(entryAddr uint64, size uint64) (*Fun
 // (SELF/PRX images often have no section headers).
 func (d *Disassembler) findJumpTableTargets(tableAddr uint64, fnStart, fnEnd uint64) []uint64 {
 	return d.readPIC32Targets(tableAddr, tableAddr, 0, fnStart, fnEnd)
+}
+
+// crossBlockTable finds the block that last writes the register of `jmp reg` among the
+// predecessors of the jmp's block (looking through blocks that leave it alone, at most 4 deep)
+// and resolves the table on that block's instructions followed by the jmp. try receives the
+// anchor block and the synthetic window. Every path must agree: if the paths reach different
+// defining blocks, none is used.
+func (d *Disassembler) crossBlockTable(
+	jmp Instruction,
+	start uint64,
+	preds map[uint64][]uint64,
+	insts map[uint64][]Instruction,
+	try func(anchor uint64, window []Instruction) (ResolvedJumpTable, bool),
+) (ResolvedJumpTable, bool) {
+	reg, ok := jmp.Inst.Args[0].(x86asm.Reg)
+	if !ok {
+		return ResolvedJumpTable{}, false
+	}
+	type item struct {
+		block uint64
+		depth int
+	}
+	visited := map[uint64]bool{start: true}
+	var defs []uint64
+	queue := []item{{start, 0}}
+	for len(queue) > 0 {
+		it := queue[0]
+		queue = queue[1:]
+		for _, p := range preds[it.block] {
+			if visited[p] {
+				continue
+			}
+			visited[p] = true
+			writes := false
+			for _, in := range insts[p] {
+				if modifiesReg(in.Inst, reg) {
+					writes = true
+					break
+				}
+			}
+			if writes {
+				defs = append(defs, p)
+			} else if it.depth < 3 {
+				queue = append(queue, item{p, it.depth + 1})
+			} else {
+				return ResolvedJumpTable{}, false
+			}
+		}
+	}
+	if len(defs) == 0 {
+		return ResolvedJumpTable{}, false
+	}
+	var first ResolvedJumpTable
+	for i, anchor := range defs {
+		window := append(append([]Instruction(nil), insts[anchor]...), jmp)
+		sw, ok := try(anchor, window)
+		if !ok {
+			return ResolvedJumpTable{}, false
+		}
+		if i == 0 {
+			first = sw
+		} else if sw.TableAddr != first.TableAddr || sw.BaseAddr != first.BaseAddr || sw.Format != first.Format {
+			return ResolvedJumpTable{}, false
+		}
+	}
+	return first, true
 }
 
 // disasmBranchFollowing disassembles a single function starting at entryAddr (fallback).
@@ -661,6 +853,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 		EntryAddr:  entryAddr,
 		Blocks:     make(map[uint64]*BasicBlock),
 		JumpTables: make(map[uint64][]uint64),
+		Tables:     make(map[uint64]ResolvedJumpTable),
 	}
 
 	var discoveredCalls []uint64
@@ -698,7 +891,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 	}
 	fnEnd := d.functionEnd(entryAddr, 0)
 	inside := func(addr uint64) bool {
-		return addr >= entryAddr && addr < fnEnd && d.inCode(addr)
+		return addr >= entryAddr && addr < fnEnd && d.inCode(addr) && !d.isOtherEntry(addr, entryAddr)
 	}
 	var blockStart uint64
 	// A direct transfer past the function is a tail call, not another block.
@@ -716,6 +909,11 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 	capped := false
 	var capReason string
 	var capPC uint64
+	// Where a capped decode stopped: the fall-through pc of the cut block and the blocks still
+	// queued. They become function entries of their own (continuation functions), so the cut
+	// function reaches the rest of its body by tail calls instead of a dispatch miss at run time
+	// (ASTRO BOT: one 2.1 MB static-initialiser function, fn 0x43adb0).
+	var capConts []uint64
 	// Switch tables whose length could not be proven are scanned until the
 	// entries stop looking like code addresses, which can overrun into the
 	// next table and yield targets in the middle of real instructions. Their
@@ -724,6 +922,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 	type weakSwitch struct {
 		pc, from uint64
 		targets  []uint64
+		table    ResolvedJumpTable
 	}
 	var weak []weakSwitch
 	insideDecoded := func(target uint64) bool {
@@ -741,6 +940,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 				capped = true
 				capReason = fmt.Sprintf("function instruction count (%d) >= cap (%d)", len(instAtAddr), maxFnInsts)
 				capPC = blockQueue[head]
+				capConts = append(capConts, blockQueue[head:]...)
 				break
 			}
 			blockStart = blockQueue[head]
@@ -748,16 +948,28 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 			var curBlock []Instruction
 
 			for pc < fnEnd && d.inCode(pc) {
-				if pc >= uint64(len(d.elf.MemoryImage)) {
+				if pc != blockStart && d.isOtherEntry(pc, entryAddr) {
+					// Fall-through into another function (a call that does not return, no
+					// padding): a tail edge, not more of this function.
+					edge(pc)
+					break
+				}
+				code := d.elf.MemoryImage.From(pc)
+				if code == nil {
 					break
 				}
 
-				inst, err := Decode(d.elf.MemoryImage[pc:])
+				inst, err := Decode(code)
 				if err != nil || inst.Len == 0 {
 					break
 				}
 				if inst.Op == 0 {
 					inst.Op = x86asm.UD2
+				}
+				if pc+uint64(inst.Len) > fnEnd && d.dropStraddledEntry(entryAddr, fnEnd) {
+					// The instruction runs over the next known entry: that entry was
+					// mid-instruction. The function continues to the following bound.
+					fnEnd = d.functionEnd(entryAddr, 0)
 				}
 				if isPrivileged(inst.Op) {
 					d.PrivilegedStops++
@@ -952,10 +1164,23 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 						// curBlock is the decode run that ends at the jmp: straight-line code, so
 						// a real execution path to it (another path may join inside it), and
 						// the backward searches cover all of it.
-						if sw, ok := d.resolveJumpTableCapped(curBlock, findTableAddr, findCount, findCap, 0, entryAddr, fnEnd); ok && len(sw.Targets) > 0 && sw.Count <= 0 {
-							weak = append(weak, weakSwitch{pc: pc, from: blockStart, targets: sw.Targets})
+						sw, ok := d.resolveJumpTableCapped(curBlock, findTableAddr, findCount, findCap, 0, entryAddr, fnEnd)
+						if !ok {
+							// The target register may be computed in a predecessor block (a switch
+							// whose table load and add precede a loop head, Duff-style entry):
+							// retry with the nearest predecessor block that writes it.
+							sw, ok = d.crossBlockTable(wrapped, blockStart, blockPreds, blockInsts, func(anchor uint64, window []Instruction) (ResolvedJumpTable, bool) {
+								saved := blockStart
+								blockStart = anchor
+								defer func() { blockStart = saved }()
+								return d.resolveJumpTableCapped(window, findTableAddr, findCount, findCap, 0, entryAddr, fnEnd)
+							})
+						}
+						if ok && len(sw.Targets) > 0 && sw.Count <= 0 {
+							weak = append(weak, weakSwitch{pc: pc, from: blockStart, targets: sw.Targets, table: sw})
 						} else if ok && len(sw.Targets) > 0 {
 							fn.JumpTables[pc] = sw.Targets
+							fn.Tables[pc] = sw
 							for _, target := range sw.Targets {
 								edge(target)
 							}
@@ -965,6 +1190,11 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 					isTerminal = true
 				case x86asm.UD2:
 					isTerminal = true
+				case x86asm.INT:
+					// int3 is padding between functions (or a trap): nothing falls through it.
+					if imm, ok := inst.Args[0].(x86asm.Imm); ok && imm == 3 {
+						isTerminal = true
+					}
 				case x86asm.CALL:
 					// Call does not terminate the basic block unless target is noreturn.
 					if rel, ok := inst.Args[0].(x86asm.Rel); ok {
@@ -1017,6 +1247,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 					capped = true
 					capReason = fmt.Sprintf("function instruction count (%d) >= cap (%d)", len(instAtAddr), maxFnInsts)
 					capPC = pc
+					capConts = append(capConts, pc)
 					break
 				}
 			}
@@ -1039,6 +1270,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 				continue
 			}
 			fn.JumpTables[w.pc] = accepted
+			fn.Tables[w.pc] = w.table
 			blockStart = w.from
 			for _, t := range accepted {
 				edge(t)
@@ -1054,6 +1286,11 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 			PC:        capPC,
 			InstCount: len(instAtAddr),
 		})
+		for _, c := range capConts {
+			if _, done := instAtAddr[c]; !done && c != entryAddr && d.inCode(c) {
+				discoveredCalls = append(discoveredCalls, c)
+			}
+		}
 	}
 
 	if len(instAtAddr) == 0 {
@@ -1134,7 +1371,14 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 	fn.UsesYmm = usesYmm(fn)
 	d.analyzeBlockFlagLiveness(fn)
 	if !d.SkipFlagLiveness {
+		AnalyzeStackPrivacyOpts(fn, StackPrivOpts{ImportClean: d.ImportCleanFn(), CallEntered: d.callEntered(fn.EntryAddr)}, nil)
+		if d.ROLoads {
+			AnalyzeROLoads(fn, d.roInfo())
+		}
+	}
+	if !d.SkipFlagLiveness {
 		analyzeCarryOverflowLiveness(fn, d.isTailCallTarget)
+		AnalyzeVecLiveness(fn, d.VecLive)
 	}
 	return fn, discoveredCalls, nil
 }
@@ -1236,7 +1480,7 @@ func isJcc(op x86asm.Op) bool {
 	}
 }
 
-// usesYmm reports whether an instruction of fn names a YMM register.
+// usesYmm reports whether an instruction of fn names a YMM register (as an operand or as a VSIB index).
 func usesYmm(fn *Function) bool {
 	for _, b := range fn.Blocks {
 		for _, in := range b.Insts {
@@ -1245,6 +1489,10 @@ func usesYmm(fn *Function) bool {
 					break
 				}
 				if r, ok := a.(x86asm.Reg); ok && r >= x86asm.Y0 && r <= x86asm.Y15 {
+					return true
+				}
+				// The VSIB index of a gather ("vpgatherqd xmm, [base+ymm], xmm" names no other YMM register).
+				if m, ok := a.(x86asm.Mem); ok && m.Index >= x86asm.Y0 && m.Index <= x86asm.Y15 {
 					return true
 				}
 			}

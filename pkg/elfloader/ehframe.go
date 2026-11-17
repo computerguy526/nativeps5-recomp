@@ -26,7 +26,7 @@ const (
 // A missing or unreadable table leaves the image without bounds; disassembly
 // then keeps its previous caps. Load itself does not fail.
 func attachUnwind(l *LoadedELF, file *elf.File) {
-	if l == nil || file == nil || len(l.MemoryImage) == 0 {
+	if l == nil || file == nil || len(l.local) == 0 {
 		return
 	}
 	for _, prog := range file.Progs {
@@ -40,7 +40,7 @@ func attachUnwind(l *LoadedELF, file *elf.File) {
 		// If PT_GNU_EH_FRAME does not start with a GNU .eh_frame_hdr (common in stripped
 		// Orbis companion PRXs where PT_GNU_EH_FRAME points only to the binary search table
 		// or raw unwind metadata), .eh_frame precedes prog.Vaddr and ends with a terminator.
-		if start, end, bounds, lsdaBounds := scanBackwardEHFrame(l.MemoryImage, prog.Vaddr); len(bounds) > 0 {
+		if start, end, bounds, lsdaBounds := scanBackwardEHFrame(l.local, prog.Vaddr); len(bounds) > 0 {
 			l.FuncBounds = normalizeBounds(bounds)
 			l.LSDABounds = normalizeBounds(lsdaBounds)
 			l.UnwindRanges = mergeRanges(append(l.UnwindRanges, l.ExecRanges...))
@@ -77,7 +77,7 @@ func attachUnwind(l *LoadedELF, file *elf.File) {
 	}
 	if sec, ok := l.Sections[".eh_frame"]; ok && sec != nil && sec.Size >= 8 && sec.Addr != 0 {
 		limit := sec.Addr + sec.Size
-		if end, bounds, lsdaBounds := WalkEHFrame(l.MemoryImage, sec.Addr, limit); len(bounds) > 0 {
+		if end, bounds, lsdaBounds := WalkEHFrame(l.local, sec.Addr, limit); len(bounds) > 0 {
 			l.FuncBounds = normalizeBounds(bounds)
 			l.LSDABounds = normalizeBounds(lsdaBounds)
 			l.UnwindRanges = mergeRanges(append(l.UnwindRanges, l.ExecRanges...))
@@ -130,7 +130,7 @@ func scanBackwardEHFrame(img []byte, limit uint64) (start uint64, end uint64, bo
 // GNU ld points the program header at .eh_frame_hdr. Orbis images point it at
 // a larger window that starts before the version byte; the header is inside.
 func parseEHFrameWindow(l *LoadedELF, winVA, winSize uint64) bool {
-	img := l.MemoryImage
+	img := l.local
 	if winVA >= uint64(len(img)) {
 		return false
 	}
@@ -176,7 +176,7 @@ func parseEHFrameWindow(l *LoadedELF, winVA, winSize uint64) bool {
 // pcrelBias is subtracted from pc-relative values encoded in the header when
 // the version byte does not sit at the address the linker used.
 func parseEHFrameHdr(l *LoadedELF, hdrVA, hdrSize uint64, pcrelBias int64) bool {
-	img := l.MemoryImage
+	img := l.local
 	if hdrSize < 4 || hdrVA >= uint64(len(img)) || hdrVA+4 > uint64(len(img)) {
 		return false
 	}

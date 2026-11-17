@@ -18,7 +18,7 @@ func TestBloodborne109PatchDetectionAndLowering(t *testing.T) {
 	for _, p := range bloodborne109Patches {
 		copy(img[p.addr:], p.orig)
 	}
-	loaded := &elfloader.LoadedELF{MemoryImage: img}
+	loaded := &elfloader.LoadedELF{MemoryImage: elfloader.NewImage(0, img)}
 	if !isBloodborne109(loaded) {
 		t.Fatal("expected synthetic Bloodborne v1.09 image to match")
 	}

@@ -44,7 +44,7 @@ func (l *Arm64Lifter) liftBmi(inst disasm.Instruction, nextPC uint64, lines []st
 			rc, _ := readRegTo(sReg, "x0", "w0")
 			lines = append(lines, rc...)
 		} else if mem, okMem := args[1].(x86asm.Mem); okMem {
-			lines = append(lines, readMemTo(mem, nextPC, sz, "x0", "w0")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, sz, "x0", "w0")...)
 		} else {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported bmi src")...)
 			return lines, nil
@@ -103,7 +103,7 @@ func (l *Arm64Lifter) liftBmi(inst disasm.Instruction, nextPC uint64, lines []st
 			rc, _ := readRegTo(sReg, "x16", "w16")
 			lines = append(lines, rc...)
 		} else if mem, okMem := args[1].(x86asm.Mem); okMem {
-			lines = append(lines, readMemTo(mem, nextPC, sz, "x16", "w16")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, sz, "x16", "w16")...)
 		} else {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported bmi shift src")...)
 			return lines, nil
@@ -117,16 +117,11 @@ func (l *Arm64Lifter) liftBmi(inst disasm.Instruction, nextPC uint64, lines []st
 			shiftOp = "asr"
 		}
 
+		// The variable shifts take the count modulo the register size, as SHLX/SHRX/SARX do.
 		if sz == 8 {
-			lines = append(lines,
-				fmt.Sprintf("    and x17, %s, #63", descCnt.X),
-				fmt.Sprintf("    %s %s, x16, x17", shiftOp, descDst.X),
-			)
+			lines = append(lines, fmt.Sprintf("    %s %s, x16, %s", shiftOp, descDst.X, descCnt.X))
 		} else {
-			lines = append(lines,
-				fmt.Sprintf("    and w17, %s, #31", descCnt.W),
-				fmt.Sprintf("    %s %s, w16, w17", shiftOp, descDst.W),
-			)
+			lines = append(lines, fmt.Sprintf("    %s %s, w16, %s", shiftOp, descDst.W, descCnt.W))
 		}
 		return lines, nil
 
@@ -149,7 +144,7 @@ func (l *Arm64Lifter) liftBmi(inst disasm.Instruction, nextPC uint64, lines []st
 			rc, _ := readRegTo(sReg, "x16", "w16")
 			lines = append(lines, rc...)
 		} else if mem, okMem := args[1].(x86asm.Mem); okMem {
-			lines = append(lines, readMemTo(mem, nextPC, sz, "x16", "w16")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, sz, "x16", "w16")...)
 		} else {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported rorx src")...)
 			return lines, nil
@@ -193,23 +188,29 @@ func (l *Arm64Lifter) liftBmi(inst disasm.Instruction, nextPC uint64, lines []st
 			rc, _ := readRegTo(sReg, "x16", "w16")
 			lines = append(lines, rc...)
 		} else if mem, okMem := args[2].(x86asm.Mem); okMem {
-			lines = append(lines, readMemTo(mem, nextPC, sz, "x16", "w16")...)
+			lines = append(lines, l.readMemTo(mem, nextPC, sz, "x16", "w16")...)
 		} else {
 			lines = append(lines, l.emitUnsupported(inst, "unsupported mulx src")...)
 			return lines, nil
 		}
 
+		// Both halves go to scratch (x17 lo, x0 hi) from the original inputs first: a
+		// destination may alias RDX or the source. Then lo is written, then hi, so hi wins
+		// when dst_hi == dst_lo (SDM: the register holds the high half).
 		if sz == 8 {
 			// RDX is x22
 			lines = append(lines,
-				fmt.Sprintf("    mul %s, x22, x16", descLo.X),
-				fmt.Sprintf("    umulh %s, x22, x16", descHi.X),
+				"    mul x17, x22, x16",
+				"    umulh x0, x22, x16",
+				fmt.Sprintf("    mov %s, x17", descLo.X),
+				fmt.Sprintf("    mov %s, x0", descHi.X),
 			)
 		} else {
 			lines = append(lines,
 				"    umull x17, w22, w16",
+				"    lsr x0, x17, #32",
 				fmt.Sprintf("    mov %s, w17", descLo.W),
-				fmt.Sprintf("    lsr %s, x17, #32", descHi.X),
+				fmt.Sprintf("    mov %s, w0", descHi.W),
 			)
 		}
 		return lines, nil

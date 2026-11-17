@@ -182,6 +182,8 @@ func TestRegressMulFlags(t *testing.T) {
 // from a register its address computation had overwritten, BLSI/BLSR/BLSMSK set CF in the
 // wrong sense.
 func TestRegressBitOps(t *testing.T) {
+	defer SetBMIPeep(GetBMIPeep())
+	SetBMIPeep(false) // these cases pin the general lowering; the peepholes have their own tests (arm64_bmipeep_test.go)
 	// cmp rax, rbx; bt qword [rax+0x88], 0x20
 	l := liftBlock(t, "4839d8", "480fbaa08800000020")
 	requireInOrder(t, "bt", l[1], "ubfx x2, x17, #32, #1", "rmif x2, #63, #2")
@@ -226,7 +228,10 @@ func TestRegressCompareFlags(t *testing.T) {
 	requireInOrder(t, "vucomiss", l[0], "fcmp s0, s0", "cset w2, vs", "axflag", "rmif x2, #0, #1")
 
 	l = liftBlock(t, "dbf1") // fcomi st, st(1)
-	requireInOrder(t, "fcomi", l[0], "fcmp d28, d29", "axflag")
+	requireInOrder(t, "fcomi", l[0], "fcmpe d28, d29", "axflag")
+
+	l = liftBlock(t, "dbe9") // fucomi st, st(1): quiet compare
+	requireInOrder(t, "fucomi", l[0], "fcmp d28, d29", "axflag")
 
 	// add rax, rbx; vptest xmm0, xmm1; jb: JB reads the C that PTEST wrote (C = !CF).
 	l = liftBlock(t, "4801d8", "c4e27917c1", "720e")
@@ -530,15 +535,17 @@ func TestRegressAddressingForms(t *testing.T) {
 		{"mov [moffs64], rax", "48a30000001000000000"},
 		{"mov rax, gs:[0]", "65488b042500000000"},
 		{"mov eax, [edi]", "678b07"},
-		{"lea rax, [edi+eax]", "67488d0407"},
 	} {
 		requireInOrder(t, tc.name, liftBlock(t, tc.hex)[0], "b _recomp_unsupported_instruction")
 	}
+	// LEA with addr32 accesses no memory: the sum, truncated to 32 bits (ASTRO BOT libc strcpy).
+	requireInOrder(t, "lea rax, [edi+eax]", liftBlock(t, "67488d0407")[0], "mov x16, x24", "add x16, x16, x19", "mov w16, w16", "mov x19, x16")
 	forbid(t, "nop [rax+rax]", liftBlock(t, "0f1f440000")[0], "b _recomp_unsupported_instruction")
 }
 
 // The local jump-table dispatch of an indirect JMP compared with CMP/B.EQ and so clobbered the
-// flags on the way into the table target, and did not bring CF into the block-boundary sense.
+// flags on the way into the table target (it then saved and restored NZCV around a range check;
+// now it touches no flag at all), and did not bring CF into the block-boundary sense.
 // A direct JMP out of the function did not either (CF is live there only when the target is no
 // function entry, disasm TestCarryOverflowLiveness).
 func TestRegressJumpDispatchKeepsFlags(t *testing.T) {
@@ -564,19 +571,92 @@ func TestRegressJumpDispatchKeepsFlags(t *testing.T) {
 		return out
 	}
 	lines := lift("4801d8", "ffe0") // add rax, rbx; jmp rax
-	requireInOrder(t, "add; jmp rax", lines, "adds x19, x19, x20", "mov x0, x19", "cfinv", "mrs x17, nzcv",
-		"cmp x0, x16", "b.lo L_fn_0x1000_outside_0x1003", "cmp x0, x16", "b.hs L_fn_0x1000_outside_0x1003",
-		"msr nzcv, x17", "eor x16, x16, x0", "cbz x16, L_fn_0x1000_loc_0x1000", "cbz x16, L_fn_0x1000_loc_0x1010",
-		"cbz x16, L_fn_0x1000_loc_0x1020", "b L_fn_0x1000_not_local_0x1003", "L_fn_0x1000_outside_0x1003:",
-		"msr nzcv, x17", "L_fn_0x1000_not_local_0x1003:", "b _recomp_indirect_jump")
+	// Flag-free dispatch: the target's offset in the function, then SUB/CBZ per block.
+	requireInOrder(t, "add; jmp rax", lines, "adds x19, x19, x20", "mov x0, x19", "cfinv", "sub x16, x0, x16",
+		"cbz x16, L_fn_0x1000_loc_0x1000", "sub x17, x16, #16", "cbz x17, L_fn_0x1000_loc_0x1010",
+		"sub x17, x16, #32", "cbz x17, L_fn_0x1000_loc_0x1020", "b _recomp_indirect_jump")
+	for _, bad := range []string{"mrs x17, nzcv", "msr nzcv, x17", "cmp x0, x16", "subs ...", "tst ..."} {
+		forbid(t, "jmp rax", lines, bad)
+	}
 	forbid(t, "jmp rax", lines, "b.eq ...")
 	// jmp 0x6000 (not a known function): CF into the block-boundary sense first.
 	requireInOrder(t, "add; jmp 0x6000", lift("4801d8", "e9f84f0000"), "adds x19, x19, x20", "cfinv", "b _recomp_indirect_jump")
 }
 
-// STD was lifted as a NOP, so a following string instruction ran forward instead of backward.
-// DF is not modelled (0 sites in TLOU and U4): STD traps, CLD stays a NOP.
-func TestRegressStdTraps(t *testing.T) {
-	requireInOrder(t, "std", liftBlock(t, "fd")[0], "b _recomp_unsupported_instruction")
-	forbid(t, "cld", liftBlock(t, "fc")[0], "b _recomp_unsupported_instruction")
+// STD was lifted as a NOP, so a following string instruction ran forward instead of backward;
+// then it trapped. DF is guest state now: STD/CLD write GuestContext.df and the string
+// instructions read it (TestDirectionFlag* run them).
+func TestRegressStdSetsDF(t *testing.T) {
+	requireInOrder(t, "std", liftBlock(t, "fd")[0], "mov w16, #1", "strb w16, [x17, #0x9e]")
+	requireInOrder(t, "cld", liftBlock(t, "fc")[0], "strb wzr, [x17, #0x9e]")
+	forbid(t, "std", liftBlock(t, "fd")[0], "b _recomp_unsupported_instruction")
+	requireInOrder(t, "rep movsb", liftBlock(t, "f3a4")[0], "ldrb w5, [x5, #0x9e]", "sub x5, x17, x5, lsl #1", "add x23, x23, x5")
+}
+
+// MOVSS/MOVSD xmm, xmm replace only the low element and keep the rest of the destination. They were lifted to
+// `fmov s, s` / `fmov d, d`, which zero the upper bits (that is the memory-load form): Greenhollow builds {x, y} pairs
+// with `movaps xmm1, [..]; movss xmm1, xmm0; mulps xmm1, xmm4`, so every y of a projected sprite became 0 (no trees,
+// characters or sprites, the selection rings at the top of the screen).
+func TestRegressScalarMoveKeepsUpper(t *testing.T) {
+	l := liftBlock(t, "f30f10c8")[0] // movss xmm1, xmm0
+	requireInOrder(t, "movss xmm1, xmm0", l, "mov v1.s[0], v0.s[0]")
+	forbid(t, "movss xmm1, xmm0", l, "fmov ...")
+	l = liftBlock(t, "f20f10c8")[0] // movsd xmm1, xmm0
+	requireInOrder(t, "movsd xmm1, xmm0", l, "mov v1.d[0], v0.d[0]")
+	forbid(t, "movsd xmm1, xmm0", l, "fmov ...")
+	l = liftBlock(t, "f30f11c1")[0] // movss xmm1, xmm0 (store encoding, 0F 11)
+	requireInOrder(t, "movss xmm1, xmm0 (0f11)", l, "mov v1.s[0], v0.s[0]")
+	l = liftBlock(t, "f30f1006")[0] // movss xmm0, [rsi]: the load does zero the rest
+	requireInOrder(t, "movss xmm0, [rsi]", l, "ldr s0, ...")
+}
+
+// PMULUDQ multiplies the low dword of each qword lane (elements 0 and 2); `umull d.2d, a.2s, b.2s` took elements
+// 0 and 1, so the upper product was garbage (Greenhollow's sprite-sheet UV: the v coordinates of a frame).
+func TestRegressPmuludqLanes(t *testing.T) {
+	l := liftBlock(t, "660ff4c1")[0] // pmuludq xmm0, xmm1
+	requireInOrder(t, "pmuludq xmm0, xmm1", l, "xtn v28.2s, v0.2d", "xtn v29.2s, v1.2d", "umull v0.2d, v28.2s, v29.2s")
+}
+
+// CVTTPS2DQ/CVTPS2DQ xmm, [mem]: the source is loaded into v30, which the NaN mask then overwrote before the
+// conversion read it (every lane became 0).
+func TestRegressCvtps2dqMemSource(t *testing.T) {
+	for _, h := range []string{"f30f5b06", "660f5b06"} { // cvttps2dq xmm0, [rsi]; cvtps2dq xmm0, [rsi]
+		l := liftBlock(t, h)[0]
+		requireInOrder(t, h, l, "ldr q30, ...", "fcmeq v28.4s, v30.4s, v30.4s", "fcvtzs v0.4s, ...")
+		forbid(t, h, l, "fcmeq v30.4s, ...")
+	}
+}
+
+// DIV/IDIV r/m32 divide the 64-bit EDX:EAX; the lowering divided EAX alone (FEX_bugs/Divide32, 3_F7_06/07).
+func TestRegressDiv32UsesEdx(t *testing.T) {
+	l := liftBlock(t, "f7f1")[0] // div ecx
+	requireInOrder(t, "div ecx", l, "mov w17, w21", "mov w16, w19", "orr x16, x16, x22, lsl #32", "udiv x0, x16, x17",
+		"msub x1, x0, x17, x16", "mov w19, w0", "mov w22, w1")
+	l = liftBlock(t, "f7f9")[0] // idiv ecx
+	requireInOrder(t, "idiv ecx", l, "sxtw x17, w21", "sdiv x0, x16, x17")
+}
+
+// ROUNDxx imm8 bit 2 selects MXCSR.RC (FPCR holds it): FRINTI. Legacy ROUNDSD/ROUNDSS merge into the
+// destination, they do not zero its upper lanes (FEX H0F3A/66_08..0B, VEX/vround*).
+func TestRegressRoundImmAndMerge(t *testing.T) {
+	l := liftBlock(t, "660f3a08c10c")[0] // roundps xmm0, xmm1, 0xc
+	requireInOrder(t, "roundps imm 0xc", l, "frinti v0.4s, v1.4s")
+	l = liftBlock(t, "660f3a09c101")[0] // roundpd xmm0, xmm1, 1
+	requireInOrder(t, "roundpd imm 1", l, "frintm v0.2d, v1.2d")
+	l = liftBlock(t, "660f3a0bc102")[0] // roundsd xmm0, xmm1, 2
+	requireInOrder(t, "roundsd imm 2", l, "frintp d30, d1", "mov v0.d[0], v30.d[0]")
+	forbid(t, "roundsd merges", l, "fmov d0, d30")
+	l = liftBlock(t, "660f3a0ac104")[0] // roundss xmm0, xmm1, 4
+	requireInOrder(t, "roundss imm 4", l, "frinti s30, s1", "mov v0.s[0], v30.s[0]")
+}
+
+// CVTTPD2DQ xmm, [mem]: the source lived in v30, which the per-lane fix-up (v30 scratch) clobbered before the
+// second double was read. VCVTPS2DQ/VCVTTPS2DQ ymm, [mem] read all 32 bytes; vcvttpd2dq xmm, yword [mem] too.
+func TestRegressCvtMemSources(t *testing.T) {
+	l := liftBlock(t, "660fe606")[0] // cvttpd2dq xmm0, [rsi]
+	requireInOrder(t, "cvttpd2dq mem", l, "ldr q30, ...", "mov x4, v30.d[0]", "mov x5, v30.d[1]", "fmov d29, x4", "fmov d29, x5")
+	l = liftBlock(t, "c5fe5b06")[0] // vcvttps2dq ymm0, [rsi]
+	requireInOrder(t, "vcvttps2dq ymm mem", l, "ldr q30, ...", "add x16, x16, #16", "ldr q30, ...")
+	l = liftBlockIn(t, true, "c5fde606")[0] // vcvttpd2dq xmm0, yword [rsi]
+	requireInOrder(t, "vcvttpd2dq yword mem", l, "ldr q30, ...", "ldr q31, ...", "mov x6, v31.d[0]")
 }

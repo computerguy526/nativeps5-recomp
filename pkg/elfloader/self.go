@@ -19,9 +19,12 @@ const (
 	selfPropSegmentMask  = 0xFFFF
 )
 
-// IsSELF reports whether data starts with a PS4 SELF header.
+// SELFMagicPS5 is the 4-byte magic 0xEEF51454 used by PS5 (fake-signed) SELFs.
+var SELFMagicPS5 = [4]byte{0x54, 0x14, 0xF5, 0xEE}
+
+// IsSELF reports whether data starts with a PS4 or PS5 SELF header.
 func IsSELF(data []byte) bool {
-	return len(data) >= 4 && bytes.Equal(data[:4], SELFMagic[:])
+	return len(data) >= 4 && (bytes.Equal(data[:4], SELFMagic[:]) || bytes.Equal(data[:4], SELFMagicPS5[:]))
 }
 
 type selfEntry struct {

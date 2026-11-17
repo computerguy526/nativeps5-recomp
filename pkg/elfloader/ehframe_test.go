@@ -7,7 +7,7 @@ import (
 )
 
 func TestHelloWorldUnwindBounds(t *testing.T) {
-	loaded, err := LoadELF("../../hello_world.elf")
+	loaded, err := LoadELF(helloELF(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestSyntheticEHFrame(t *testing.T) {
 	binary.LittleEndian.PutUint32(img[hdr+4:], uint32(frameRel))
 	binary.LittleEndian.PutUint32(img[hdr+8:], 1)
 
-	loaded := &LoadedELF{MemoryImage: img}
+	loaded := &LoadedELF{MemoryImage: NewImage(0, img), local: img}
 	if !parseEHFrameHdr(loaded, hdr, hdrSize, 0) {
 		t.Fatal("parse failed")
 	}
@@ -107,7 +107,7 @@ func TestUnwindOnEbootFromEnv(t *testing.T) {
 	}
 	t.Logf("entry=%#x unwind=%d data=%d exec=%d image=%dMB",
 		loaded.EntryPoint, len(loaded.FuncBounds), len(loaded.DataRanges), len(loaded.ExecRanges),
-		len(loaded.MemoryImage)>>20)
+		loaded.MemoryImage.Size()>>20)
 	for i, r := range loaded.DataRanges {
 		t.Logf("data[%d] %#x-%#x (%dKB)", i, r.Start, r.End, (r.End-r.Start)>>10)
 	}
@@ -128,7 +128,7 @@ func TestUnwindOnEbootFromEnv(t *testing.T) {
 
 func TestApplyBiasShiftsUnwind(t *testing.T) {
 	l := &LoadedELF{
-		MemoryImage: make([]byte, 0x2000),
+		MemoryImage: NewImage(0, make([]byte, 0x2000)),
 		MinVAddr:    0x1000,
 		MaxVAddr:    0x2000,
 		FuncBounds:  []AddrRange{{Start: 0x1000, End: 0x1010}},

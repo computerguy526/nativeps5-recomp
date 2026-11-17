@@ -6,7 +6,9 @@
 # With a build directory (the output of ps4-recomp), the guest image is <dir>/guest_image.bin and,
 # when the listing argument is "-", the listing is taken from the recompiler's own disassembly:
 # the "// 0xADDR: INST" comment that precedes every lifted instruction in <dir>/code_*.s. That is
-# exactly the set of instructions the recompiler lifts for the eboot.
+# exactly the set of instructions the recompiler lifts for the eboot. The comments exist only when
+# the build directory was made with `ps4-recomp -keep-asm` (which implies -asm-comments) or
+# `-compile=false -asm-comments`: the default output is lean, without them.
 #
 # LOCK forms: listing sites with a LOCK prefix are sampled apart from their plain form, and every
 # LOCK form in every size (main.go lockForms) is added to each run. The harness is single-threaded:
@@ -40,6 +42,12 @@ if [ -d "$SRC" ]; then
   IMG="$SRC/guest_image.bin"
   if [ "$DIS" = "-" ]; then
     DIS="$OUT/listing.txt"
+    if ! find "$SRC" -maxdepth 1 -name 'code_*.s' | grep -q .; then
+      echo "no code_*.s in $SRC: translate with -keep-asm (or -compile=false -asm-comments)" >&2; exit 1
+    fi
+    if ! grep -qm1 '^    // 0x' "$SRC"/code_000.s; then
+      echo "$SRC/code_000.s has no guest comments: translate with -keep-asm or -asm-comments" >&2; exit 1
+    fi
     find "$SRC" -maxdepth 1 -name 'code_*.s' -print0 | sort -z | xargs -0 grep -h '^    // 0x' |
       sed -E 's|^    // 0x([0-9a-f]+): |\1: |' > "$DIS"
   fi

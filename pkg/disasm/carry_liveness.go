@@ -19,6 +19,10 @@ import (
 const (
 	flagCF uint8 = 1 << iota
 	flagOF
+	flagPF
+	flagAF
+	flagZF
+	flagSF
 )
 
 // carryOverflowEffect returns the CF/OF bits an instruction reads (before writing) and the bits
@@ -267,14 +271,19 @@ func analyzeCarryOverflowLiveness(fn *Function, isFunc func(uint64) bool) {
 	type info struct {
 		succs   []uint64
 		unknown bool
-		in      uint8
+		// wild: the block ends in an indirect jump without a recovered table. The lifter sends
+		// it to a block of fn (any of them) or through the dispatcher, which only enters
+		// function entries (recomp_indirect_jump), where flags are dead (System V ABI) as at a
+		// tail call. CF/OF stay live there as before; PF/AF take the union over the blocks.
+		wild bool
+		in   uint8
 	}
 	infos := make(map[uint64]*info, len(fn.Blocks))
 	for addr, b := range fn.Blocks {
 		s, u := blockSuccessors(fn, b, isFunc)
-		infos[addr] = &info{succs: s, unknown: u}
+		infos[addr] = &info{succs: s, unknown: u, wild: endsInWildJump(fn, b)}
 	}
-	all := flagCF | flagOF
+	all := flagCF | flagOF | flagPF | flagAF | flagZF | flagSF
 	for changed := true; changed; {
 		changed = false
 		for i := len(fn.BlockOrder) - 1; i >= 0; i-- {
@@ -284,7 +293,12 @@ func analyzeCarryOverflowLiveness(fn *Function, isFunc func(uint64) bool) {
 				continue
 			}
 			var live uint8
-			if bi.unknown {
+			if bi.wild {
+				live = flagCF | flagOF
+				for _, oi := range infos {
+					live |= oi.in & (flagPF | flagAF | flagZF | flagSF)
+				}
+			} else if bi.unknown {
 				live = all
 			}
 			for _, s := range bi.succs {
@@ -296,8 +310,14 @@ func analyzeCarryOverflowLiveness(fn *Function, isFunc func(uint64) bool) {
 				in := &b.Insts[k]
 				in.CarryDead = live&flagCF == 0
 				in.OverflowDead = live&flagOF == 0
+				in.ParityDead = live&flagPF == 0
+				in.AdjustDead = live&flagAF == 0
+				in.ZeroDead = live&flagZF == 0
+				in.SignDead = live&flagSF == 0
 				reads, kills := carryOverflowEffect(in.Inst)
-				live = (live &^ kills) | reads
+				pr, pk := parityAdjustEffect(in.Inst)
+				zr, zk := zeroSignEffect(in.Inst)
+				live = (live &^ (kills | pk | zk)) | reads | pr | zr
 			}
 			if live != bi.in {
 				bi.in = live
@@ -305,4 +325,83 @@ func analyzeCarryOverflowLiveness(fn *Function, isFunc func(uint64) bool) {
 			}
 		}
 	}
+	analyzeParityLocation(fn, isFunc)
+	analyzeFpCmpFusion(fn, isFunc)
+}
+
+// endsInWildJump reports a block whose last instruction is an indirect JMP (register or memory
+// target) without a recovered jump table.
+func endsInWildJump(fn *Function, b *BasicBlock) bool {
+	n := len(b.Insts)
+	if n == 0 {
+		return false
+	}
+	last := b.Insts[n-1]
+	if last.Inst.Op != x86asm.JMP {
+		return false
+	}
+	if _, rel := last.Inst.Args[0].(x86asm.Rel); rel {
+		return false
+	}
+	return len(fn.JumpTables[last.Address]) == 0
+}
+
+// zeroSignEffect returns the ZF/SF bits an instruction reads and the bits it defines (a value an
+// earlier one cannot be observed through). It kills only what the instruction certainly writes
+// with a defined value, and reads both for an instruction the CF/OF table does not know.
+func zeroSignEffect(inst x86asm.Inst) (reads, kills uint8) {
+	const zs = flagZF | flagSF
+	switch inst.Op {
+	case x86asm.JE, x86asm.JNE, x86asm.SETE, x86asm.SETNE, x86asm.CMOVE, x86asm.CMOVNE,
+		x86asm.JBE, x86asm.JA, x86asm.SETBE, x86asm.SETA, x86asm.CMOVBE, x86asm.CMOVA,
+		x86asm.LOOPE, x86asm.LOOPNE:
+		return flagZF, 0
+	case x86asm.JS, x86asm.JNS, x86asm.SETS, x86asm.SETNS, x86asm.CMOVS, x86asm.CMOVNS,
+		x86asm.JL, x86asm.JGE, x86asm.SETL, x86asm.SETGE, x86asm.CMOVL, x86asm.CMOVGE:
+		return flagSF, 0
+	case x86asm.JLE, x86asm.JG, x86asm.SETLE, x86asm.SETG, x86asm.CMOVLE, x86asm.CMOVG:
+		return zs, 0
+	case x86asm.LAHF, x86asm.PUSHF, x86asm.PUSHFD, x86asm.PUSHFQ,
+		x86asm.FCMOVE, x86asm.FCMOVNE, x86asm.FCMOVBE, x86asm.FCMOVNBE:
+		return zs, 0
+	case x86asm.ADD, x86asm.SUB, x86asm.CMP, x86asm.TEST, x86asm.AND, x86asm.OR, x86asm.XOR, x86asm.NEG,
+		x86asm.ADC, x86asm.SBB, x86asm.INC, x86asm.DEC,
+		x86asm.ANDN, x86asm.BLSI, x86asm.BLSR, x86asm.BLSMSK, x86asm.BZHI,
+		x86asm.COMISS, x86asm.UCOMISS, x86asm.COMISD, x86asm.UCOMISD,
+		x86asm.VCOMISS, x86asm.VUCOMISS, x86asm.VCOMISD, x86asm.VUCOMISD,
+		x86asm.PTEST, x86asm.VPTEST, x86asm.VTESTPS, x86asm.VTESTPD,
+		x86asm.POPF, x86asm.POPFD, x86asm.POPFQ, x86asm.SAHF, x86asm.CMPXCHG, x86asm.XADD,
+		x86asm.PCMPISTRI, x86asm.PCMPESTRI, x86asm.PCMPISTRM, x86asm.PCMPESTRM,
+		x86asm.VPCMPISTRI, x86asm.VPCMPESTRI, x86asm.VPCMPISTRM, x86asm.VPCMPESTRM,
+		x86asm.CALL:
+		reads = 0
+		if inst.Op == x86asm.ADC || inst.Op == x86asm.SBB {
+			reads = 0 // CF only
+		}
+		return reads, zs
+	case x86asm.BSF, x86asm.BSR, x86asm.TZCNT, x86asm.LZCNT, x86asm.POPCNT, x86asm.BEXTR, x86asm.CMPXCHG8B, x86asm.CMPXCHG16B:
+		return 0, flagZF
+	case x86asm.SHL, x86asm.SHR, x86asm.SAR, x86asm.SHLD, x86asm.SHRD:
+		if c, ok := shiftImmCount(inst); ok && c != 0 {
+			return 0, zs
+		}
+		return 0, 0
+	case x86asm.CMPSB, x86asm.CMPSW, x86asm.CMPSD, x86asm.CMPSQ, x86asm.SCASB, x86asm.SCASW, x86asm.SCASD, x86asm.SCASQ:
+		if hasRepPrefix(inst) {
+			return 0, 0
+		}
+		return 0, zs
+	case x86asm.RCL, x86asm.RCR, x86asm.ROL, x86asm.ROR, x86asm.CMC, x86asm.CLC, x86asm.STC,
+		x86asm.BT, x86asm.BTS, x86asm.BTR, x86asm.BTC, x86asm.MUL, x86asm.IMUL, x86asm.DIV, x86asm.IDIV,
+		x86asm.JB, x86asm.JAE, x86asm.JO, x86asm.JNO, x86asm.JP, x86asm.JNP,
+		x86asm.SETB, x86asm.SETAE, x86asm.SETO, x86asm.SETNO, x86asm.SETP, x86asm.SETNP,
+		x86asm.CMOVB, x86asm.CMOVAE, x86asm.CMOVO, x86asm.CMOVNO, x86asm.CMOVP, x86asm.CMOVNP,
+		x86asm.FCMOVB, x86asm.FCMOVNB, x86asm.FCMOVU, x86asm.FCMOVNU,
+		x86asm.JCXZ, x86asm.JECXZ, x86asm.JRCXZ, x86asm.LOOP:
+		return 0, 0
+	}
+	if _, _, known := knownCarryOverflowEffect(inst); known {
+		return 0, 0
+	}
+	return zs, 0
 }

@@ -33,22 +33,37 @@ var boundaryStubs = [][2]string{
 	{"_stub___tls_get_addr", "shim___tls_get_addr"},
 	{"_stub_test_record_ctx", "shim_test_record_ctx"},
 	{"_stub_test_rip", "shim_test_rip"},
-	{"_stub_longjmp", "shim_guest_nonlocal_jump"},
+	{"_stub_longjmp", "shim_guest_longjmp"},
 	{"_stub_test_check_uc", "shim_test_check_uc"},
 	{"_stub_pthread_setspecific", "shim_pthread_setspecific"},
 	{"_stub_pthread_key_create", "shim_pthread_key_create"},
 	{"_stub_test_heap_bump", "shim_test_heap_bump"},
+	// lean shims (lean_test.go registers them in leanTable)
+	{"_stub_test_lean_mix", "shim_test_lean_mix"},
+	{"_stub_test_lean_wait", "shim_test_lean_wait"},
+	{"_stub_test_lean_bad_x19", "shim_test_lean_bad_x19"},
+	{"_stub_test_lean_bad_x28", "shim_test_lean_bad_x28"},
+	{"_stub_test_lean_bad_x29", "shim_test_lean_bad_x29"},
+	{"_stub_test_lean_bad_d9", "shim_test_lean_bad_d9"},
+	{"_stub_test_lean_bad_callback", "shim_test_lean_bad_callback"},
+	{"_stub_test_lean_fault", "shim_test_lean_fault"},
 }
 
 // boundaryOutputChecks are further strings a case's output must contain exactly once.
 var boundaryOutputChecks = map[string][]string{
 	"profile": {"[stall-profile] samples in recompiled guest code: PC only (no frame chain)\n",
 		"[stall-profile]   unnamed: busy 100%", ": guest_spin 100%\n"},
-	"longjmp":          {"FATAL: guest longjmp(env=0x1000700, val=1) called from 0x0: non-local jumps are not supported"},
-	"unresolved-named": {"Called unimplemented function 'sceRazorCpuInit' (NID: kgOk-kzW+8M, Lib: libSceFoo) at RIP=0x540030 "},
-	"unresolved-plt":   {"Called unimplemented function NID 'AbCdEfGhIjK' (Lib: libSceFoo) at RIP=0x540000 "},
-	"unresolved-got":   {"Called unimplemented function NID 'AbCdEfGhIjK' (Lib: libSceFoo) at RIP=0x560000 "},
-	"crash":            {"In recompiled guest code (guest_crash+0x", "RBX=0xd001 RCX=", " R12=0xd00c R13=0xd00d R14=0xd00e R15=0xd00f "},
+	"longjmp":           {"FATAL: longjmp(env=0x1000700, val=1): the jmp_buf was never initialised by setjmp"},
+	"unresolved-named":  {"Called unimplemented function 'sceRazorCpuInit' (NID: kgOk-kzW+8M, Lib: libSceFoo) at RIP=0x540030 "},
+	"unresolved-plt":    {"Called unimplemented function NID 'AbCdEfGhIjK' (Lib: libSceFoo) at RIP=0x540000 "},
+	"unresolved-got":    {"Called unimplemented function NID 'AbCdEfGhIjK' (Lib: libSceFoo) at RIP=0x560000 "},
+	"lean-bad-x19":      {"lean HLE function", "violated the host ABI: x19 (rax) changed"},
+	"lean-bad-x28":      {"violated the host ABI: x28 (memory base) changed"},
+	"lean-bad-x29":      {"violated the host ABI: x29 / sp (frame record) changed"},
+	"lean-bad-d9":       {"violated the host ABI: d9 changed"},
+	"lean-fault":        {"RBX=0x5101", "RBP=0x5102"},
+	"lean-bad-callback": {"lean HLE function", "entered guest code"},
+	"crash":             {"In recompiled guest code (guest_crash+0x", "RBX=0xd001 RCX=", " R12=0xd00c R13=0xd00d R14=0xd00e R15=0xd00f "},
 }
 
 // boundaryStubAddr is the guest address of boundaryStubs[i] (harness.c: STUB_ADDR).
@@ -58,6 +73,15 @@ func boundaryStubAddr(i int) uint64 { return 0x7f0000000 + uint64(i)*0x10 }
 // the flags of the game build (pkg/cli: -O2 -ffp-contract=off).
 var boundaryRuntimeSources = []string{
 	"core/recomp_runtime.c",
+	"core/nps5_pcmpstr.c",
+	"core/nps5_diag.c",
+	"core/nps5_mem.c",
+	"core/nps5_vm.c",
+	"modules/libkernel/nps5_thunks_thread.c",
+	"core/nps5_eh.c",
+	"core/nps5_shadow.c",
+	"core/nps5_lean.c",
+	"core/nps5_tier1.c",
 	"kernel/threading/ps4_threading.c",
 	"kernel/threading/ps4_stall_profile.c",
 	"modules/libSceFiber/ps4_fiber.c",
@@ -79,6 +103,24 @@ var liftedHelperFns = []struct {
 	{"_guest_lifted_vaeskeygenassist", []byte{0xc4, 0xe3, 0x79, 0xdf, 0xe5, 0x01}, 0x1003400}, // vaeskeygenassist xmm4, xmm5, 1
 }
 
+// testFnEntry and testFnRet are the entry and the x86 RET of a hand-assembled guest function in
+// the current call model, as the emitter and the lifter write them.
+func testFnEntry() string {
+	if lifter.GetCallModel() == lifter.CallFlat {
+		return strings.Join(lifter.FlatCallEntry(), "\n") + "\n"
+	}
+	return "    str x30, [sp, #-16]!\n"
+}
+
+func testFnRet() string {
+	lines, err := lifter.NewArm64Lifter(nil).LiftInstructionToBuf(
+		disasm.Instruction{Address: 0x5fff00, Inst: x86asm.Inst{Op: x86asm.RET, Len: 1}}, 0x5fff01, nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func writeLiftedHelperFns(t *testing.T, path string) {
 	t.Helper()
 	var b strings.Builder
@@ -98,7 +140,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fmt.Fprintf(&b, ".globl %s\n%s:\n    str x30, [sp, #-16]!\n", f.sym, f.sym)
+		fmt.Fprintf(&b, ".globl %s\n%s:\n%s", f.sym, f.sym, testFnEntry())
 		for v := 0; v < 32; v++ {
 			fmt.Fprintf(&b, "    movi v%d.16b, #0x%x\n", v, 0x40+v)
 		}
@@ -111,7 +153,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 			fmt.Fprintf(&b, "    stp q%d, q%d, [x16, #%d]\n", v, v+1, v*16)
 		}
 		b.WriteString("    add x16, x16, #512\n    stp x21, x0, [x16]\n")
-		b.WriteString("    ldr x16, [x28, x26]\n    add x26, x26, #8\n    ldr x30, [sp], #16\n    ret\n\n")
+		b.WriteString(testFnRet() + "\n")
 	}
 	fns := b.String()
 	// _guest_helper_loop: rbx, rbp, r12-r15 = 0xf001, 0xf002, 0xf00c-0xf00f, then the lifted
@@ -127,7 +169,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	b.Reset()
-	b.WriteString(guestTextSection + "\n.p2align 2\n\n.globl _guest_helper_loop\n_guest_helper_loop:\n    str x30, [sp, #-16]!\n")
+	b.WriteString(guestTextSection + "\n.p2align 2\n\n.globl _guest_helper_loop\n_guest_helper_loop:\n" + testFnEntry())
 	for r, v := range map[int]int{20: 0xf001, 25: 0xf002, 12: 0xf00c, 13: 0xf00d, 14: 0xf00e, 15: 0xf00f} {
 		fmt.Fprintf(&b, "    movz x%d, #0x%x\n", r, v)
 	}
@@ -140,7 +182,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 	b.WriteString("    ldr x0, [x28, x16]\n    add x0, x0, #1\n    str x0, [x28, x16]\nLhelper_rcx_ok:\n")
 	li("x16", 0x1000800)
 	b.WriteString("    ldr x0, [x28, x16]\n    cbz x0, Lhelper_loop\n")
-	b.WriteString("    ldr x16, [x28, x26]\n    add x26, x26, #8\n    ldr x30, [sp], #16\n    ret\n")
+	b.WriteString(testFnRet())
 	// _guest_helper_window: 200 times the same vpcmpistri, with a SIGUSR1 delivered right after
 	// the helper returned, before the lifted code loads rcx from ctx (the stub below sends it
 	// with raw syscalls, so it arrives at a PC in guest code).
@@ -151,7 +193,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 			win = append(win, "    bl   _test_signal_self")
 		}
 	}
-	b.WriteString(".globl _guest_helper_window\n_guest_helper_window:\n    str x30, [sp, #-16]!\n")
+	b.WriteString(".globl _guest_helper_window\n_guest_helper_window:\n" + testFnEntry())
 	for r, v := range map[int]int{20: 0xf001, 25: 0xf002, 12: 0xf00c, 13: 0xf00d, 14: 0xf00e, 15: 0xf00f} {
 		fmt.Fprintf(&b, "    movz x%d, #0x%x\n", r, v)
 	}
@@ -161,7 +203,7 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 	li("x16", 0x1000808)
 	b.WriteString("    ldr x0, [x28, x16]\n    add x0, x0, #1\n    str x0, [x28, x16]\nLhelper_window_ok:\n")
 	b.WriteString("    subs x9, x9, #1\n    b.ne Lhelper_window\n")
-	b.WriteString("    ldr x16, [x28, x26]\n    add x26, x26, #8\n    ldr x30, [sp], #16\n    ret\n\n")
+	b.WriteString(testFnRet() + "\n")
 	// pthread_kill(pthread_self(), SIGUSR1) as the __pthread_kill syscall (what pthread_kill
 	// makes) on the thread's Mach port, which harness.c stores in g_signal_self_port: the signal
 	// goes to this thread, and it is delivered on the return from the syscall, here in guest
@@ -188,8 +230,11 @@ func writeLiftedHelperFns(t *testing.T, path string) {
 
 // buildBoundaryHarness links the emitted trampoline and shim stubs, the lifted helper-call
 // functions, guest.s, harness.c and the runtime sources into one host program.
-func buildBoundaryHarness(t *testing.T) string {
+func buildBoundaryHarness(t *testing.T, model lifter.CallModel) string {
 	t.Helper()
+	prev := lifter.GetCallModel()
+	lifter.SetCallModel(model)
+	defer lifter.SetCallModel(prev)
 	if _, err := exec.LookPath("clang"); err != nil {
 		t.Skip("clang not found")
 	}
@@ -198,6 +243,7 @@ func buildBoundaryHarness(t *testing.T) string {
 	if err := (&AsmEmitter{}).EmitTrampoline(tramp); err != nil {
 		t.Fatal(err)
 	}
+	registerLeanTestShims()
 	var stubs bytes.Buffer
 	stubs.WriteString(guestTextSection + "\n.p2align 2\n\n")
 	for i, s := range boundaryStubs {
@@ -235,7 +281,16 @@ func buildBoundaryHarness(t *testing.T) string {
 	lifted := filepath.Join(dir, "lifted_gen.s")
 	writeLiftedHelperFns(t, lifted)
 	td, _ := filepath.Abs("testdata/boundary")
-	args = append(args, filepath.Join(td, "harness.c"), filepath.Join(td, "stubs.c"), filepath.Join(td, "guest.s"),
+	// guest.s is written for both call models (its GUEST_FN/GUEST_CALL/GUEST_RET macros).
+	guestSrc, err := os.ReadFile(filepath.Join(td, "guest.s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestPath := filepath.Join(dir, "guest_"+model.String()+".s")
+	if err := os.WriteFile(guestPath, append([]byte(fmt.Sprintf(".set CALL_MODEL_FLAT, %d\n", model)), guestSrc...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args = append(args, filepath.Join(td, "harness.c"), filepath.Join(td, "stubs.c"), guestPath,
 		tramp, stubPath, modPath, strings.TrimSuffix(modPath, ".c")+"_synth.s", lifted, strings.TrimSuffix(lifted, ".s")+"_loop.s")
 	for _, s := range boundaryRuntimeSources {
 		args = append(args, filepath.Join(rt, s))
@@ -251,7 +306,13 @@ func buildBoundaryHarness(t *testing.T) string {
 // TestGuestStateBoundary runs the guest-state boundary cases of testdata/boundary/harness.c:
 // guest code calls shims through the emitted bridge, and fibers switch inside shims.
 func TestGuestStateBoundary(t *testing.T) {
-	bin := buildBoundaryHarness(t)
+	for _, model := range []lifter.CallModel{lifter.CallNested, lifter.CallFlat} {
+		t.Run(model.String(), func(t *testing.T) { runGuestStateBoundary(t, model) })
+	}
+}
+
+func runGuestStateBoundary(t *testing.T, model lifter.CallModel) {
+	bin := buildBoundaryHarness(t, model)
 	cases := []struct {
 		name, arg string
 		env       []string
@@ -279,9 +340,21 @@ func TestGuestStateBoundary(t *testing.T) {
 		{"exception-after-helper", "signal-after-helper", nil, false},
 		{"exception-in-fiber/coroutines", "exception-fiber", nil, false},
 		{"exception-in-fiber/threads", "exception-fiber", []string{"PS4_FIBER_THREADS=1"}, false},
+		{"lean-vs-full-random-calls", "lean-diff", nil, false},
+		{"lean-signal-in-call", "lean-signal", nil, false},
+		{"lean-threads", "lean-threads", nil, false},
+		{"lean-fault-report", "lean-fault", nil, true},
+		{"lean-checker-bad-x19", "lean-bad-x19", nil, true},
+		{"lean-checker-bad-x28", "lean-bad-x28", nil, true},
+		{"lean-checker-bad-x29", "lean-bad-x29", nil, true},
+		{"lean-checker-bad-d9", "lean-bad-d9", nil, true},
+		{"lean-checker-guest-callback", "lean-bad-callback", nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if strings.HasPrefix(c.name, "lean-checker") && model != lifter.CallFlat {
+				t.Skip("the nested call model has no lean bridge")
+			}
 			cmd := exec.Command(bin, c.arg)
 			cmd.Env = append(os.Environ(), c.env...)
 			out, err := cmd.CombinedOutput()
@@ -306,7 +379,7 @@ func TestGuestStateBoundary(t *testing.T) {
 // flush-to-zero (the only case in which the bridge writes FPCR, twice per call).
 func BenchmarkShimCall(b *testing.B) {
 	t := &testing.T{}
-	bin := buildBoundaryHarness(t)
+	bin := buildBoundaryHarness(t, lifter.GetCallModel())
 	for _, mx := range []string{"0x1f80", "0x9fc0", "0xbfc0"} {
 		b.Run("mxcsr="+mx, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {

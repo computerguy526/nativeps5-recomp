@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkAnalyzeReachable(b *testing.B) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(b)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		b.Fatalf("failed to load elf: %v", err)

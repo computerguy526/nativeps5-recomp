@@ -1,7 +1,6 @@
 package elfloader
 
 import (
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,13 +97,13 @@ func TestHogwartsCanaryResolution(t *testing.T) {
 		t.Fatal("no __stack_chk_guard relocation found in fios")
 	}
 	t.Logf("fios canaryRelocOffset = 0x%x", canaryRelocOffset)
-	val := binary.LittleEndian.Uint64(main.MemoryImage[canaryRelocOffset : canaryRelocOffset+8])
+	val := imgU64(main.MemoryImage, canaryRelocOffset)
 	t.Logf("main.CanaryAddr = 0x%x", main.CanaryAddr)
 	t.Logf("GOT entry at 0x%x = 0x%x", canaryRelocOffset, val)
 	if val != main.CanaryAddr {
 		t.Fatalf("expected 0x%x to point to main.CanaryAddr (0x%x), got 0x%x", canaryRelocOffset, main.CanaryAddr, val)
 	}
-	canaryInMem := binary.LittleEndian.Uint64(main.MemoryImage[val : val+8])
+	canaryInMem := imgU64(main.MemoryImage, val)
 	t.Logf("Canary value at 0x%x = 0x%x", val, canaryInMem)
 	if canaryInMem != 0x595e9fbd94fda766 {
 		t.Fatalf("expected canary value 0x595e9fbd94fda766, got 0x%x", canaryInMem)
@@ -146,16 +145,21 @@ func TestHogwartsFullCanaryInGuestImage(t *testing.T) {
 			t.Logf("Reloc at 0x%x: SymName=%s, Canon=%s, Type=%d", rel.Offset, rel.SymName, canon, rel.Type)
 		}
 	}
-	val := binary.LittleEndian.Uint64(main.MemoryImage[0xa3203a8:0xa3203b0])
-	t.Logf("Full merge: len=%d, main.CanaryAddr = 0x%x, [0xa3203a8] = 0x%x", len(main.MemoryImage), main.CanaryAddr, val)
+	val := imgU64(main.MemoryImage, 0xa3203a8)
+	t.Logf("Full merge: len=%d, main.CanaryAddr = 0x%x, [0xa3203a8] = 0x%x", main.MemoryImage.Size(), main.CanaryAddr, val)
 	if val != main.CanaryAddr {
 		t.Fatalf("expected 0xa3203a8 to point to 0x%x, got 0x%x", main.CanaryAddr, val)
 	}
 	if target := os.Getenv("UPDATE_GUEST_IMAGE_PATH"); target != "" {
-		if err := os.WriteFile(target, main.MemoryImage, 0o644); err != nil {
+		// Dense form (byte i = guest address i), as this fixture has always been written.
+		dense := make([]byte, main.MemoryImage.End())
+		for _, r := range main.MemoryImage.Regions() {
+			copy(dense[r.Addr:], r.Data)
+		}
+		if err := os.WriteFile(target, dense, 0o644); err != nil {
 			t.Fatalf("failed to update guest_image.bin: %v", err)
 		}
-		t.Logf("Updated %s (%d bytes)", target, len(main.MemoryImage))
+		t.Logf("Updated %s (%d bytes)", target, len(dense))
 	}
 }
 
@@ -177,3 +181,14 @@ func TestResolveNID(t *testing.T) {
 	}
 }
 
+
+func TestLibraryForNIDPS5SecondID(t *testing.T) {
+	l := &LoadedELF{ImportLibs: map[uint16]string{1: "libkernel", 2: "libc"}, LibIDSecond: true}
+	if got := l.LibraryForNID("abc#C#B"); got != "libkernel" { // B=1
+		t.Fatalf("ps5: %q", got)
+	}
+	l.LibIDSecond = false
+	if got := l.LibraryForNID("abc#B#C"); got != "libkernel" {
+		t.Fatalf("ps4: %q", got)
+	}
+}

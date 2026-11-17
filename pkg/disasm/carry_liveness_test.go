@@ -21,7 +21,8 @@ type testBlock struct {
 	insts []string
 }
 
-var testOps = map[string]x86asm.Op{"JE": x86asm.JE, "JNE": x86asm.JNE, "JB": x86asm.JB, "LOOP": x86asm.LOOP}
+var testOps = map[string]x86asm.Op{"JE": x86asm.JE, "JNE": x86asm.JNE, "JB": x86asm.JB, "LOOP": x86asm.LOOP,
+	"JP": x86asm.JP, "JNP": x86asm.JNP}
 
 // testOutside is a function entry outside the function under test, testNotFunc an address
 // outside it that is no function entry (testIsFunc).

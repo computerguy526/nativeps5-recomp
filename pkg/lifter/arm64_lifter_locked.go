@@ -68,8 +68,8 @@ func sizedReg(size, n int) string {
 }
 
 // lockAddr puts the host address of a locked memory operand in x16.
-func lockAddr(mem x86asm.Mem, nextPC uint64) []string {
-	return append(computeEffAddr(mem, nextPC, "x16"), "    add x16, x28, x16")
+func (l *Arm64Lifter) lockAddr(mem x86asm.Mem, nextPC uint64) []string {
+	return append(computeEffAddr(mem, nextPC, "x16"), l.gAdd("x16", "x16"))
 }
 
 // lockSource puts the source operand of a locked instruction in a register: the pinned register
@@ -196,7 +196,7 @@ func (l *Arm64Lifter) liftLocked(inst disasm.Instruction, nextPC uint64, lines [
 			return append(lines, l.emitUnsupported(inst, "unsupported lock alu source")...), true
 		}
 		lines = append(lines, src...)
-		lines = append(lines, lockAddr(mem, nextPC)...)
+		lines = append(lines, l.lockAddr(mem, nextPC)...)
 		switch op {
 		case x86asm.ADD:
 			lines = append(lines, fmt.Sprintf("    ldaddal%s %s, %s, [x16]", s, b, old))
@@ -232,7 +232,7 @@ func (l *Arm64Lifter) liftLocked(inst disasm.Instruction, nextPC uint64, lines [
 	case x86asm.INC, x86asm.DEC:
 		// INC/DEC keep CF: 8/16-bit flags come from SETF8/SETF16 (C kept), 32/64-bit ones from
 		// CMN/CMP with C restored afterwards when CF is live.
-		lines = append(lines, lockAddr(mem, nextPC)...)
+		lines = append(lines, l.lockAddr(mem, nextPC)...)
 		arith := "add"
 		if op == x86asm.INC {
 			lines = append(lines, fmt.Sprintf("    mov %s, #1", r0))
@@ -269,13 +269,13 @@ func (l *Arm64Lifter) liftLocked(inst disasm.Instruction, nextPC uint64, lines [
 		return lines, true
 
 	case x86asm.NOT:
-		lines = append(lines, lockAddr(mem, nextPC)...)
+		lines = append(lines, l.lockAddr(mem, nextPC)...)
 		lines = append(lines, fmt.Sprintf("    mov %s, #-1", r0),
 			fmt.Sprintf("    ldeoral%s %s, %s, [x16]", s, r0, old))
 		return lines, true
 
 	case x86asm.NEG:
-		lines = append(lines, lockAddr(mem, nextPC)...)
+		lines = append(lines, l.lockAddr(mem, nextPC)...)
 		lines = append(lines, l.exclusiveLoop(size, []string{fmt.Sprintf("    neg %s, %s", sizedReg(size, 1), old)})...)
 		if flags {
 			// NEGS leaves C = (x == 0) = !CF (carrySub).
@@ -310,7 +310,7 @@ func (l *Arm64Lifter) liftLockedAdcSbb(inst disasm.Instruction, mem x86asm.Mem, 
 	lines = append(lines, src...)
 	r4 := sizedReg(size, 4)
 	lines = append(lines, fmt.Sprintf("    cset %s, %s", r4, l.carryCond(true)))
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	arith := "add"
 	if isSbb {
 		arith = "sub"
@@ -395,7 +395,7 @@ func (l *Arm64Lifter) liftLockedBt(inst disasm.Instruction, mem x86asm.Mem, next
 			fmt.Sprintf("    and x1, x4, #%d", bits-1),
 			"    mov x0, #1", "    lsl x0, x0, x1")
 	}
-	lines = append(lines, "    add x16, x28, x16")
+	lines = append(lines, l.gAdd("x16", "x16"))
 	s := atomicSuffix(size)
 	old := sizedReg(size, 17)
 	at := map[x86asm.Op]string{x86asm.BTS: "ldsetal", x86asm.BTR: "ldclral", x86asm.BTC: "ldeoral"}[inst.Inst.Op]
@@ -418,7 +418,7 @@ func (l *Arm64Lifter) liftAtomicXadd(inst disasm.Instruction, mem x86asm.Mem, sr
 	size := arm64RegMap[srcReg].Size
 	src, b, _ := lockSource(srcReg, size)
 	lines = append(lines, src...)
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	old := sizedReg(size, 17)
 	lines = append(lines, fmt.Sprintf("    ldaddal%s %s, %s, [x16]", atomicSuffix(size), b, old))
 	if !inst.SkipFlags {
@@ -433,7 +433,7 @@ func (l *Arm64Lifter) liftAtomicXchg(mem x86asm.Mem, reg x86asm.Reg, nextPC uint
 	size := arm64RegMap[reg].Size
 	src, b, _ := lockSource(reg, size)
 	lines = append(lines, src...)
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	lines = append(lines, fmt.Sprintf("    swpal%s %s, %s, [x16]", atomicSuffix(size), b, sizedReg(size, 17)))
 	wc, _ := writeRegFrom(reg, "x17", "w17")
 	return append(lines, wc...)
@@ -456,7 +456,7 @@ func (l *Arm64Lifter) liftAtomicCmpxchg(mem x86asm.Mem, srcReg x86asm.Reg, nextP
 	default:
 		lines = append(lines, "    and w0, w19, #0xff")
 	}
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	r0 := sizedReg(size, 0)
 	lines = append(lines, fmt.Sprintf("    casal%s %s, %s, [x16]", atomicSuffix(size), r0, b))
 	switch size {
@@ -492,7 +492,7 @@ func (l *Arm64Lifter) liftCmpxchg8b(inst disasm.Instruction, nextPC uint64, line
 		"    mov x4, x0",
 		"    mov w2, w20", "    bfi x2, x21, #32, #32", // new ECX:EBX
 	)
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	lines = append(lines, "    casal x0, x2, [x16]")
 	flags := !inst.SkipFlags
 	if flags {
@@ -519,7 +519,7 @@ func (l *Arm64Lifter) liftCmpxchg16b(inst disasm.Instruction, nextPC uint64, lin
 	}
 	// CASP takes even/odd register pairs: x0:x1 = expected (RAX, RDX), x2:x3 = new (RBX, RCX).
 	lines = append(lines, "    mov x0, x19", "    mov x1, x22", "    mov x2, x20", "    mov x3, x21")
-	lines = append(lines, lockAddr(mem, nextPC)...)
+	lines = append(lines, l.lockAddr(mem, nextPC)...)
 	lines = append(lines, "    caspal x0, x1, x2, x3, [x16]")
 	flags := !inst.SkipFlags
 	if flags {

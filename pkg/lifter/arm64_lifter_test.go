@@ -10,6 +10,8 @@ import (
 )
 
 func TestArm64LifterBasic(t *testing.T) {
+	defer SetBMIPeep(GetBMIPeep())
+	SetBMIPeep(false) // these cases pin the general lowering; the peepholes have their own tests (arm64_bmipeep_test.go)
 	lifter := NewArm64Lifter(map[uint64]bool{0x1000: true, 0x2000: true})
 	lifter.SetTSO(false) // these cases check the plain lowerings; TestTsoOrdering checks the ordering
 
@@ -191,7 +193,7 @@ func TestArm64LifterBasic(t *testing.T) {
 			name:     "pmuludq xmm0, xmm1",
 			bytes:    []byte{0x66, 0x0f, 0xf4, 0xc1}, // pmuludq xmm0, xmm1
 			pc:       0x1000,
-			expected: []string{"umull v0.2d, v0.2s, v1.2s"},
+			expected: []string{"xtn v28.2s, v0.2d", "xtn v29.2s, v1.2d", "umull v0.2d, v28.2s, v29.2s"},
 		},
 		{
 			name:     "vmovddup xmm1, xmm2",
@@ -419,7 +421,7 @@ func TestArm64LifterBasic(t *testing.T) {
 			name:     "div dword [rcx]",
 			bytes:    []byte{0xf7, 0x31}, // div dword [rcx]
 			pc:       0x1000,
-			expected: []string{"ldr w17, [x28, x16]", "udiv w16, w19, w17", "msub w22, w16, w17, w19"},
+			expected: []string{"ldr w17, [x28, x16]", "orr x16, x16, x22, lsl #32", "udiv x0, x16, x17", "msub x1, x0, x17, x16", "mov w22, w1"},
 		},
 		{
 			name:     "mul qword [rcx]",
@@ -461,7 +463,7 @@ func TestArm64LifterBasic(t *testing.T) {
 			name:     "shlx eax, ebx, ecx",
 			bytes:    []byte{0xc4, 0xe2, 0x69, 0xf7, 0xc3}, // shlx eax, ebx, ecx
 			pc:       0x1000,
-			expected: []string{"lsl w19, w16, w17"},
+			expected: []string{"lsl w19, w16, w22"},
 		},
 		{
 			name:     "rorx rax, rbx, 4",
@@ -557,7 +559,7 @@ func TestArm64LifterBasic(t *testing.T) {
 			name:     "vcvttpd2dq xmm0, ymm1",
 			bytes:    []byte{0xc5, 0xfd, 0xe6, 0xc1}, // vcvttpd2dq xmm0, ymm1
 			pc:       0x1000,
-			expected: []string{"mov d29, v1.d[0]", "fcvtzs x3, d29", "mov v28.s[3], w3", "mov v0.16b, v28.16b", "movi v16.16b, #0"},
+			expected: []string{"mov x4, v1.d[0]", "fmov d29, x4", "fcvtzs x3, d29", "mov v28.s[3], w3", "mov v0.16b, v28.16b", "movi v16.16b, #0"},
 		},
 		{
 			name:     "cmpxchg16b [rax]",
@@ -1093,6 +1095,8 @@ func TestShiftFlagUpdates(t *testing.T) {
 }
 
 func TestTzcntLzcntBsfBsrFlags(t *testing.T) {
+	defer SetBMIPeep(GetBMIPeep())
+	SetBMIPeep(false) // these cases pin the general lowering; the peepholes have their own tests (arm64_bmipeep_test.go)
 	lifter := NewArm64Lifter(map[uint64]bool{0x1000: true})
 	fn := &disasm.Function{
 		EntryAddr: 0x1000,
@@ -1230,8 +1234,8 @@ func TestMaskmovdqu(t *testing.T) {
 		t.Fatalf("lift vmaskmovdqu failed: %v", err)
 	}
 	joinedV := strings.Join(linesV, "\n")
-	if !strings.Contains(joinedV, "add  x16, x28, x24") {
-		t.Errorf("expected add  x16, x28, x24 in vmaskmovdqu, got:\n%s", joinedV)
+	if !strings.Contains(joinedV, "add x16, x28, x24") {
+		t.Errorf("expected add x16, x28, x24 in vmaskmovdqu, got:\n%s", joinedV)
 	}
 	if !strings.Contains(joinedV, "fmov x17, d1") {
 		t.Errorf("expected fmov x17, d1 in vmaskmovdqu, got:\n%s", joinedV)
@@ -1254,8 +1258,8 @@ func TestMaskmovdqu(t *testing.T) {
 		t.Fatalf("lift maskmovdqu failed: %v", err)
 	}
 	joinedM := strings.Join(linesM, "\n")
-	if !strings.Contains(joinedM, "add  x16, x28, x24") {
-		t.Errorf("expected add  x16, x28, x24 in maskmovdqu, got:\n%s", joinedM)
+	if !strings.Contains(joinedM, "add x16, x28, x24") {
+		t.Errorf("expected add x16, x28, x24 in maskmovdqu, got:\n%s", joinedM)
 	}
 }
 

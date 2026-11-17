@@ -9,7 +9,7 @@ import (
 )
 
 func TestDisasmSample(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)
@@ -17,20 +17,13 @@ func TestDisasmSample(t *testing.T) {
 
 	pc := uint64(0xb0e70)
 	limit := uint64(0xb0e85)
-	namePtr := uint64(loaded.MemoryImage[0x1065b8]) |
-		(uint64(loaded.MemoryImage[0x1065b9]) << 8) |
-		(uint64(loaded.MemoryImage[0x1065ba]) << 16) |
-		(uint64(loaded.MemoryImage[0x1065bb]) << 24) |
-		(uint64(loaded.MemoryImage[0x1065bc]) << 32) |
-		(uint64(loaded.MemoryImage[0x1065bd]) << 40) |
-		(uint64(loaded.MemoryImage[0x1065be]) << 48) |
-		(uint64(loaded.MemoryImage[0x1065bf]) << 56)
+	namePtr, _ := loaded.MemoryImage.U64(0x1065b8)
 	t.Logf("namePtr: 0x%x", namePtr)
-	if namePtr < uint64(len(loaded.MemoryImage)) {
-		t.Logf("Type name: %s", string(loaded.MemoryImage[namePtr:namePtr+40]))
+	if name := loaded.MemoryImage.Bytes(namePtr, 40); name != nil {
+		t.Logf("Type name: %s", string(name))
 	}
 	for pc < limit {
-		inst, err := x86asm.Decode(loaded.MemoryImage[pc:], 64)
+		inst, err := x86asm.Decode(loaded.MemoryImage.From(pc), 64)
 		if err != nil {
 			t.Fatalf("decode error at 0x%x: %v", pc, err)
 		}
@@ -40,7 +33,7 @@ func TestDisasmSample(t *testing.T) {
 }
 
 func TestDisasmAtomicAdd(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)
@@ -53,7 +46,7 @@ func TestDisasmAtomicAdd(t *testing.T) {
 	pc := addr
 	limit := addr + sym.Size
 	for pc < limit {
-		inst, err := x86asm.Decode(loaded.MemoryImage[pc:], 64)
+		inst, err := x86asm.Decode(loaded.MemoryImage.From(pc), 64)
 		if err != nil {
 			t.Fatalf("decode error at 0x%x: %v", pc, err)
 		}
@@ -78,7 +71,7 @@ func TestDisasmAtomicAdd(t *testing.T) {
 }
 
 func TestCheckEntryPoint(t *testing.T) {
-	elfPath := "../../hello_world.elf"
+	elfPath := helloELF(t)
 	loaded, err := elfloader.LoadELF(elfPath)
 	if err != nil {
 		t.Fatalf("failed to load elf: %v", err)

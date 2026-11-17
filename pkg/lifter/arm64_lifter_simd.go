@@ -21,7 +21,7 @@ func (l *Arm64Lifter) liftVectorMove128(inst disasm.Instruction, nextPC uint64, 
 			}
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", xmmDst.Q))
+				lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), xmmDst.Q))
 				return lines, nil
 			}
 		}
@@ -31,7 +31,7 @@ func (l *Arm64Lifter) liftVectorMove128(inst disasm.Instruction, nextPC uint64, 
 		if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 			if xmmSrc, okXS := arm64XmmMap[srcReg]; okXS {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", xmmSrc.Q))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), xmmSrc.Q))
 				return lines, nil
 			}
 		}
@@ -50,13 +50,17 @@ func (l *Arm64Lifter) liftVectorMove32(inst disasm.Instruction, nextPC uint64, l
 		if xmmDst, okXD := arm64XmmMap[dstReg]; okXD {
 			if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 				if xmmSrc, okXS := arm64XmmMap[srcReg]; okXS {
-					lines = append(lines, fmt.Sprintf("    fmov %s, %s", xmmDst.S, xmmSrc.S))
+					// Register form: only the low 32 bits are replaced, bits 32..127 of the destination stay
+					// (AArch64 `fmov s, s` would zero them, as the memory-load form of MOVSS does).
+					if xmmDst.V != xmmSrc.V {
+						lines = append(lines, fmt.Sprintf("    mov %s.s[0], %s.s[0]", xmmDst.V, xmmSrc.V))
+					}
 					return lines, nil
 				}
 			}
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", xmmDst.S))
+				lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), xmmDst.S))
 				return lines, nil
 			}
 		}
@@ -66,7 +70,7 @@ func (l *Arm64Lifter) liftVectorMove32(inst disasm.Instruction, nextPC uint64, l
 		if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 			if xmmSrc, okXS := arm64XmmMap[srcReg]; okXS {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", xmmSrc.S))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), xmmSrc.S))
 				return lines, nil
 			}
 		}
@@ -85,13 +89,16 @@ func (l *Arm64Lifter) liftVectorMove64(inst disasm.Instruction, nextPC uint64, l
 		if xmmDst, okXD := arm64XmmMap[dstReg]; okXD {
 			if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 				if xmmSrc, okXS := arm64XmmMap[srcReg]; okXS {
-					lines = append(lines, fmt.Sprintf("    fmov %s, %s", xmmDst.D, xmmSrc.D))
+					// Register form: only the low 64 bits are replaced, the destination's high half stays.
+					if xmmDst.V != xmmSrc.V {
+						lines = append(lines, fmt.Sprintf("    mov %s.d[0], %s.d[0]", xmmDst.V, xmmSrc.V))
+					}
 					return lines, nil
 				}
 			}
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", xmmDst.D))
+				lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), xmmDst.D))
 				return lines, nil
 			}
 		}
@@ -101,7 +108,7 @@ func (l *Arm64Lifter) liftVectorMove64(inst disasm.Instruction, nextPC uint64, l
 		if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 			if xmmSrc, okXS := arm64XmmMap[srcReg]; okXS {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", xmmSrc.D))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), xmmSrc.D))
 				return lines, nil
 			}
 		}
@@ -135,9 +142,9 @@ func (l *Arm64Lifter) liftMovdMovq(inst disasm.Instruction, nextPC uint64, lines
 			if _, _, _, sLowV, _, _, sLowD, okS := getVectorDesc(srcReg); okS {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 				if is64 {
-					lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", sLowD))
+					lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), sLowD))
 				} else {
-					lines = append(lines, fmt.Sprintf("    str s%s, [x28, x16]", sLowV[1:]))
+					lines = append(lines, fmt.Sprintf("    str s%s, "+l.gm("x16"), sLowV[1:]))
 				}
 				return lines, nil
 			}
@@ -182,10 +189,10 @@ func (l *Arm64Lifter) liftMovdMovq(inst disasm.Instruction, nextPC uint64, lines
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 				if is64 {
-					lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dLowD))
+					lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dLowD))
 					lines = append(lines, fmt.Sprintf("    mov %s.d[1], xzr", dLowV))
 				} else {
-					lines = append(lines, fmt.Sprintf("    ldr s%s, [x28, x16]", dLowV[1:]))
+					lines = append(lines, fmt.Sprintf("    ldr s%s, "+l.gm("x16"), dLowV[1:]))
 					lines = append(lines, fmt.Sprintf("    mov %s.s[1], wzr", dLowV))
 					lines = append(lines, fmt.Sprintf("    mov %s.d[1], xzr", dLowV))
 				}
@@ -245,7 +252,7 @@ func (l *Arm64Lifter) liftVectorLogic(inst disasm.Instruction, armOp string, lin
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q16, [x28, x16]")
+			lines = append(lines, "    ldr q16, "+l.gm("x16"))
 			lines = append(lines, fmt.Sprintf("    %s %s.16b, %s.16b, v16.16b", armOp, xmmDst.V, xmmDst.V))
 			return lines, nil
 		}
@@ -282,11 +289,11 @@ func (l *Arm64Lifter) liftShuf(inst disasm.Instruction, nextPC uint64, lines []s
 			}
 		} else if mem, okMem := src.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 			sLowV = "v31"
 			if isYmm {
 				lines = append(lines, "    add x16, x16, #16")
-				lines = append(lines, "    ldr q30, [x28, x16]")
+				lines = append(lines, "    ldr q30, "+l.gm("x16"))
 				sHighV = "v30"
 			}
 		}
@@ -385,10 +392,10 @@ func (l *Arm64Lifter) liftShuf(inst disasm.Instruction, nextPC uint64, lines []s
 			s2HighV = rHigh
 		} else if mem, okMem := src2.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 			if isYmm {
 				lines = append(lines, "    add x16, x16, #16")
-				lines = append(lines, "    ldr q30, [x28, x16]")
+				lines = append(lines, "    ldr q30, "+l.gm("x16"))
 			}
 		}
 
@@ -438,10 +445,10 @@ func (l *Arm64Lifter) liftShuf(inst disasm.Instruction, nextPC uint64, lines []s
 			s2HighV = rHigh
 		} else if mem, okMem := src2.(x86asm.Mem); okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 			if isYmm {
 				lines = append(lines, "    add x16, x16, #16")
-				lines = append(lines, "    ldr q30, [x28, x16]")
+				lines = append(lines, "    ldr q30, "+l.gm("x16"))
 			}
 		}
 
@@ -502,9 +509,9 @@ func (l *Arm64Lifter) liftPshufw(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := srcArg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pshufw src")...)
@@ -579,7 +586,7 @@ func (l *Arm64Lifter) liftVectorBinary(inst disasm.Instruction, nextPC uint64, l
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q31, [x28, x16]")
+		lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		srcRegStr = "v31"
 	}
 	if srcRegStr == "" {
@@ -651,6 +658,12 @@ func (l *Arm64Lifter) liftVectorBinary(inst disasm.Instruction, nextPC uint64, l
 		lines = append(lines, fmt.Sprintf("    sqadd %s.8h, %s.8h, %s.8h", xmmDst.V, xmmDst.V, srcRegStr))
 	case x86asm.PADDUSB:
 		lines = append(lines, fmt.Sprintf("    uqadd %s.16b, %s.16b, %s.16b", xmmDst.V, xmmDst.V, srcRegStr))
+	case x86asm.PADDUSW:
+		lines = append(lines, fmt.Sprintf("    uqadd %s.8h, %s.8h, %s.8h", xmmDst.V, xmmDst.V, srcRegStr))
+	case x86asm.PSUBSW:
+		lines = append(lines, fmt.Sprintf("    sqsub %s.8h, %s.8h, %s.8h", xmmDst.V, xmmDst.V, srcRegStr))
+	case x86asm.PSUBUSW:
+		lines = append(lines, fmt.Sprintf("    uqsub %s.8h, %s.8h, %s.8h", xmmDst.V, xmmDst.V, srcRegStr))
 	case x86asm.PSUBSB:
 		lines = append(lines, fmt.Sprintf("    sqsub %s.16b, %s.16b, %s.16b", xmmDst.V, xmmDst.V, srcRegStr))
 	case x86asm.PSUBUSB:
@@ -665,7 +678,10 @@ func (l *Arm64Lifter) liftVectorBinary(inst disasm.Instruction, nextPC uint64, l
 	case x86asm.PCMPGTQ:
 		lines = append(lines, fmt.Sprintf("    cmgt %s.2d, %s.2d, %s.2d", xmmDst.V, xmmDst.V, srcRegStr))
 	case x86asm.PMULUDQ:
-		lines = append(lines, fmt.Sprintf("    umull %s.2d, %s.2s, %s.2s", xmmDst.V, xmmDst.V, srcRegStr))
+		// The low dword of each QWORD lane (elements 0 and 2), not elements 0 and 1.
+		lines = append(lines, fmt.Sprintf("    xtn v28.2s, %s.2d", xmmDst.V))
+		lines = append(lines, fmt.Sprintf("    xtn v29.2s, %s.2d", srcRegStr))
+		lines = append(lines, fmt.Sprintf("    umull %s.2d, v28.2s, v29.2s", xmmDst.V))
 	default:
 		lines = append(lines, l.emitUnsupported(inst, "unsupported simd binary op")...)
 	}
@@ -839,7 +855,7 @@ func (l *Arm64Lifter) liftVectorShift(inst disasm.Instruction, nextPC uint64, li
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr x16, [x28, x16]")
+		lines = append(lines, "    ldr x16, "+l.gm("x16"))
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported non-imm simd shift")...)
 		return lines, nil
@@ -953,10 +969,10 @@ func (l *Arm64Lifter) liftAvxMove(inst disasm.Instruction, nextPC uint64, lines 
 		if isYmm, dLowQ, dHighQ, dLowV, dHighV, _, _, okD := getVectorDesc(dstReg); okD {
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dLowQ))
+				lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dLowQ))
 				if isYmm {
 					lines = append(lines, "    add x16, x16, #16")
-					lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dHighQ))
+					lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dHighQ))
 				} else {
 					lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
 				}
@@ -981,10 +997,10 @@ func (l *Arm64Lifter) liftAvxMove(inst disasm.Instruction, nextPC uint64, lines 
 		if srcReg, okSrc := src.(x86asm.Reg); okSrc {
 			if isYmm, sLowQ, sHighQ, _, _, _, _, okS := getVectorDesc(srcReg); okS {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", sLowQ))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), sLowQ))
 				if isYmm {
 					lines = append(lines, "    add x16, x16, #16")
-					lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", sHighQ))
+					lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), sHighQ))
 				}
 				return lines, nil
 			}
@@ -1015,7 +1031,7 @@ func (l *Arm64Lifter) liftVbroadcastss(inst disasm.Instruction, nextPC uint64, l
 	src := inst.Inst.Args[1]
 	if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    add x16, x28, x16")
+		lines = append(lines, l.gAdd("x16", "x16"))
 		lines = append(lines, fmt.Sprintf("    ld1r {%s.4s}, [x16]", dLowV))
 		if isYmm {
 			lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", dHighV, dLowV))
@@ -1075,10 +1091,10 @@ func (l *Arm64Lifter) liftAvx3Op(inst disasm.Instruction, nextPC uint64, armOp s
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported packed op src2")...)
@@ -1146,11 +1162,11 @@ func (l *Arm64Lifter) liftMovddup(inst disasm.Instruction, nextPC uint64, lines 
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dLowD))
+		lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dLowD))
 		lines = append(lines, fmt.Sprintf("    dup %s.2d, %s.d[0]", dLowV, dLowV))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr d31, [x28, x16]")
+			lines = append(lines, "    ldr d31, "+l.gm("x16"))
 			lines = append(lines, fmt.Sprintf("    dup %s.2d, v31.d[0]", dHighV))
 		} else if isAvx {
 			lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
@@ -1173,10 +1189,10 @@ func (l *Arm64Lifter) liftMovlpsMovhps(inst disasm.Instruction, nextPC uint64, l
 		if _, _, _, sLowV, _, _, sLowD, okS := getVectorDesc(srcReg); okSrc && okS {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 			if op == x86asm.MOVLPS || op == x86asm.VMOVLPS || op == x86asm.MOVLPD || op == x86asm.VMOVLPD {
-				lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", sLowD))
+				lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), sLowD))
 			} else {
 				lines = append(lines, fmt.Sprintf("    mov d31, %s.d[1]", sLowV))
-				lines = append(lines, "    str d31, [x28, x16]")
+				lines = append(lines, "    str d31, "+l.gm("x16"))
 			}
 			return lines, nil
 		}
@@ -1216,7 +1232,7 @@ func (l *Arm64Lifter) liftMovlpsMovhps(inst disasm.Instruction, nextPC uint64, l
 			} else if mem, okMem := src2.(x86asm.Mem); okMem {
 				// VMOVLPS/VMOVHPS/VMOVLPD/VMOVHPD dst, src1, m64
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    ldr d31, [x28, x16]")
+				lines = append(lines, "    ldr d31, "+l.gm("x16"))
 				if dLowV != s1LowV {
 					lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", dLowV, s1LowV))
 				}
@@ -1235,14 +1251,14 @@ func (l *Arm64Lifter) liftMovlpsMovhps(inst disasm.Instruction, nextPC uint64, l
 		if op == x86asm.MOVLPS || op == x86asm.MOVLPD {
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    ldr d31, [x28, x16]")
+				lines = append(lines, "    ldr d31, "+l.gm("x16"))
 				lines = append(lines, fmt.Sprintf("    mov %s.d[0], v31.d[0]", dLowV))
 				return lines, nil
 			}
 		} else if op == x86asm.MOVHPS || op == x86asm.MOVHPD {
 			if mem, okMem := src.(x86asm.Mem); okMem {
 				lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-				lines = append(lines, "    ldr d31, [x28, x16]")
+				lines = append(lines, "    ldr d31, "+l.gm("x16"))
 				lines = append(lines, fmt.Sprintf("    mov %s.d[1], v31.d[0]", dLowV))
 				return lines, nil
 			}
@@ -1307,10 +1323,10 @@ func (l *Arm64Lifter) liftAvxIntAlu(inst disasm.Instruction, nextPC uint64, armO
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported avx int alu src2")...)
@@ -1357,10 +1373,10 @@ func (l *Arm64Lifter) liftAvxPandn(inst disasm.Instruction, nextPC uint64, lines
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported vpandn src2")...)
@@ -1418,10 +1434,10 @@ func (l *Arm64Lifter) liftAvxUnpck(inst disasm.Instruction, nextPC uint64, lines
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported vpunpck src2")...)
@@ -1492,10 +1508,10 @@ func (l *Arm64Lifter) liftAvxPmuludq(inst disasm.Instruction, nextPC uint64, lin
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported vpmuludq src2")...)
@@ -1584,10 +1600,10 @@ func (l *Arm64Lifter) liftBlend(inst disasm.Instruction, nextPC uint64, lines []
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported blend src2")...)
@@ -1779,13 +1795,13 @@ func (l *Arm64Lifter) liftVectorExtend(inst disasm.Instruction, nextPC uint64, l
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 		switch srcBytes {
 		case 16:
-			lines = append(lines, "    ldr q30, [x28, x16]")
+			lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		case 8:
-			lines = append(lines, "    ldr d30, [x28, x16]")
+			lines = append(lines, "    ldr d30, "+l.gm("x16"))
 		case 4:
-			lines = append(lines, "    ldr s30, [x28, x16]")
+			lines = append(lines, "    ldr s30, "+l.gm("x16"))
 		default: // 2
-			lines = append(lines, "    ldrh w17, [x28, x16]", "    fmov s30, w17")
+			lines = append(lines, "    ldrh w17, "+l.gm("x16"), "    fmov s30, w17")
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pmov extend src")...)
@@ -1794,20 +1810,23 @@ func (l *Arm64Lifter) liftVectorExtend(inst disasm.Instruction, nextPC uint64, l
 
 	switch {
 	case isBW:
-		lines = append(lines, fmt.Sprintf("    %s %s.8h, %s.8b", extOp, dLowV, sLowV))
+		// The upper half first: the low result may overwrite the source (vpmovzxdq ymm4, xmm4).
 		if isYmm {
 			lines = append(lines, fmt.Sprintf("    %s %s.8h, %s.16b", extOp2, dHighV, sLowV))
 		}
+		lines = append(lines, fmt.Sprintf("    %s %s.8h, %s.8b", extOp, dLowV, sLowV))
 	case isWD:
-		lines = append(lines, fmt.Sprintf("    %s %s.4s, %s.4h", extOp, dLowV, sLowV))
+		// The upper half first: the low result may overwrite the source (vpmovzxdq ymm4, xmm4).
 		if isYmm {
 			lines = append(lines, fmt.Sprintf("    %s %s.4s, %s.8h", extOp2, dHighV, sLowV))
 		}
+		lines = append(lines, fmt.Sprintf("    %s %s.4s, %s.4h", extOp, dLowV, sLowV))
 	case isDQ:
-		lines = append(lines, fmt.Sprintf("    %s %s.2d, %s.2s", extOp, dLowV, sLowV))
+		// The upper half first: the low result may overwrite the source (vpmovzxdq ymm4, xmm4).
 		if isYmm {
 			lines = append(lines, fmt.Sprintf("    %s %s.2d, %s.4s", extOp2, dHighV, sLowV))
 		}
+		lines = append(lines, fmt.Sprintf("    %s %s.2d, %s.2s", extOp, dLowV, sLowV))
 	case isBD:
 		lines = append(lines, fmt.Sprintf("    %s v31.8h, %s.8b", extOp, sLowV))
 		lines = append(lines, fmt.Sprintf("    %s %s.4s, v31.4h", extOp, dLowV))
@@ -1861,10 +1880,10 @@ func (l *Arm64Lifter) liftPtestVtest(inst disasm.Instruction, nextPC uint64, lin
 		sHighV = sH
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		sLowV = "v30"
 		if isYmmDst {
-			lines = append(lines, "    add x17, x16, #16", "    ldr q31, [x28, x17]")
+			lines = append(lines, "    add x17, x16, #16", "    ldr q31, "+l.gm("x17"))
 			sHighV = "v31"
 		}
 	} else {
@@ -1964,9 +1983,9 @@ func (l *Arm64Lifter) liftPack(inst disasm.Instruction, nextPC uint64, lines []s
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x17, x16, #16", "    ldr q31, [x28, x17]")
+			lines = append(lines, "    add x17, x16, #16", "    ldr q31, "+l.gm("x17"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pack src2")...)
@@ -2066,11 +2085,11 @@ func (l *Arm64Lifter) liftRcp(inst disasm.Instruction, nextPC uint64, lines []st
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 		if isScalar {
-			lines = append(lines, "    ldr s30, [x28, x16]")
+			lines = append(lines, "    ldr s30, "+l.gm("x16"))
 		} else {
-			lines = append(lines, "    ldr q30, [x28, x16]")
+			lines = append(lines, "    ldr q30, "+l.gm("x16"))
 			if isYmm {
-				lines = append(lines, "    add x17, x16, #16", "    ldr q31, [x28, x17]")
+				lines = append(lines, "    add x17, x16, #16", "    ldr q31, "+l.gm("x17"))
 			}
 		}
 	} else {
@@ -2275,7 +2294,7 @@ func (l *Arm64Lifter) liftAvxShift(inst disasm.Instruction, nextPC uint64, lines
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr x16, [x28, x16]")
+		lines = append(lines, "    ldr x16, "+l.gm("x16"))
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported vpshl/shr non-imm src2")...)
 		return lines, nil
@@ -2418,7 +2437,7 @@ func (l *Arm64Lifter) liftVbroadcastf128(inst disasm.Instruction, nextPC uint64,
 	src := inst.Inst.Args[1]
 	if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dLowQ))
+		lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dLowQ))
 		lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", dHighV, dLowV))
 		return lines, nil
 	}
@@ -2446,7 +2465,7 @@ func (l *Arm64Lifter) liftVbroadcastsd(inst disasm.Instruction, nextPC uint64, l
 	src := inst.Inst.Args[1]
 	if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, fmt.Sprintf("    ldr %s, [x28, x16]", dLowD))
+		lines = append(lines, fmt.Sprintf("    ldr %s, "+l.gm("x16"), dLowD))
 		lines = append(lines, fmt.Sprintf("    dup %s.2d, %s.d[0]", dLowV, dLowV))
 		if isYmm {
 			lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", dHighV, dLowV))
@@ -2504,7 +2523,7 @@ func (l *Arm64Lifter) liftVextractf128(inst disasm.Instruction, nextPC uint64, l
 	}
 	if mem, okMem := dst.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, fmt.Sprintf("    str %s, [x28, x16]", srcQ))
+		lines = append(lines, fmt.Sprintf("    str %s, "+l.gm("x16"), srcQ))
 		return lines, nil
 	}
 
@@ -2531,7 +2550,7 @@ func (l *Arm64Lifter) liftVinsertf128(inst disasm.Instruction, nextPC uint64, li
 	// Load src2 into temporary v16 to completely avoid any register aliasing issues
 	if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q16, [x28, x16]")
+		lines = append(lines, "    ldr q16, "+l.gm("x16"))
 	} else if src2Reg, okSrc2 := src2.(x86asm.Reg); okSrc2 {
 		if _, _, _, s2LowV, _, _, _, okS2 := getVectorDesc(src2Reg); okS2 {
 			lines = append(lines, fmt.Sprintf("    mov v16.16b, %s.16b", s2LowV))
@@ -2583,7 +2602,7 @@ func (l *Arm64Lifter) liftExtractps(inst disasm.Instruction, nextPC uint64, line
 	}
 	if mem, okMem := dst.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x17")...)
-		lines = append(lines, "    str w16, [x28, x17]")
+		lines = append(lines, "    str w16, "+l.gm("x17"))
 		return lines, nil
 	}
 
@@ -2636,7 +2655,7 @@ func (l *Arm64Lifter) liftInsertps(inst disasm.Instruction, nextPC uint64, lines
 	// Load source element into temporary scalar v16.s[0]
 	if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr s16, [x28, x16]")
+		lines = append(lines, "    ldr s16, "+l.gm("x16"))
 	} else if src2Reg, okSrc2 := src2.(x86asm.Reg); okSrc2 {
 		if _, _, _, s2LowV, _, _, _, okS2 := getVectorDesc(src2Reg); okS2 {
 			lines = append(lines, fmt.Sprintf("    mov v16.s[0], %s.s[%d]", s2LowV, countS))
@@ -2695,9 +2714,9 @@ func (l *Arm64Lifter) liftVperm2f128(inst disasm.Instruction, nextPC uint64, lin
 	var s2Low, s2High string
 	if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q16, [x28, x16]")
+		lines = append(lines, "    ldr q16, "+l.gm("x16"))
 		lines = append(lines, "    add x17, x16, #16")
-		lines = append(lines, "    ldr q17, [x28, x17]")
+		lines = append(lines, "    ldr q17, "+l.gm("x17"))
 		s2Low = "v16"
 		s2High = "v17"
 	} else if src2Reg, okSrc2 := src2.(x86asm.Reg); okSrc2 {
@@ -2780,11 +2799,11 @@ func (l *Arm64Lifter) liftVpermil(inst disasm.Instruction, nextPC uint64, isDoub
 	var sLow, sHigh string
 	if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q16, [x28, x16]")
+		lines = append(lines, "    ldr q16, "+l.gm("x16"))
 		sLow = "v16"
 		if isYmm {
 			lines = append(lines, "    add x17, x16, #16")
-			lines = append(lines, "    ldr q17, [x28, x17]")
+			lines = append(lines, "    ldr q17, "+l.gm("x17"))
 			sHigh = "v17"
 		}
 	} else if srcReg, okSrc := src.(x86asm.Reg); okSrc {
@@ -2848,9 +2867,9 @@ func (l *Arm64Lifter) liftVpermil(inst disasm.Instruction, nextPC uint64, isDoub
 	cHigh := "v21"
 	if ctrlMem, okCM := ctrlArg.(x86asm.Mem); okCM {
 		lines = append(lines, computeEffAddr(ctrlMem, nextPC, "x17")...)
-		lines = append(lines, "    ldr q20, [x28, x17]")
+		lines = append(lines, "    ldr q20, "+l.gm("x17"))
 		if isYmm {
-			lines = append(lines, "    add x17, x17, #16", "    ldr q21, [x28, x17]")
+			lines = append(lines, "    add x17, x17, #16", "    ldr q21, "+l.gm("x17"))
 		}
 	} else if ctrlReg, okCR := ctrlArg.(x86asm.Reg); okCR {
 		if _, _, _, crLow, crHigh, _, _, okDesc := getVectorDesc(ctrlReg); okDesc {
@@ -2970,7 +2989,7 @@ func (l *Arm64Lifter) liftPinsr(inst disasm.Instruction, elemBytes int, nextPC u
 		}
 		lines = append(lines, readCode...)
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
-		lines = append(lines, readMemTo(mem, nextPC, elemBytes, "x16", "w16")...)
+		lines = append(lines, l.readMemTo(mem, nextPC, elemBytes, "x16", "w16")...)
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "pinsr unhandled src")...)
 		return lines, nil
@@ -3043,7 +3062,7 @@ func (l *Arm64Lifter) liftPextr(inst disasm.Instruction, elemBytes int, nextPC u
 	}
 
 	if mem, okMem := dst.(x86asm.Mem); okMem {
-		lines = append(lines, writeMemFrom(mem, nextPC, elemBytes, "x16", "w16")...)
+		lines = append(lines, l.writeMemFrom(mem, nextPC, elemBytes, "x16", "w16")...)
 		return lines, nil
 	}
 
@@ -3243,11 +3262,11 @@ func (l *Arm64Lifter) liftDpps(inst disasm.Instruction, nextPC uint64, lines []s
 	var s2Low, s2High string
 	if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q20, [x28, x16]")
+		lines = append(lines, "    ldr q20, "+l.gm("x16"))
 		s2Low = "v20"
 		if isYmm {
 			lines = append(lines, "    add x17, x16, #16")
-			lines = append(lines, "    ldr q21, [x28, x17]")
+			lines = append(lines, "    ldr q21, "+l.gm("x17"))
 			s2High = "v21"
 		}
 	} else if src2Reg, okSrc2 := src2.(x86asm.Reg); okSrc2 {
@@ -3295,6 +3314,69 @@ func (l *Arm64Lifter) liftDpps(inst disasm.Instruction, nextPC uint64, lines []s
 	return lines, nil
 }
 
+// liftDppd handles DPPD and VDPPD dst_xmm, [src1_xmm], src2_xmm/m128, imm8 (128-bit only; VDPPD has no YMM form).
+// imm8 bits 4,5 select the product lanes that are summed, bits 0,1 the output lanes that receive the sum (others 0).
+func (l *Arm64Lifter) liftDppd(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
+	isVex := inst.Inst.Op == x86asm.VDPPD
+	var dstReg, src1Reg x86asm.Reg
+	var src2 x86asm.Arg
+	var immArg x86asm.Imm
+	var okDst, okSrc1, okImm bool
+	if isVex {
+		dstReg, okDst = inst.Inst.Args[0].(x86asm.Reg)
+		src1Reg, okSrc1 = inst.Inst.Args[1].(x86asm.Reg)
+		src2 = inst.Inst.Args[2]
+		immArg, okImm = inst.Inst.Args[3].(x86asm.Imm)
+	} else {
+		dstReg, okDst = inst.Inst.Args[0].(x86asm.Reg)
+		src1Reg, okSrc1 = dstReg, okDst
+		src2 = inst.Inst.Args[1]
+		immArg, okImm = inst.Inst.Args[2].(x86asm.Imm)
+	}
+	if !okDst || !okSrc1 || !okImm {
+		lines = append(lines, l.emitUnsupported(inst, "dppd invalid operands")...)
+		return lines, nil
+	}
+	_, _, _, dLowV, dHighV, _, _, okD := getVectorDesc(dstReg)
+	_, _, _, s1LowV, _, _, _, okS1 := getVectorDesc(src1Reg)
+	if !okD || !okS1 {
+		lines = append(lines, l.emitUnsupported(inst, "dppd vector reg not found")...)
+		return lines, nil
+	}
+	s2 := "v20"
+	if mem, ok := src2.(x86asm.Mem); ok {
+		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
+		lines = append(lines, "    ldr q20, "+l.gm("x16"))
+	} else if r, ok := src2.(x86asm.Reg); ok {
+		if _, _, _, s2LowV, _, _, _, okS2 := getVectorDesc(r); okS2 {
+			s2 = s2LowV
+		} else {
+			lines = append(lines, l.emitUnsupported(inst, "dppd invalid src2 reg")...)
+			return lines, nil
+		}
+	} else {
+		lines = append(lines, l.emitUnsupported(inst, "dppd invalid src2")...)
+		return lines, nil
+	}
+	imm8 := uint8(immArg)
+	lines = append(lines, fmt.Sprintf("    fmul v16.2d, %s.2d, %s.2d", s1LowV, s2))
+	for i := 0; i < 2; i++ {
+		if imm8&(1<<(4+i)) == 0 {
+			lines = append(lines, fmt.Sprintf("    mov v16.d[%d], xzr", i))
+		}
+	}
+	lines = append(lines, "    faddp d17, v16.2d", fmt.Sprintf("    movi %s.16b, #0", dLowV))
+	for i := 0; i < 2; i++ {
+		if imm8&(1<<i) != 0 {
+			lines = append(lines, fmt.Sprintf("    mov %s.d[%d], v17.d[0]", dLowV, i))
+		}
+	}
+	if isVex {
+		lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
+	}
+	return lines, nil
+}
+
 // liftMovsdup handles MOVSHDUP, VMOVSHDUP, MOVSLDUP, VMOVSLDUP.
 func (l *Arm64Lifter) liftMovsdup(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
 	op := inst.Inst.Op
@@ -3319,10 +3401,10 @@ func (l *Arm64Lifter) liftMovsdup(inst disasm.Instruction, nextPC uint64, lines 
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported movsdup src")...)
@@ -3385,10 +3467,10 @@ func (l *Arm64Lifter) liftPshufb(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pshufb src2")...)
@@ -3433,10 +3515,10 @@ func (l *Arm64Lifter) liftVandn(inst disasm.Instruction, nextPC uint64, lines []
 		}
 	} else if mem, okMem := src2.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
 			lines = append(lines, "    add x16, x16, #16")
-			lines = append(lines, "    ldr q31, [x28, x16]")
+			lines = append(lines, "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported vandn src2")...)
@@ -3502,15 +3584,15 @@ func (l *Arm64Lifter) liftFpVectorCmp(inst disasm.Instruction, nextPC uint64, li
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
 		if isScalar {
 			if isDouble {
-				lines = append(lines, "    ldr d30, [x28, x16]")
+				lines = append(lines, "    ldr d30, "+l.gm("x16"))
 			} else {
-				lines = append(lines, "    ldr s30, [x28, x16]")
+				lines = append(lines, "    ldr s30, "+l.gm("x16"))
 			}
 		} else {
-			lines = append(lines, "    ldr q30, [x28, x16]")
+			lines = append(lines, "    ldr q30, "+l.gm("x16"))
 			if isYmm {
 				lines = append(lines, "    add x16, x16, #16")
-				lines = append(lines, "    ldr q31, [x28, x16]")
+				lines = append(lines, "    ldr q31, "+l.gm("x16"))
 			}
 		}
 	} else {
@@ -3636,9 +3718,9 @@ func (l *Arm64Lifter) liftPalignr(inst disasm.Instruction, nextPC uint64, lines 
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported palignr src2")...)
@@ -3688,9 +3770,9 @@ func (l *Arm64Lifter) liftMovnt(inst disasm.Instruction, nextPC uint64, lines []
 		mem, okMem := src.(x86asm.Mem)
 		if okDst && okD && okMem {
 			lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-			lines = append(lines, fmt.Sprintf("    ldr q%s, [x28, x16]", dLowV[1:]))
+			lines = append(lines, fmt.Sprintf("    ldr q%s, "+l.gm("x16"), dLowV[1:]))
 			if isYmm {
-				lines = append(lines, "    add x16, x16, #16", fmt.Sprintf("    ldr q%s, [x28, x16]", dHighV[1:]))
+				lines = append(lines, "    add x16, x16, #16", fmt.Sprintf("    ldr q%s, "+l.gm("x16"), dHighV[1:]))
 			} else {
 				lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
 			}
@@ -3713,9 +3795,9 @@ func (l *Arm64Lifter) liftMovnt(inst disasm.Instruction, nextPC uint64, lines []
 	}
 
 	lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-	lines = append(lines, fmt.Sprintf("    str q%s, [x28, x16]", sLowV[1:]))
+	lines = append(lines, fmt.Sprintf("    str q%s, "+l.gm("x16"), sLowV[1:]))
 	if isYmm {
-		lines = append(lines, "    add x16, x16, #16", fmt.Sprintf("    str q%s, [x28, x16]", sHighV[1:]))
+		lines = append(lines, "    add x16, x16, #16", fmt.Sprintf("    str q%s, "+l.gm("x16"), sHighV[1:]))
 	}
 	return lines, nil
 }
@@ -3755,9 +3837,9 @@ func (l *Arm64Lifter) liftAddsub(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported addsub src2")...)
@@ -3838,9 +3920,9 @@ func (l *Arm64Lifter) liftPavg(inst disasm.Instruction, nextPC uint64, lines []s
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pavg src2")...)
@@ -3885,9 +3967,9 @@ func (l *Arm64Lifter) liftPabs(inst disasm.Instruction, nextPC uint64, lines []s
 		}
 	} else if mem, okMem := src.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pabs src")...)
@@ -3944,9 +4026,9 @@ func (l *Arm64Lifter) liftPsadbw(inst disasm.Instruction, nextPC uint64, lines [
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported psadbw src2")...)
@@ -4006,9 +4088,9 @@ func (l *Arm64Lifter) liftPmaddwd(inst disasm.Instruction, nextPC uint64, lines 
 		}
 	} else if mem, okMem := s2Arg.(x86asm.Mem); okMem {
 		lines = append(lines, computeEffAddr(mem, nextPC, "x16")...)
-		lines = append(lines, "    ldr q30, [x28, x16]")
+		lines = append(lines, "    ldr q30, "+l.gm("x16"))
 		if isYmm {
-			lines = append(lines, "    add x16, x16, #16", "    ldr q31, [x28, x16]")
+			lines = append(lines, "    add x16, x16, #16", "    ldr q31, "+l.gm("x16"))
 		}
 	} else {
 		lines = append(lines, l.emitUnsupported(inst, "unsupported pmaddwd src2")...)

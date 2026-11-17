@@ -18,7 +18,9 @@ func liftOne(t *testing.T, l *Arm64Lifter, code []byte) string {
 	if err != nil {
 		t.Fatalf("decode %x: %v", code, err)
 	}
-	di := disasm.Instruction{Address: 0x1000, Inst: inst}
+	// PF and AF dead, as the liveness pass finds when no reader follows: with a reader the
+	// lowering also records them from a plain (non-atomic) read of the operands.
+	di := disasm.Instruction{Address: 0x1000, Inst: inst, ParityDead: true, AdjustDead: true}
 	out, err := l.LiftInstructionToBuf(di, 0x1000+uint64(inst.Len), nil, nil)
 	if err != nil {
 		t.Fatalf("lift %x: %v", code, err)
@@ -164,4 +166,35 @@ func TestTsoSplitAccess(t *testing.T) {
 	l = liftBlock(t, "8807") // mov [rdi], al
 	forbid(t, "byte store", l[0], "tbz ...", "dmb ish")
 	requireInOrder(t, "byte store", l[0], "add x7, x28, x16", "stlrb w19, [x7]")
+}
+
+// A function named in the relax list is lifted with plain accesses; every other function keeps the
+// acquire/release forms (SetTSORelax, NPS5_TSO_RELAX_FUNCS).
+func TestTSORelaxPerFunction(t *testing.T) {
+	l := NewArm64Lifter(nil)
+	l.SetTSORelax([]uint64{0x2000})
+	lift := func(entry uint64) string {
+		inst, err := x86asm.Decode([]byte{0x8b, 0x47, 0x08}, 64) // mov eax, [rdi+8]
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := &disasm.Function{EntryAddr: entry, EndAddr: entry + 0x100, Blocks: map[uint64]*disasm.BasicBlock{entry: {StartAddr: entry}}}
+		out, err := l.LiftInstructionToBuf(disasm.Instruction{Address: entry, Inst: inst, ParityDead: true, AdjustDead: true}, entry+3, fn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := lift(0x2000); strings.Contains(got, "ldapr") || strings.Contains(got, "ldapur") || !strings.Contains(got, "ldr w19, [x28, x16]") {
+		t.Errorf("relaxed function is still ordered:\n%s", got)
+	}
+	if got := lift(0x3000); !strings.Contains(got, "ldapr") {
+		t.Errorf("other function lost its ordering:\n%s", got)
+	}
+	if r := l.TSORelaxed(); len(r) != 1 || r[0] != 0x2000 {
+		t.Errorf("TSORelaxed = %v", r)
+	}
+	if m := parseTSORelax("0x61d9e0, 4000"); !m[0x61d9e0] || !m[0x4000] || len(m) != 2 {
+		t.Errorf("parseTSORelax = %v", m)
+	}
 }

@@ -43,7 +43,7 @@ func TestDiscoverModulesDirectory(t *testing.T) {
 
 	img := append([]byte{0, 0, 0, 0}, []byte("%s/Modules/Il2CppUserAssemblies.prx\x00")...)
 	// Discover with empty appDir, but elfPath pointing to eboot.bin in dir
-	refs := DiscoverCompanionModules(filepath.Join(dir, "eboot.bin"), "", img)
+	refs := DiscoverCompanionModules(filepath.Join(dir, "eboot.bin"), "", NewImage(0, img))
 	if len(refs) != 1 {
 		t.Fatalf("expected 1 module, got %+v", refs)
 	}
@@ -56,7 +56,7 @@ func TestReferencedModuleNames(t *testing.T) {
 	img := make([]byte, 64)
 	copy(img[8:], []byte("/app0/sce_module/libExample.prx\x00"))
 	copy(img[40:], []byte("libc.prx\x00"))
-	names := ReferencedModuleNames(img)
+	names := ReferencedModuleNames(NewImage(0, img))
 	if len(names) != 1 || names[0] != "/app0/sce_module/libExample.prx" {
 		t.Fatalf("names=%v", names)
 	}
@@ -73,7 +73,7 @@ func TestDiscoverResolvesApp0(t *testing.T) {
 		t.Fatal(err)
 	}
 	img := append([]byte{0, 0, 0, 0}, []byte("/app0/sce_module/libExample.prx\x00")...)
-	refs := DiscoverCompanionModules("", dir, img)
+	refs := DiscoverCompanionModules("", dir, NewImage(0, img))
 	if len(refs) != 1 {
 		t.Fatalf("expected 1 module, got %+v", refs)
 	}
@@ -162,7 +162,7 @@ func TestApplyBiasCanary(t *testing.T) {
 		MinVAddr:    0x1000,
 		MaxVAddr:    0x6000,
 		CanaryAddr:  origCanaryAddr,
-		MemoryImage: img,
+		MemoryImage: NewImage(0, img),
 		Relocations: []Relocation{
 			{Offset: gotOffset, Type: R_X86_64_GLOB_DAT, SymName: "f7uOxY9mM1U#D#D"},
 		},
@@ -178,7 +178,7 @@ func TestApplyBiasCanary(t *testing.T) {
 	}
 
 	newGotOffset := gotOffset + delta
-	gotPtr := binary.LittleEndian.Uint64(loaded.MemoryImage[newGotOffset : newGotOffset+8])
+	gotPtr := imgU64(loaded.MemoryImage, newGotOffset)
 	if gotPtr != loaded.CanaryAddr {
 		t.Fatalf("expected GOT entry to point to shifted canary 0x%x, got 0x%x", loaded.CanaryAddr, gotPtr)
 	}
@@ -195,7 +195,7 @@ func TestMergeImagesCanary(t *testing.T) {
 		MinVAddr:    0x1000,
 		MaxVAddr:    0x9000,
 		CanaryAddr:  dstCanaryAddr,
-		MemoryImage: dstImg,
+		MemoryImage: NewImage(0, dstImg),
 	}
 
 	const srcCanaryAddr = 0x15000
@@ -208,7 +208,7 @@ func TestMergeImagesCanary(t *testing.T) {
 		MinVAddr:    0x10000,
 		MaxVAddr:    0x16000,
 		CanaryAddr:  srcCanaryAddr,
-		MemoryImage: srcImg,
+		MemoryImage: NewImage(0x10000, srcImg[0x10000:]),
 		Relocations: []Relocation{
 			{Offset: srcGotOffset, Type: R_X86_64_GLOB_DAT, SymName: "__stack_chk_guard"},
 		},
@@ -222,7 +222,7 @@ func TestMergeImagesCanary(t *testing.T) {
 		t.Fatalf("expected dst CanaryAddr 0x%x, got 0x%x", dstCanaryAddr, dst.CanaryAddr)
 	}
 
-	gotPtr := binary.LittleEndian.Uint64(dst.MemoryImage[srcGotOffset : srcGotOffset+8])
+	gotPtr := imgU64(dst.MemoryImage, srcGotOffset)
 	if gotPtr != dstCanaryAddr {
 		t.Fatalf("expected merged GOT entry to point to process canary 0x%x, got 0x%x", dstCanaryAddr, gotPtr)
 	}
@@ -234,14 +234,14 @@ func TestMergeImagesCanary(t *testing.T) {
 // as an 8-byte function.
 func TestMergeImagesKeepsTLSSymbolsOutOfAddressMaps(t *testing.T) {
 	dst := &LoadedELF{
-		MemoryImage:  make([]byte, 0x4000),
+		MemoryImage:  NewImage(0, make([]byte, 0x1000)),
 		MinVAddr:     0,
 		MaxVAddr:     0x1000,
 		SymbolByAddr: map[uint64]Symbol{},
 		SymbolByName: map[string]Symbol{},
 	}
 	src := &LoadedELF{
-		MemoryImage: make([]byte, 0x4000),
+		MemoryImage: NewImage(0x2000, make([]byte, 0x1000)),
 		MinVAddr:    0x2000,
 		MaxVAddr:    0x3000,
 		Symbols: []Symbol{
@@ -270,5 +270,86 @@ func TestMergeImagesKeepsTLSSymbolsOutOfAddressMaps(t *testing.T) {
 	}
 	if len(src.DynSymbols) != 2 {
 		t.Fatalf("source dynsymbols were modified: %+v", src.DynSymbols)
+	}
+}
+
+// An image linked at address 0 (the PS5 hello_world.elf) has its .text, entry, first segment and
+// some symbols at link address 0; ApplyBias must move them with everything else (review 1, m10).
+func TestApplyBiasImageLinkedAtZero(t *testing.T) {
+	const delta = uint64(0x400000)
+	loaded := &LoadedELF{
+		MinVAddr:    0,
+		MaxVAddr:    0x8000,
+		EntryPoint:  0,
+		Seg0Addr:    0,
+		Segments:    []*Segment{{Vaddr: 0, Memsz: 0x8000}},
+		MemoryImage: NewImage(0, make([]byte, 0x8000)),
+		Sections: map[string]*elf.Section{
+			".text":    {SectionHeader: elf.SectionHeader{Name: ".text", Addr: 0, Size: 0x100, Flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR}},
+			".symtab":  {SectionHeader: elf.SectionHeader{Name: ".symtab", Addr: 0, Size: 0x40}},
+			".rodata":  {SectionHeader: elf.SectionHeader{Name: ".rodata", Addr: 0x1000, Size: 0x40, Flags: elf.SHF_ALLOC}},
+			".comment": {SectionHeader: elf.SectionHeader{Name: ".comment", Addr: 0, Size: 0x10}},
+		},
+		Symbols: []Symbol{
+			{Name: "__text_start", Address: 0, Type: elf.STT_NOTYPE, Section: 1},
+			{Name: "main", Address: 0x40, Type: elf.STT_FUNC, Section: 1},
+			{Name: "undef", Address: 0, Type: elf.STT_FUNC, Section: elf.SHN_UNDEF},
+			{Name: "abs", Address: 0x1234, Type: elf.STT_NOTYPE, Section: elf.SHN_ABS},
+			{Name: "tlsvar", Address: 0, Type: elf.STT_TLS, Section: 4},
+		},
+	}
+	if err := loaded.ApplyBias(delta); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Seg0Addr != delta {
+		t.Errorf("seg0 0x%x: want 0x%x", loaded.Seg0Addr, delta)
+	}
+	if loaded.EntryPoint != 0 { // 0 is "no entry point", not an address
+		t.Errorf("unset entry point became 0x%x", loaded.EntryPoint)
+	}
+	if got := loaded.Sections[".text"].Addr; got != delta {
+		t.Errorf(".text at 0x%x, want 0x%x", got, delta)
+	}
+	if got := loaded.Sections[".rodata"].Addr; got != 0x1000+delta {
+		t.Errorf(".rodata at 0x%x", got)
+	}
+	for _, n := range []string{".symtab", ".comment"} {
+		if got := loaded.Sections[n].Addr; got != 0 {
+			t.Errorf("non-allocated %s moved to 0x%x", n, got)
+		}
+	}
+	want := map[string]uint64{"__text_start": delta, "main": 0x40 + delta, "undef": 0, "abs": 0x1234, "tlsvar": 0}
+	for _, s := range loaded.Symbols {
+		if s.Address != want[s.Name] {
+			t.Errorf("symbol %s at 0x%x, want 0x%x", s.Name, s.Address, want[s.Name])
+		}
+	}
+	if s, ok := loaded.SymbolByAddr[delta]; !ok || s.Name != "__text_start" {
+		t.Errorf("SymbolByAddr[0x%x] = %+v", delta, s)
+	}
+	// A shared object (no segment at 0) keeps "0 means none" for an unset entry point.
+	dso := &LoadedELF{MinVAddr: 0x1000, MaxVAddr: 0x3000, Segments: []*Segment{{Vaddr: 0x1000}}, MemoryImage: NewImage(0, nil)}
+	if err := dso.ApplyBias(delta); err != nil {
+		t.Fatal(err)
+	}
+	if dso.EntryPoint != 0 {
+		t.Errorf("unset entry point became 0x%x", dso.EntryPoint)
+	}
+}
+
+func TestHollowCode(t *testing.T) {
+	code := make([]byte, 100000)
+	copy(code[0x40:], []byte{0x31, 0xc0, 0xc3})
+	if !hollowCode(code) {
+		t.Fatal("zero-padded stub code must be hollow")
+	}
+	for i := range code {
+		code[i] = 0x90
+	}
+	if hollowCode(code) {
+		t.Fatal("real code must not be hollow")
+	}
+	if hollowCode(nil) {
+		t.Fatal("no code is not a hollow module")
 	}
 }

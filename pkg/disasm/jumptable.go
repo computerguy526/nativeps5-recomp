@@ -743,24 +743,25 @@ func (d *Disassembler) readResolvedTargets(sw ResolvedJumpTable, fnStart, fnEnd 
 
 	for i := 0; i < limit; i++ {
 		off := sw.TableAddr + uint64(i)*entrySize
-		if off+entrySize > uint64(len(img)) {
+		ent := img.Bytes(off, entrySize)
+		if ent == nil {
 			break
 		}
 
 		var target uint64
 		switch sw.Format {
 		case TableFormatRel32:
-			rel := int32(binary.LittleEndian.Uint32(img[off : off+4]))
+			rel := int32(binary.LittleEndian.Uint32(ent))
 			if sw.Count > 0 || sw.BaseAddr != sw.TableAddr || rel != 0 {
 				target = uint64(int64(sw.BaseAddr) + int64(rel))
 			}
 		case TableFormatAbs64:
-			target = binary.LittleEndian.Uint64(img[off : off+8])
+			target = binary.LittleEndian.Uint64(ent)
 		case TableFormatRel8:
-			rel := int8(img[off])
+			rel := int8(ent[0])
 			target = uint64(int64(sw.BaseAddr) + int64(rel))
 		case TableFormatRel16:
-			rel := int16(binary.LittleEndian.Uint16(img[off : off+2]))
+			rel := int16(binary.LittleEndian.Uint16(ent))
 			target = uint64(int64(sw.BaseAddr) + int64(rel))
 		}
 

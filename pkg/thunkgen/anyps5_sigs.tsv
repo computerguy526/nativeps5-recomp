@@ -1,0 +1,1407 @@
+# lib	name	return	params   (tools/anyps5_sigs.py over AnyPS5 core/libs/prx, APS5_VABI declarations)
+libSceAgc	sceAgcAcbAcquireMem	std::uint32_t*	CommandBuffer* buf, std::uint32_t gcrControl, const volatile void* base, std::uint64_t sizeBytes, std::uint32_t pollCycles
+libSceAgc	sceAgcAcbAcquireMemGetSize	uint32_t	void
+libSceAgc	sceAgcAcbAtomicGds	std::uint32_t*	CommandBuffer* buf, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData
+libSceAgc	sceAgcAcbAtomicGdsGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbAtomicGds_0900	std::uint32_t*	CommandBuffer* buf, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData
+libSceAgc	sceAgcAcbAtomicMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t atomicOp, std::uint8_t command, std::uint8_t cachePolicy, const volatile void* address, std::uint64_t srcData, std::uint64_t compareData, std::uint16_t loopInterval
+libSceAgc	sceAgcAcbAtomicMemGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbCondExec	uint32_t*	CommandBuffer* buf, const volatile uint32_t* address, uint32_t numDwords
+libSceAgc	sceAgcAcbCondExecGetSize	uint32_t	void
+libSceAgc	sceAgcAcbCopyData	uint32_t*	CommandBuffer* buf, uint8_t dst, uint8_t dstCachePolicy, uint64_t dstAddress, uint8_t src, uint8_t srcCachePolicy, uint64_t srcAddressOrImmediate, uint8_t itemSize, uint8_t writeConfirm
+libSceAgc	sceAgcAcbCopyDataGetSize	std::uint64_t	
+libSceAgc	sceAgcAcbDispatchIndirect	uint32_t*	CommandBuffer* buf, const volatile void* indirectArgs, uint32_t modifier
+libSceAgc	sceAgcAcbDispatchIndirectGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbDmaData	std::uint32_t*	CommandBuffer* buf, std::uint8_t dst, std::uint8_t dstCachePolicy, std::uint64_t dstAddress, std::uint8_t src, std::uint8_t srcCachePolicy, std::uint64_t srcAddress, std::uint32_t numBytes, std::uint8_t waitForPrevious, std::uint8_t writeConfirm
+libSceAgc	sceAgcAcbDmaDataGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbEventWrite	std::uint32_t*	CommandBuffer* buf, std::uint8_t eventType, const volatile void* address
+libSceAgc	sceAgcAcbEventWriteGetSize	std::uint64_t	std::uint8_t eventType
+libSceAgc	sceAgcAcbInitializeDefaultHardwareState	int	
+libSceAgc	sceAgcAcbJump	std::uint32_t*	CommandBuffer* buf, std::uint8_t cachePolicy, const std::uint32_t* target, std::uint32_t sizeInDwords
+libSceAgc	sceAgcAcbJumpGetSize	uint32_t	void
+libSceAgc	sceAgcAcbMemSemaphore	std::uint32_t*	CommandBuffer* buf, const volatile void* address, std::uint8_t waitForMailbox, std::uint8_t signalType, std::uint8_t operation
+libSceAgc	sceAgcAcbPopMarker	uint32_t*	CommandBuffer* buf
+libSceAgc	sceAgcAcbPrimeUtcl2	std::uint32_t*	CommandBuffer* buf, const volatile void* address, std::uint32_t sizeInBytes
+libSceAgc	sceAgcAcbPrimeUtcl2GetSize	std::uint32_t	
+libSceAgc	sceAgcAcbPushMarker	uint32_t*	CommandBuffer* buf, const char* str, uint32_t color
+libSceAgc	sceAgcAcbPushMarkerSpan	uint32_t*	CommandBuffer* buf, const char* str, uint32_t length, uint32_t color
+libSceAgc	sceAgcAcbQueueEndOfShaderActionGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbResetQueue	uint32_t*	CommandBuffer* buf, uint32_t op, uint32_t value
+libSceAgc	sceAgcAcbRewind	std::uint32_t*	CommandBuffer* buf, std::uint32_t initialState
+libSceAgc	sceAgcAcbRewindGetSize	std::uint32_t	
+libSceAgc	sceAgcAcbSetFlip	std::uint32_t*	CommandBuffer* buf, std::uint32_t videoOutHandle, std::int32_t displayBufferIndex, std::uint32_t flipMode, std::int64_t flipArg
+libSceAgc	sceAgcAcbSetMarker	uint32_t*	CommandBuffer* buf, const char* str, uint32_t color
+libSceAgc	sceAgcAcbSetMarkerSpan	uint32_t*	CommandBuffer* buf, const char* str, uint32_t length, uint32_t color
+libSceAgc	sceAgcAcbSetWorkloadComplete	std::uint32_t*	CommandBuffer* buf, std::uint32_t streamId, std::uint32_t workloadId
+libSceAgc	sceAgcAcbSetWorkloadStreamInactive	std::uint32_t*	CommandBuffer* buf, std::uint32_t streamId
+libSceAgc	sceAgcAcbSetWorkloadsActive	std::uint32_t*	CommandBuffer* buf, std::uint32_t streamId, const std::uint32_t* workloadIds, std::uint32_t workloadCount
+libSceAgc	sceAgcAcbWaitOnAddressGetSize	std::uint64_t	std::uint32_t size
+libSceAgc	sceAgcAcbWaitRegMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t size, std::uint8_t compareFunction, std::uint8_t cachePolicy, const volatile void* address, std::uint64_t reference, std::uint64_t mask, std::uint32_t pollCycles
+libSceAgc	sceAgcAcbWaitUntilSafeForRendering	std::uint32_t*	CommandBuffer* buf, std::uint32_t videoOutHandle, std::uint32_t displayBufferIndex
+libSceAgc	sceAgcAcbWriteData	std::uint32_t*	CommandBuffer* buf, std::uint8_t dst, std::uint8_t cachePolicy, std::uint64_t address, const void* data, std::uint32_t numDwords, std::uint8_t increment, std::uint8_t writeConfirm
+libSceAgc	sceAgcAcquireMemSetEngine	int	std::uint32_t* packet, std::uint8_t engine
+libSceAgc	sceAgcAsyncCondExecPatchSetCommandAddress	int	std::uint32_t* cmd, const volatile std::uint32_t* command
+libSceAgc	sceAgcAsyncCondExecPatchSetEnd	int	std::uint32_t* cmd, const volatile std::uint32_t* buffer
+libSceAgc	sceAgcAsyncRewindPatchSetRewindState	int	std::uint32_t* cmd, std::uint8_t state
+libSceAgc	sceAgcAsyncWriteDataPatchSetAddressOrOffset	int	std::uint32_t* cmd, std::uint64_t address
+libSceAgc	sceAgcAsyncWriteDataPatchSetCachePolicy	int	std::uint32_t* cmd, std::uint8_t cachePolicy
+libSceAgc	sceAgcAsyncWriteDataPatchSetDst	int	std::uint32_t* cmd, std::uint8_t dst
+libSceAgc	sceAgcBranchPatchSetCompareAddress	int	std::uint32_t* cmd, const volatile std::uint64_t* compareAddress
+libSceAgc	sceAgcBranchPatchSetElseTarget	int	std::uint32_t* cmd, const volatile std::uint32_t* target, std::uint32_t sizeInDwords
+libSceAgc	sceAgcBranchPatchSetElseTarget_0300	int	std::uint32_t* cmd, std::uint8_t cachePolicy, const volatile std::uint32_t* target, std::uint32_t sizeInDwords
+libSceAgc	sceAgcBranchPatchSetThenTarget	int	std::uint32_t* cmd, const volatile std::uint32_t* target, std::uint32_t sizeInDwords
+libSceAgc	sceAgcBranchPatchSetThenTarget_0300	int	std::uint32_t* cmd, std::uint8_t cachePolicy, const volatile std::uint32_t* target, std::uint32_t sizeInDwords
+libSceAgc	sceAgcCbBranch	std::uint32_t*	CommandBuffer* buf, std::uint8_t mode, std::uint8_t compareFunction, const volatile std::uint64_t* compareAddress, std::uint64_t mask, std::uint64_t reference, std::uint8_t cachePolicy1, const volatile std::uint32_t* buffer1, std::uint32_t sizeInDwords1, std::uint8_t cachePolicy2, const volatile std::uint32_t* buffer2, std::uint32_t sizeInDwords2
+libSceAgc	sceAgcCbBranchGetSize	std::uint32_t	
+libSceAgc	sceAgcCbCondWrite	std::uint32_t*	CommandBuffer* buf, std::uint32_t compareFunction, std::uint32_t writeSpace, const volatile void* writeAddress, std::uint32_t writeData, const volatile void* pollAddress, std::uint32_t reference, std::uint32_t mask
+libSceAgc	sceAgcCbCondWriteGetSize	std::uint32_t	
+libSceAgc	sceAgcCbDispatch	std::uint32_t*	CommandBuffer* buf, std::uint32_t threadGroupX, std::uint32_t threadGroupY, std::uint32_t threadGroupZ, std::uint32_t modifier
+libSceAgc	sceAgcCbDispatchGetSize	uint32_t	void
+libSceAgc	sceAgcCbMemSemaphore	std::uint32_t*	CommandBuffer* buf, const volatile void* address, std::uint32_t operation, std::uint32_t modifier, std::uint32_t value
+libSceAgc	sceAgcCbMemsetExclusive	std::uint32_t*	CommandBuffer* buffer, void* destination, const void* pattern, std::uint64_t size
+libSceAgc	sceAgcCbNopGetSize	uint32_t	uint32_t sizeInDwords
+libSceAgc	sceAgcCbNop_nid_postfix	std::uint32_t*	CommandBuffer* buf, std::uint32_t sizeInDwords
+libSceAgc	sceAgcCbQueueEndOfPipeActionGetSize	std::uint32_t	
+libSceAgc	sceAgcCbReleaseMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t action, std::uint16_t gcrControl, std::uint8_t dst, std::uint8_t cachePolicy, const volatile Label* address, std::uint8_t dataSelect, std::uint64_t data, std::uint16_t gdsOffset, std::uint16_t gdsSize, std::uint8_t interrupt, std::uint32_t interruptContextId
+libSceAgc	sceAgcCbSetShRegisterRangeDirect	std::uint32_t*	CommandBuffer* buf, std::uint32_t offset, const std::uint32_t* values, std::uint32_t numValues
+libSceAgc	sceAgcCbSetShRegisterRangeDirectGetSize	uint32_t	uint32_t numValues
+libSceAgc	sceAgcCbSetShRegistersDirect	std::uint32_t*	CommandBuffer* buf, const volatile ShaderRegister* regs, std::uint32_t numRegs
+libSceAgc	sceAgcCbSetShRegistersDirectGetSize	std::uint32_t	std::uint32_t numRegs
+libSceAgc	sceAgcCbSetUcRegisterRangeDirect	std::uint32_t*	CommandBuffer* buf, std::uint32_t offset, const std::uint32_t* values, std::uint32_t numValues
+libSceAgc	sceAgcCbSetUcRegisterRangeDirectGetSize	std::uint32_t	std::uint32_t numValues
+libSceAgc	sceAgcCbSetUcRegistersDirect	std::uint32_t*	CommandBuffer* buf, const volatile ShaderRegister* regs, std::uint32_t numRegs
+libSceAgc	sceAgcCbSetUcRegistersDirectGetSize	std::uint32_t	std::uint32_t numRegs
+libSceAgc	sceAgcCondExecPatchSetCommandAddress	int	uint32_t* cmd, const volatile uint32_t* command
+libSceAgc	sceAgcCondExecPatchSetEnd	int	uint32_t* cmd, const volatile uint32_t* buffer
+libSceAgc	sceAgcCreateInterpolantMapping_0100	int	ShaderRegister* regs, const Shader* gs, const Shader* ps
+libSceAgc	sceAgcCreateInterpolantMapping_10000	int	ShaderRegister* regs, const Shader* gs, const Shader* ps
+libSceAgc	sceAgcCreateInterpolantMapping_nid_postfix	int	ShaderRegister* regs, const Shader* gs, const Shader* ps
+libSceAgc	sceAgcCreatePrimState	int	ShaderRegister* cxRegs, ShaderRegister* ucRegs, const Shader* hs, const Shader* gs, std::uint32_t primType
+libSceAgc	sceAgcCreateShader	int	Shader** dst, void* header, const volatile void* code
+libSceAgc	sceAgcDcbAcquireMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t engine, std::uint32_t cbDbOp, std::uint32_t gcrControl, const volatile void* base, std::uint64_t sizeBytes, std::uint32_t pollCycles
+libSceAgc	sceAgcDcbAcquireMemGetSize	uint32_t	void
+libSceAgc	sceAgcDcbAtomicGds	std::uint32_t*	CommandBuffer* buf, std::uint32_t engine, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData
+libSceAgc	sceAgcDcbAtomicGdsGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbAtomicGds_0900	std::uint32_t*	CommandBuffer* buf, std::uint32_t engine, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData
+libSceAgc	sceAgcDcbAtomicMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t atomicOp, std::uint8_t command, std::uint8_t cachePolicy, const volatile void* address, std::uint64_t srcData, std::uint64_t compareData, std::uint16_t loopInterval
+libSceAgc	sceAgcDcbAtomicMemGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbBeginOcclusionQueryGetSize	std::uint32_t	std::int32_t queryType
+libSceAgc	sceAgcDcbClearState	std::uint32_t*	CommandBuffer* buf, std::uint32_t command
+libSceAgc	sceAgcDcbCondExec	uint32_t*	CommandBuffer* buf, const volatile uint32_t* address, uint32_t numDwords
+libSceAgc	sceAgcDcbCondExecGetSize	uint32_t	void
+libSceAgc	sceAgcDcbContextStateOp	uint32_t*	CommandBuffer* buf, uint32_t operation
+libSceAgc	sceAgcDcbContextStateOpGetSize	uint64_t	uint32_t operation
+libSceAgc	sceAgcDcbContextStateOp_0100	uint32_t*	CommandBuffer* buf, uint32_t operation
+libSceAgc	sceAgcDcbCopyData	uint32_t*	CommandBuffer* buf, uint8_t dst, uint8_t dstCachePolicy, uint64_t dstAddress, uint8_t src, uint8_t srcCachePolicy, uint64_t srcAddressOrImmediate, uint8_t itemSize, uint8_t writeConfirm
+libSceAgc	sceAgcDcbCopyDataGetSize	std::uint64_t	
+libSceAgc	sceAgcDcbDispatchIndirect	uint32_t*	CommandBuffer* buf, uint32_t dataOffsetInBytes, uint32_t flags
+libSceAgc	sceAgcDcbDispatchIndirectGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDmaData	std::uint32_t*	CommandBuffer* buf, std::uint8_t engine, std::uint8_t dst, std::uint8_t dstCachePolicy, std::uint64_t dstAddress, std::uint8_t src, std::uint8_t srcCachePolicy, std::uint64_t srcAddress, std::uint32_t numBytes, std::uint8_t waitForPrevious, std::uint8_t writeConfirm, std::uint8_t blockEngine
+libSceAgc	sceAgcDcbDmaDataGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndex	std::uint32_t*	CommandBuffer* buf, std::uint32_t indexCount, const volatile void* indexAddress, std::uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexAuto	std::uint32_t*	CommandBuffer* buf, std::uint32_t indexCount, std::uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexAutoGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndexGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndexIndirect	uint32_t*	CommandBuffer* buf, uint32_t dataOffsetInBytes, uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexIndirectGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndexIndirectMulti	uint32_t*	CommandBuffer* buf, uint32_t dataOffsetInBytes, uint32_t countIndirect, uint32_t maxCountOrCount, const volatile void* countAddr, uint32_t strideInBytes, uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexIndirectMultiGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndexMultiInstanced	uint32_t*	CommandBuffer* buf, uint32_t indexCount, const volatile void* indexAddr, const volatile void* objectIds, uint32_t instanceCount, uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexMultiInstancedGetSize	uint32_t	void
+libSceAgc	sceAgcDcbDrawIndexOffset	std::uint32_t*	CommandBuffer* buf, std::uint32_t indexOffset, std::uint32_t indexCount, std::uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndexOffsetGetSize	uint32_t	void
+libSceAgc	sceAgcDcbDrawIndirect	std::uint32_t*	CommandBuffer* buf, std::uint32_t dataOffsetInBytes, std::uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndirectGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbDrawIndirectMulti	std::uint32_t*	CommandBuffer* buf, std::uint32_t dataOffsetInBytes, std::uint32_t countIndirect, std::uint32_t maxCountOrCount, const volatile void* countAddress, std::uint32_t strideInBytes, std::uint64_t modifier
+libSceAgc	sceAgcDcbDrawIndirectMultiGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbEndOcclusionQueryGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbEventWrite	std::uint32_t*	CommandBuffer* buf, std::uint8_t eventType, const volatile void* address
+libSceAgc	sceAgcDcbEventWriteGetSize	std::uint64_t	std::uint8_t eventType
+libSceAgc	sceAgcDcbGetLodStats	std::uint32_t*	CommandBuffer* buf, std::uint8_t cachePolicy, const volatile void* buffer, std::uint32_t bufferSizeInBytes, std::uint32_t resetCount, std::uint8_t forceReset, std::uint8_t reportAndReset, std::uint32_t reportingIntervalIn100kClocks
+libSceAgc	sceAgcDcbGetLodStatsGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbGetSystemSoftwareVersion	int	uint32_t* destination, const uint32_t* packet
+libSceAgc	sceAgcDcbJump	uint32_t*	CommandBuffer* buf, uint8_t mode, uint8_t cachePolicy, const uint32_t* target, uint32_t sizeInDwords
+libSceAgc	sceAgcDcbJumpGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbMemSemaphore	std::uint32_t*	CommandBuffer* buf, const volatile void* address, std::uint8_t waitForMailbox, std::uint8_t signalType, std::uint8_t operation
+libSceAgc	sceAgcDcbPopMarker	uint32_t*	CommandBuffer* buf
+libSceAgc	sceAgcDcbPrimeUtcl2	uint32_t*	CommandBuffer* buf, const volatile void* address, uint32_t sizeInBytes
+libSceAgc	sceAgcDcbPrimeUtcl2GetSize	std::uint32_t	
+libSceAgc	sceAgcDcbPushMarker	uint32_t*	CommandBuffer* buf, const char* str, uint32_t color
+libSceAgc	sceAgcDcbPushMarkerSpan	uint32_t*	CommandBuffer* buf, const char* str, uint32_t length, uint32_t color
+libSceAgc	sceAgcDcbQueueEndOfShaderActionGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbResetQueue	std::uint32_t*	CommandBuffer* buf, std::uint32_t op, std::uint32_t state
+libSceAgc	sceAgcDcbRewind	uint32_t*	CommandBuffer* buf, uint32_t initialState
+libSceAgc	sceAgcDcbRewindGetSize	uint32_t	void
+libSceAgc	sceAgcDcbSetBaseDispatchIndirectArgsGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetBaseDrawIndirectArgsGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetBaseIndirectArgs	uint32_t*	CommandBuffer* buf, uint32_t shaderType, const volatile void* indirectBaseAddr
+libSceAgc	sceAgcDcbSetBoolPredicationEnableGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetCfRegisterDirect	std::uint32_t*	CommandBuffer* buf, ShaderRegister reg
+libSceAgc	sceAgcDcbSetCfRegisterRangeDirect	std::uint32_t*	CommandBuffer* buf, std::uint32_t offset, const std::uint32_t* values, std::uint32_t numValues
+libSceAgc	sceAgcDcbSetCxRegisterDirect	uint32_t*	CommandBuffer* buf, ShaderRegister reg
+libSceAgc	sceAgcDcbSetCxRegisterDirectGetSize	uint32_t	void
+libSceAgc	sceAgcDcbSetCxRegistersIndirect	std::uint32_t*	CommandBuffer* buf, const volatile ShaderRegister* regs, std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetCxRegistersIndirectGetSize	std::uint32_t	std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetFlip	uint32_t*	CommandBuffer* buf, uint32_t videoOutHandle, int32_t displayBufferIndex, uint32_t flipMode, int64_t flipArg
+libSceAgc	sceAgcDcbSetIndexBuffer	std::uint32_t*	CommandBuffer* buf, std::uint64_t indexAddress
+libSceAgc	sceAgcDcbSetIndexBufferGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetIndexCount	std::uint32_t*	CommandBuffer* buf, std::uint32_t indexCount
+libSceAgc	sceAgcDcbSetIndexCountGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetIndexIndirectArgs	std::uint32_t*	CommandBuffer* buf, std::uint64_t attributeAddress, std::uint32_t attributeIndex
+libSceAgc	sceAgcDcbSetIndexIndirectArgsGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetIndexSize	std::uint32_t*	CommandBuffer* buf, std::uint8_t indexSize, std::uint8_t cachePolicy
+libSceAgc	sceAgcDcbSetIndexSizeGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetIndexSize_0600	std::uint32_t*	CommandBuffer* buf, std::uint8_t indexSize, std::uint8_t cachePolicy, std::uint8_t perInstanceObjectId
+libSceAgc	sceAgcDcbSetMarker	uint32_t*	CommandBuffer* buf, const char* str, uint32_t color
+libSceAgc	sceAgcDcbSetMarkerSpan	uint32_t*	CommandBuffer* buf, const char* str, uint32_t length, uint32_t color
+libSceAgc	sceAgcDcbSetNumInstances	std::uint32_t*	CommandBuffer* buf, std::uint32_t numInstances
+libSceAgc	sceAgcDcbSetNumInstancesGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetPredication	uint32_t*	CommandBuffer* buf, uint8_t condition, uint8_t op, uint8_t waitOp, const volatile void* address, uint32_t countInDwords
+libSceAgc	sceAgcDcbSetPredicationDisableGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetShRegisterDirect	uint32_t*	CommandBuffer* buf, ShaderRegister reg
+libSceAgc	sceAgcDcbSetShRegisterDirectGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetShRegistersIndirect	std::uint32_t*	CommandBuffer* buf, const volatile ShaderRegister* regs, std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetShRegistersIndirectGetSize	std::uint32_t	std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetUcRegisterDirect	uint32_t*	CommandBuffer* buf, ShaderRegister reg
+libSceAgc	sceAgcDcbSetUcRegisterDirectGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbSetUcRegistersIndirect	std::uint32_t*	CommandBuffer* buf, const volatile ShaderRegister* regs, std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetUcRegistersIndirectGetSize	std::uint32_t	std::uint32_t numRegs
+libSceAgc	sceAgcDcbSetWorkloadComplete	uint32_t*	CommandBuffer* buf, uint32_t streamId, uint32_t workloadId
+libSceAgc	sceAgcDcbSetWorkloadStreamInactive	uint32_t*	CommandBuffer* buf, uint32_t streamId
+libSceAgc	sceAgcDcbSetWorkloadsActive	uint32_t*	CommandBuffer* buf, uint32_t streamId, const uint32_t* workloadIds, uint32_t workloadCount
+libSceAgc	sceAgcDcbSetZPassPredicationEnableGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbStallCommandBufferParser	std::uint32_t*	CommandBuffer* buf
+libSceAgc	sceAgcDcbStallCommandBufferParserGetSize	std::uint32_t	
+libSceAgc	sceAgcDcbWaitOnAddressGetSize	uint32_t	uint32_t size
+libSceAgc	sceAgcDcbWaitRegMem	std::uint32_t*	CommandBuffer* buf, std::uint8_t size, std::uint8_t compareFunction, std::uint8_t operation, std::uint8_t cachePolicy, const volatile void* address, std::uint64_t reference, std::uint64_t mask, std::uint32_t pollCycles
+libSceAgc	sceAgcDcbWaitUntilSafeForRendering	uint32_t*	CommandBuffer* buf, uint32_t videoOutHandle, uint32_t displayBufferIndex
+libSceAgc	sceAgcDcbWriteData	std::uint32_t*	CommandBuffer* buf, std::uint8_t dst, std::uint8_t cachePolicy, std::uint64_t address, const void* data, std::uint32_t numDwords, std::uint8_t increment, std::uint8_t writeConfirm
+libSceAgc	sceAgcDcbWriteDataGetSize	uint32_t	uint32_t numDwords
+libSceAgc	sceAgcDebugRaiseException	int	std::uint32_t exceptionId
+libSceAgc	sceAgcDmaDataPatchSetDstAddressOrOffset	int	std::uint32_t* cmd, std::uint64_t address
+libSceAgc	sceAgcDmaDataPatchSetSrcAddressOrOffsetOrImmediate	int	std::uint32_t* cmd, std::uint64_t address
+libSceAgc	sceAgcFuseShaderHalves_0200	int	Shader* fused_result, const Shader* frontHost, const Shader* backHost, void* scratch_mem
+libSceAgc	sceAgcFuseShaderHalves_nid_postfix	int	Shader* fusedResult, const Shader* front, const Shader* back, void* scratchMem
+libSceAgc	sceAgcGetDataPacketPayloadAddress	int	uint32_t** addr, uint32_t* cmd, int type
+libSceAgc	sceAgcGetDataPacketPayloadAddress_0090	int	uint32_t** addr, uint32_t* cmd, int type
+libSceAgc	sceAgcGetDataPacketPayloadRange	int	SceAgcMemoryRange* range, uint32_t* cmd, int type
+libSceAgc	sceAgcGetDefaultCxStateFlat	int	void* outState, std::uint32_t size
+libSceAgc	sceAgcGetFusedShaderSize	int	SizeAlign* dst, const Shader* front, const Shader* back
+libSceAgc	sceAgcGetFusedShaderSize_0080	int	SizeAlign* dst, const Shader* front, const Shader* back
+libSceAgc	sceAgcGetGsOversubscription	int	ShaderRegister* regs, const Shader* gs, std::uint32_t budget, float factor
+libSceAgc	sceAgcGetGsPrimPayload	int	std::uint32_t* payload, const Shader* gs
+libSceAgc	sceAgcGetIsTrinityMode	int	bool* isTrinityMode
+libSceAgc	sceAgcGetPacketSize	uint32_t	uint32_t* packet
+libSceAgc	sceAgcGetRegisterDefaults	void*	
+libSceAgc	sceAgcGetRegisterDefaults2	void*	std::uint32_t version
+libSceAgc	sceAgcGetRegisterDefaults2Internal	void*	std::uint32_t version
+libSceAgc	sceAgcGetRegisterDefaultsInternal	void*	
+libSceAgc	sceAgcGetSemaphoreLabel	int	std::uint32_t index, void** label
+libSceAgc	sceAgcGetShaderInstrumentation	std::uint32_t	
+libSceAgc	sceAgcGetStaticBuffer	int	std::uint32_t index, void* buffer
+libSceAgc	sceAgcGetStaticQword	int	std::uint32_t index, std::uint64_t* value
+libSceAgc	sceAgcInit	int	std::uint32_t version
+libSceAgc	sceAgcInit_0090	int	std::uint32_t* state, std::uint32_t version
+libSceAgc	sceAgcJumpPatchSetTarget	int	uint32_t* cmd, const volatile uint32_t* target, uint32_t sizeInDwords
+libSceAgc	sceAgcJumpPatchSetTarget_0300	int	uint32_t* cmd, uint64_t cachePolicy, const volatile uint32_t* target, uint32_t sizeInDwords
+libSceAgc	sceAgcLinkShaders	int	ShaderRegister* context, ShaderRegister* primitive, const void* reserved, const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType
+libSceAgc	sceAgcQueueEndOfPipeActionPatchAddress	int	std::uint32_t* cmd, const volatile Label* address
+libSceAgc	sceAgcQueueEndOfPipeActionPatchData	int	uint32_t* cmd, uint64_t data
+libSceAgc	sceAgcQueueEndOfPipeActionPatchGcrCntl	int	std::uint32_t* cmd, std::uint16_t gcrControl
+libSceAgc	sceAgcQueueEndOfPipeActionPatchType	int	std::uint32_t* cmd, std::uint8_t action
+libSceAgc	sceAgcRewindPatchSetRewindState	int	uint32_t* cmd, uint8_t state
+libSceAgc	sceAgcSetAmmSemaphoreMemory	int	void* memory, std::uint64_t sizeInBytes
+libSceAgc	sceAgcSetCxRegIndirectPatchAddRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSetCxRegIndirectPatchSetAddress	int	std::uint32_t* cmd, const volatile ShaderRegister* regs
+libSceAgc	sceAgcSetCxRegIndirectPatchSetNumRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSetNop	std::uint32_t*	CommandBuffer* buf, std::uint32_t sizeDw
+libSceAgc	sceAgcSetPacketPredication	int	uint32_t* packet, uint32_t predication
+libSceAgc	sceAgcSetRangePredication	int	uint32_t* start, const volatile uint32_t* end, uint32_t predication
+libSceAgc	sceAgcSetSemaphoreMemory	int	void* memory, std::uint64_t sizeInBytes
+libSceAgc	sceAgcSetShRegIndirectPatchAddRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSetShRegIndirectPatchSetAddress	int	std::uint32_t* cmd, const volatile ShaderRegister* regs
+libSceAgc	sceAgcSetShRegIndirectPatchSetNumRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSetShaderInstrumentation	int	std::uint32_t flags
+libSceAgc	sceAgcSetStaticBuffer	int	std::uint32_t index, const void* buffer
+libSceAgc	sceAgcSetStaticQword	int	std::uint32_t index, std::uint64_t value
+libSceAgc	sceAgcSetSubmitMode	int	std::uint32_t mode
+libSceAgc	sceAgcSetUcRegIndirectPatchAddRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSetUcRegIndirectPatchSetAddress	int	std::uint32_t* cmd, const volatile ShaderRegister* regs
+libSceAgc	sceAgcSetUcRegIndirectPatchSetNumRegisters	int	std::uint32_t* cmd, std::uint32_t numRegs
+libSceAgc	sceAgcSuspendPoint	int	void
+libSceAgc	sceAgcSuspendPointAndCheckStatus	int	void
+libSceAgc	sceAgcUpdateInterpolantMapping_0100	int	ShaderRegister* regs, const Shader* vs, const Shader* ps
+libSceAgc	sceAgcUpdateInterpolantMapping_10000	int	ShaderRegister* regs, const Shader* gs, const Shader* ps
+libSceAgc	sceAgcUpdateInterpolantMapping_nid_postfix	int	ShaderRegister* regs, const Shader* gs, const Shader* ps
+libSceAgc	sceAgcUpdatePrimState	int	ShaderRegister* cxRegs, ShaderRegister* ucRegs, std::uint32_t primType
+libSceAgc	sceAgcWaitRegMemPatchAddress	int	std::uint32_t* cmd, const volatile void* address
+libSceAgc	sceAgcWaitRegMemPatchCompareFunction	int	std::uint32_t* cmd, std::uint8_t compareFunction
+libSceAgc	sceAgcWaitRegMemPatchMask	int	std::uint32_t* cmd, std::uint32_t mask
+libSceAgc	sceAgcWaitRegMemPatchReference	int	std::uint32_t* cmd, std::uint32_t reference
+libSceAgc	sceAgcWriteDataPatchSetAddressOrOffset	int	std::uint32_t* cmd, std::uint64_t address
+libSceAgc	sceAgcWriteDataPatchSetCachePolicy	int	std::uint32_t* cmd, std::uint8_t cachePolicy
+libSceAgc	sceAgcWriteDataPatchSetDst	int	std::uint32_t* cmd, std::uint8_t dst
+libSceAgcDriver	sceAgcDriverAcquireHDRScopesACQ	int	
+libSceAgcDriver	sceAgcDriverAcquireRazorACQ	int	
+libSceAgcDriver	sceAgcDriverAddEqEvent	int	KernelEqueue eq, int id, void* udata
+libSceAgcDriver	sceAgcDriverAgrSubmitDcb	int	const Packet* packet
+libSceAgcDriver	sceAgcDriverAgrSubmitMultiDcbs	int	std::uint32_t* const* dcbGpuAddrs, const std::uint32_t* dcbSizesInDwords, std::uint32_t count
+libSceAgcDriver	sceAgcDriverAllocateToolMemoryForGpuReset	int	uint64_t, uint64_t, uint64_t, void* range
+libSceAgcDriver	sceAgcDriverCreateQueue	int	void
+libSceAgcDriver	sceAgcDriverCwsrResumeAcq	int	void
+libSceAgcDriver	sceAgcDriverCwsrSuspendAcq	int	void
+libSceAgcDriver	sceAgcDriverDbgReadRegister	int	
+libSceAgcDriver	sceAgcDriverDbgWriteRegister	int	
+libSceAgcDriver	sceAgcDriverDebugHardwareStatus	int	void
+libSceAgcDriver	sceAgcDriverDeleteEqEvent	int	KernelEqueue eq, int id
+libSceAgcDriver	sceAgcDriverDeregisterCaptureInterface	int	
+libSceAgcDriver	sceAgcDriverDestroyQueue	int	void
+libSceAgcDriver	sceAgcDriverFindResourcesPublic	int	const void* callback, void* userData
+libSceAgcDriver	sceAgcDriverGetAllocatedToolMemoryForGpuReset	int	uint64_t, void* range
+libSceAgcDriver	sceAgcDriverGetCaptureConfig	int	
+libSceAgcDriver	sceAgcDriverGetCoredumpAddress	void*	
+libSceAgcDriver	sceAgcDriverGetCoredumpMode	int	uint32_t* mode
+libSceAgcDriver	sceAgcDriverGetDefaultOwner	int	uint32_t* ownerHandle
+libSceAgcDriver	sceAgcDriverGetEqContextId	uint32_t	const KernelEvent* ev
+libSceAgcDriver	sceAgcDriverGetEqEventType	int	const KernelEvent* ev
+libSceAgcDriver	sceAgcDriverGetExceptionStatus	int	
+libSceAgcDriver	sceAgcDriverGetGpuPrintfWorkArea	int	
+libSceAgcDriver	sceAgcDriverGetGpuRefClks	int	
+libSceAgcDriver	sceAgcDriverGetHsOffchipParam	int	uint16_t* granularity, uint16_t* buffering
+libSceAgcDriver	sceAgcDriverGetOwnerName	int	uint32_t ownerHandle, const char** name
+libSceAgcDriver	sceAgcDriverGetPaDebugInterfaceVersion	int	
+libSceAgcDriver	sceAgcDriverGetRegShadowInfo	int	void* info
+libSceAgcDriver	sceAgcDriverGetRegShadowInfoAgr	int	void* info
+libSceAgcDriver	sceAgcDriverGetReservedDmemForAgc	int	void
+libSceAgcDriver	sceAgcDriverGetResourceBaseAddressAndSizeInBytes	int	uint32_t resourceHandle, void** memory, size_t* size
+libSceAgcDriver	sceAgcDriverGetResourceName	int	uint32_t resourceHandle, const char** name
+libSceAgcDriver	sceAgcDriverGetResourceRegistrationMaxNameLength	int	uint32_t* maxLength
+libSceAgcDriver	sceAgcDriverGetResourceShaderGuid	int	uint32_t resourceHandle, void* guid
+libSceAgcDriver	sceAgcDriverGetResourceType	int	uint32_t resourceHandle, uint32_t* type
+libSceAgcDriver	sceAgcDriverGetResourceUserData	int	uint32_t resourceHandle, uint64_t* userData
+libSceAgcDriver	sceAgcDriverGetSetFlipPacketSizeInDwords	std::uint32_t	
+libSceAgcDriver	sceAgcDriverGetSetWorkloadCompletePacketSize	std::uint32_t	
+libSceAgcDriver	sceAgcDriverGetSetWorkloadStreamInactivePacketSize	std::uint32_t	
+libSceAgcDriver	sceAgcDriverGetSetWorkloadsActivePacketSize	std::uint32_t	
+libSceAgcDriver	sceAgcDriverGetShaderDebuggingStatus	int	
+libSceAgcDriver	sceAgcDriverGetSubmitValidationConfig	int	void* config
+libSceAgcDriver	sceAgcDriverGetSubmitValidationMode	int	uint32_t* mode
+libSceAgcDriver	sceAgcDriverGetTFRing	int	uintptr_t* base, uint32_t* size
+libSceAgcDriver	sceAgcDriverGetTraceInitiator	int	
+libSceAgcDriver	sceAgcDriverGetWaitRenderingPacketSizeInDwords	std::uint32_t	
+libSceAgcDriver	sceAgcDriverGetWorkloadStreamInfo	int	void
+libSceAgcDriver	sceAgcDriverHp3dLockEnd	int	
+libSceAgcDriver	sceAgcDriverHp3dLockStart	int	
+libSceAgcDriver	sceAgcDriverIDHSSubmit	int	void
+libSceAgcDriver	sceAgcDriverInitResourceRegistration	uint32_t	void
+libSceAgcDriver	sceAgcDriverInitResourceRegistrationInterface	int	
+libSceAgcDriver	sceAgcDriverIsCaptureInProgress	bool	void
+libSceAgcDriver	sceAgcDriverIsCoredumpValid	int	
+libSceAgcDriver	sceAgcDriverIsEsvmProcess	int	
+libSceAgcDriver	sceAgcDriverIsPaDebug	int	
+libSceAgcDriver	sceAgcDriverIsSubmitValidationEnabled	bool	void
+libSceAgcDriver	sceAgcDriverIsSuspendPointInFlight	int	
+libSceAgcDriver	sceAgcDriverIsSuspendPointInFlightDirect	int	
+libSceAgcDriver	sceAgcDriverIsTraceInProgress	bool	void
+libSceAgcDriver	sceAgcDriverModuleRegistration	int	
+libSceAgcDriver	sceAgcDriverNopDataGetPacketSize	std::uint32_t	std::uint32_t bytes
+libSceAgcDriver	sceAgcDriverNopDataWritePacket	int	void* destination, uint32_t address, const void* data, uint32_t bytes
+libSceAgcDriver	sceAgcDriverNotifyDefaultStates	int	void
+libSceAgcDriver	sceAgcDriverPassInfoDownward	int	void
+libSceAgcDriver	sceAgcDriverPatchClearState	int	void
+libSceAgcDriver	sceAgcDriverQueryResourceRegistrationUserMemoryRequirements	uint32_t	uint64_t* sizeInBytes
+libSceAgcDriver	sceAgcDriverRegisterCaptureInterface	int	
+libSceAgcDriver	sceAgcDriverRegisterDefaultOwner	int	uint32_t owner
+libSceAgcDriver	sceAgcDriverRegisterGdsResource	int	uint32_t* resourceHandle, uint32_t ownerHandle, uint32_t gdsOffset, uint32_t gdsSize, const char* name, uint32_t type, uint64_t userData
+libSceAgcDriver	sceAgcDriverRegisterGpuResetCallbacks	int	
+libSceAgcDriver	sceAgcDriverRegisterMultipleResources	int	uint32_t* resourceHandle, uint32_t ownerHandle, const void* resources, uint32_t resourceCount
+libSceAgcDriver	sceAgcDriverRegisterOwner	int	uint32_t* ownerHandle, const char* name
+libSceAgcDriver	sceAgcDriverRegisterOwnerForSystem	int	
+libSceAgcDriver	sceAgcDriverRegisterResource	int	uint32_t* resourceHandle, uint32_t ownerHandle, const void* memory, size_t size, const char* name, uint32_t type, uint64_t userData
+libSceAgcDriver	sceAgcDriverRegisterWorkloadStream	int	uint32_t streamId, const void* stream
+libSceAgcDriver	sceAgcDriverReleaseHDRScopesACQ	int	
+libSceAgcDriver	sceAgcDriverReleaseRazorACQ	int	
+libSceAgcDriver	sceAgcDriverRequestCaptureStart	int	const char* path
+libSceAgcDriver	sceAgcDriverRequestCaptureStop	int	
+libSceAgcDriver	sceAgcDriverSdmaCopyLinearBlocking	int	
+libSceAgcDriver	sceAgcDriverSetCaptureConfig	int	
+libSceAgcDriver	sceAgcDriverSetFlip	int	void
+libSceAgcDriver	sceAgcDriverSetGpuPrintfEnabled	int	
+libSceAgcDriver	sceAgcDriverSetHsOffchipParam	int	uint16_t granularity, uint16_t buffering
+libSceAgcDriver	sceAgcDriverSetHsOffchipParamDirect	int	
+libSceAgcDriver	sceAgcDriverSetResourceRegistrationInfo	int	
+libSceAgcDriver	sceAgcDriverSetResourceUserData	int	uint32_t resourceHandle, uint64_t userData
+libSceAgcDriver	sceAgcDriverSetSubmitValidationConfig	int	const void* config
+libSceAgcDriver	sceAgcDriverSetSubmitValidationMode	int	uint32_t mode
+libSceAgcDriver	sceAgcDriverSetTFRing	int	const volatile void* base, uint32_t size
+libSceAgcDriver	sceAgcDriverSetTFRingDirect	int	
+libSceAgcDriver	sceAgcDriverSetTargetRingForDiag	int	
+libSceAgcDriver	sceAgcDriverSetValidationDisabled	int	
+libSceAgcDriver	sceAgcDriverSetValidationErrorOutputFrequency	int	uint32_t frequency
+libSceAgcDriver	sceAgcDriverSetValueToSharedGds	int	
+libSceAgcDriver	sceAgcDriverSetWorkloadComplete	int	void
+libSceAgcDriver	sceAgcDriverSetWorkloadStreamInactive	int	
+libSceAgcDriver	sceAgcDriverSetWorkloadsActive	int	void
+libSceAgcDriver	sceAgcDriverSetupAsyncGraphics	int	void
+libSceAgcDriver	sceAgcDriverSetupRegisterShadow	int	void
+libSceAgcDriver	sceAgcDriverSubmitAcb	int	uint32_t queue, const Packet* packet
+libSceAgcDriver	sceAgcDriverSubmitCommandBuffer	int	void* queueContext, const Packet* packet
+libSceAgcDriver	sceAgcDriverSubmitDcb	int	const Packet* packet
+libSceAgcDriver	sceAgcDriverSubmitMultiAcbs	int	uint32_t queue, uint32_t* const* acbs, const uint32_t* sizes_in_dwords, uint32_t count
+libSceAgcDriver	sceAgcDriverSubmitMultiCommandBuffers	int	void* queueContext, uint32_t* const* commandBuffers, const uint32_t* sizesInDwords, uint32_t count
+libSceAgcDriver	sceAgcDriverSubmitMultiCommandBuffersDirect	int	
+libSceAgcDriver	sceAgcDriverSubmitMultiDcbs	int	std::uint32_t* const* dcbGpuAddrs, const std::uint32_t* dcbSizesInDwords, std::uint32_t count
+libSceAgcDriver	sceAgcDriverSubmitReprojectionAcb	int	
+libSceAgcDriver	sceAgcDriverSubmitToHDRScopesACQ	int	void
+libSceAgcDriver	sceAgcDriverSubmitToRazorACQ	int	
+libSceAgcDriver	sceAgcDriverSuspendPointSubmit	int	void
+libSceAgcDriver	sceAgcDriverSuspendPointSubmitCdbg	int	
+libSceAgcDriver	sceAgcDriverSuspendPointSubmitDirect	int	
+libSceAgcDriver	sceAgcDriverSysEnableSubmitDone45Exception	int	void
+libSceAgcDriver	sceAgcDriverSysGetClientNumber	int	void
+libSceAgcDriver	sceAgcDriverSysGetGfxAppGpuResetStatus	int	
+libSceAgcDriver	sceAgcDriverSysIsGameClosed	int	void
+libSceAgcDriver	sceAgcDriverSysSubmitFlipHandleProxy	int	
+libSceAgcDriver	sceAgcDriverTmpInitIdhs	int	void
+libSceAgcDriver	sceAgcDriverTriggerCapture	int	
+libSceAgcDriver	sceAgcDriverUnknown_yuO_plus_lNrj_plus_Do	int	std::int32_t kind, std::int64_t arg
+libSceAgcDriver	sceAgcDriverUnregisterAllResourcesForOwner	int	uint32_t ownerHandle
+libSceAgcDriver	sceAgcDriverUnregisterGpuResetCallbacks	int	
+libSceAgcDriver	sceAgcDriverUnregisterOwnerAndResources	int	uint32_t ownerHandle
+libSceAgcDriver	sceAgcDriverUnregisterResource	int	uint32_t resourceHandle
+libSceAgcDriver	sceAgcDriverUnregisterWorkloadStream	int	uint32_t streamId
+libSceAgcDriver	sceAgcDriverUserDataGetPacketSize	std::uint32_t	std::uint32_t bytes
+libSceAgcDriver	sceAgcDriverUserDataImmediateWrite	int	
+libSceAgcDriver	sceAgcDriverUserDataImmediateWritePacket	int	
+libSceAgcDriver	sceAgcDriverUserDataWritePacket	std::uint32_t	std::uint32_t* commands, std::uint32_t asyncCompute, std::uint32_t value, const void* data, std::uint32_t size
+libSceAgcDriver	sceAgcDriverUserDataWritePopMarker	std::uint32_t	std::uint32_t* commands, std::uint32_t asyncCompute
+libSceAgcDriver	sceAgcDriverUserDataWritePushMarker	std::uint32_t	std::uint32_t* commands, std::uint32_t asyncCompute, const char* name, std::uint32_t nameSize, std::uint32_t color
+libSceAgcDriver	sceAgcDriverUserDataWriteSetMarker	std::uint32_t	std::uint32_t* commands, std::uint32_t asyncCompute, const char* name, std::uint32_t nameSize, std::uint32_t color
+libSceAgcDriver	sceAgcDriverWaitUntilSafeForRendering	std::uint32_t	std::uint32_t** command, std::uint32_t capacity, std::uint32_t mode, std::uint32_t handle, int index
+libSceAgcDriver	sceAgcSdmaClose	int	void
+libSceAgcDriver	sceAgcSdmaConstFill	int	void
+libSceAgcDriver	sceAgcSdmaCopyLinear	int	void
+libSceAgcDriver	sceAgcSdmaCopyTiledBC	int	void
+libSceAgcDriver	sceAgcSdmaCopyTiledGen2	int	void
+libSceAgcDriver	sceAgcSdmaCopyWindowBC	int	void
+libSceAgcDriver	sceAgcSdmaCopyWindowGen2	int	void
+libSceAgcDriver	sceAgcSdmaFlush	int	void
+libSceAgcDriver	sceAgcSdmaOpen	int	void
+libSceAgcDriver	sceAgcSdmaSetTileModesBC	int	void
+libSceAgcDriver	sceAgdGetApplicationGpuDebug	int	
+libSceAgcDriver	sceAgdGetSystemGpuDebug	int	
+libSceAgcDriver	sceAgdResetGpu	int	
+libSceAgcDriver	sceAgdSetApplicationGpuDebug	int	
+libScePad	scePadBondUpdateGetReconnectStatus	int	std::int32_t* status
+libScePad	scePadBondUpdateGetStatus	int	std::int32_t deviceId, std::int32_t* status
+libScePad	scePadBondUpdateInit	int	void
+libScePad	scePadBondUpdateIsReady	int	std::int32_t deviceId, std::int32_t* ready
+libScePad	scePadBondUpdateResetBond	int	std::int32_t deviceId
+libScePad	scePadBondUpdateSendData	int	std::int32_t deviceId, const PadUpdateData* data
+libScePad	scePadBondUpdateStart	int	std::int32_t handle, const PadUpdateParameter* parameter
+libScePad	scePadBondUpdateTerm	int	void
+libScePad	scePadClose_nid_postfix	int	int handle
+libScePad	scePadConnectPort	int	std::int32_t userId, std::int32_t portType
+libScePad	scePadControllerUpdateGetReconnectStatus	int	std::int32_t* status
+libScePad	scePadControllerUpdateGetStatus	int	std::int32_t deviceId, std::int32_t* status
+libScePad	scePadControllerUpdateInit	int	void
+libScePad	scePadControllerUpdateIsReady	int	std::int32_t deviceId, std::int32_t* ready
+libScePad	scePadControllerUpdateIsUpdateNeeded2	int	std::int32_t deviceId, const std::uint32_t* version, std::uint16_t* status
+libScePad	scePadControllerUpdateResetController	int	std::int32_t deviceId
+libScePad	scePadControllerUpdateSendData	int	std::int32_t deviceId, const PadUpdateData* data
+libScePad	scePadControllerUpdateStart	int	std::int32_t handle, const PadUpdateParameter* parameter
+libScePad	scePadControllerUpdateTerm	int	void
+libScePad	scePadDeviceClassGetExtendedInformation	int	int handle, PadDeviceClassExtendedInformation* info
+libScePad	scePadDeviceClassParseData	int	int handle, const PadData* data, PadDeviceClassData* class_data
+libScePad	scePadDeviceOpen	int	std::uint64_t deviceId, std::int32_t type, std::int32_t index
+libScePad	scePadDisableActiveProfileChange	int	std::int32_t handle, bool disabled
+libScePad	scePadDisableActiveProfileChangeByDeviceId	int	std::int32_t deviceId, bool disabled
+libScePad	scePadDisableDataConversion	int	std::int32_t handle, bool disabled
+libScePad	scePadDisableTrackingLedBatterySaver	int	bool disabled
+libScePad	scePadDisableTransportButtons	int	bool disabled
+libScePad	scePadDisableTriggerEffect	int	std::int32_t handle, bool disabled
+libScePad	scePadDisableVibration	int	std::int32_t handle, bool disabled
+libScePad	scePadDisconnectDevice	int	std::int32_t deviceId
+libScePad	scePadDisconnectPort	int	std::int32_t userId, std::int32_t portType
+libScePad	scePadEnableAutoDetect	int	bool enabled
+libScePad	scePadEnableControllerIndicator	int	std::int32_t handle
+libScePad	scePadEnableExtensionPort	int	bool enabled
+libScePad	scePadEnablePlayPauseEmulation	int	bool enabled
+libScePad	scePadEnableProfileIndicator	int	std::int32_t handle
+libScePad	scePadEnablePs4CompatibleMode	int	std::int32_t handle, bool enabled
+libScePad	scePadEnableSpecificDeviceClass	int	std::int32_t deviceClass
+libScePad	scePadEnableUsbConnection	int	bool enabled
+libScePad	scePadGetAccessibilityControllerState	int	int handle, std::uint32_t* state
+libScePad	scePadGetActiveProfileInfo	int	std::int32_t handle, PadActiveProfileInfo* info
+libScePad	scePadGetActiveTime	int	std::int32_t handle, std::int32_t type, std::uint64_t* activeTime
+libScePad	scePadGetAstonModel	int	std::int32_t handle
+libScePad	scePadGetBluetoothAddress	int	std::int32_t handle, std::uint64_t* address
+libScePad	scePadGetCapability	int	std::int32_t deviceId, std::uint32_t* capability
+libScePad	scePadGetContainerIdInformation	int	int handle, PadContainerIdInformation* info
+libScePad	scePadGetControllerBusType	int	int handle, int* busType
+libScePad	scePadGetControllerIdleCount	int	std::int32_t handle, std::uint64_t* count
+libScePad	scePadGetControllerInformation	int	int handle, PadControllerInformation* info
+libScePad	scePadGetControllerType	int	std::int32_t handle, std::int32_t* type
+libScePad	scePadGetControllerTypeLeonardo	int	std::int32_t deviceId, std::int32_t* controllerType
+libScePad	scePadGetDataInternal	int	std::uint8_t port, PadData* data
+libScePad	scePadGetDeviceId	int	std::int32_t handle, std::int32_t* deviceId
+libScePad	scePadGetDeviceInfo	int	std::int32_t deviceId, PadDeviceInfo* info
+libScePad	scePadGetExtControllerInformation	int	int handle, void* info
+libScePad	scePadGetExtensionUnitInfo	int	std::int32_t handle, PadExtensionUnitInfo* info
+libScePad	scePadGetFeatureReport	int	std::int32_t handle, std::uint8_t reportId, void* data, std::size_t size
+libScePad	scePadGetFeatureReport2	int	std::int32_t handle, std::uint8_t reportId, void* data, std::size_t size
+libScePad	scePadGetHandle	int	int user_id, int type, int index
+libScePad	scePadGetIdleCount	std::uint64_t	std::int32_t userId
+libScePad	scePadGetInfoByPortType	int	std::int32_t type, PadPortInfo* info
+libScePad	scePadGetInfo_nid_postfix	int	PadInfo* info
+libScePad	scePadGetJackState	int	int handle, int* state
+libScePad	scePadGetLicenseControllerInformation	int	std::int32_t handle, PadLicenseControllerInformation* info
+libScePad	scePadGetLotusIrCodeSetResult	int	std::int32_t handle, std::int32_t* result, std::uint8_t* deviceResult
+libScePad	scePadGetMotionSensorPosition	int	std::int32_t handle, PadMotionSensorPosition* position
+libScePad	scePadGetMotionTimerUnit	int	std::int32_t handle, float* unit
+libScePad	scePadGetParticularMode	int	void
+libScePad	scePadGetProfileEditMode	int	std::int32_t handle, std::int32_t* mode
+libScePad	scePadGetProfileEditModeLeonardo	int	std::int32_t handle
+libScePad	scePadGetProfileHunt	int	std::int32_t handle, std::int32_t profileId, PadHuntProfile* profile
+libScePad	scePadGetProfileInfo	int	std::int32_t deviceId, std::int32_t profileId, PadProfileInfo* info
+libScePad	scePadGetProfileLeonardo	int	std::int32_t handle, std::int32_t profileId, PadLeonardoProfile* profile
+libScePad	scePadGetSavedSettingInfo	int	std::int32_t handle, PadSavedSettingInfo* info
+libScePad	scePadGetSelectButtonCustomizeMode	int	std::int32_t handle
+libScePad	scePadGetSphereRadius	int	std::int32_t handle, float* radius
+libScePad	scePadGetTelemetryInfo	int	std::int32_t handle, PadTelemetryInfo* info
+libScePad	scePadGetTriggerEffectInternalState	int	std::int32_t handle, PadTriggerInternalState* state
+libScePad	scePadGetTriggerEffectState	int	int handle, PadTriggerEffectStateInformation* info
+libScePad	scePadGetUsbDetectionState	int	std::int32_t deviceId, PadUsbDetectionState* state
+libScePad	scePadGetVersionInfo	int	std::int32_t handle, PadVersionInfo* info
+libScePad	scePadInit_nid_postfix	int	void
+libScePad	scePadIsBlasterConnected	bool	std::int32_t handle
+libScePad	scePadIsCoPilot	int	std::int32_t handle
+libScePad	scePadIsControllerUpdateRequired	int	int handle
+libScePad	scePadIsDS4Connected	bool	std::int32_t handle
+libScePad	scePadIsInitialUserHandle	int	
+libScePad	scePadIsLightBarBaseBrightnessControllable	int	std::int32_t handle
+libScePad	scePadIsMoveConnected	bool	std::int32_t handle
+libScePad	scePadIsMoveReproductionModel	int	std::int32_t handle
+libScePad	scePadIsRemoteController	int	int handle, bool* remote
+libScePad	scePadIsSupportedAudioFunction	int	int handle
+libScePad	scePadIsValidHandle	bool	std::int32_t handle, std::int32_t portType
+libScePad	scePadLastLotusButtonData	int	std::int32_t handle, std::uint32_t parameter, PadLotusButtonData* data
+libScePad	scePadMbusInit	int	void
+libScePad	scePadMbusTerm	int	void
+libScePad	scePadOpenExt	int	int userId, int type, int index, const void* param
+libScePad	scePadOpenExt2	int	std::int32_t userId, std::int32_t paramSize, const void* param
+libScePad	scePadOpen_nid_postfix	int	int userId, int type, int index, const void* param
+libScePad	scePadOutputReport	int	std::int32_t handle, std::uint8_t reportId, const void* data, std::uint64_t size
+libScePad	scePadParseUniqueDataLeonardo	int	std::int32_t handle, const PadLeonardoData* data, PadLeonardoUniqueData* uniqueData
+libScePad	scePadReadAstonForTracker	int	std::int32_t handle, PadAstonTrackerData* data, std::int32_t count
+libScePad	scePadReadBlasterForTracker	int	std::int32_t handle, PadBlasterTrackerData* data, std::int32_t count
+libScePad	scePadReadExt	int	std::int32_t handle, PadDataExtended* data, std::int32_t count
+libScePad	scePadReadForTracker	int	std::int32_t handle, PadTrackerData* data, std::int32_t count
+libScePad	scePadReadHistory	int	std::int32_t handle, PadHistoryData* data, std::uint32_t size
+libScePad	scePadReadState	int	int handle, PadData* data
+libScePad	scePadReadStateExt	int	std::int32_t handle, PadDataExtended* data
+libScePad	scePadRead_nid_postfix	int	int handle, PadData* data, int num
+libScePad	scePadRegisterCollaboInputMgrProcess	int	void
+libScePad	scePadRemoteControlInsertData	int	const std::uint8_t* data
+libScePad	scePadRemoteControlInsertDataForAston	int	const std::uint8_t* data
+libScePad	scePadResetHunt	int	std::int32_t handle
+libScePad	scePadResetLeonardo	int	std::int32_t handle
+libScePad	scePadResetLightBar	int	int handle
+libScePad	scePadResetLightBarAll	int	void
+libScePad	scePadResetLightBarAllByPortType	int	std::uint32_t portType
+libScePad	scePadResetOrientation	int	int handle
+libScePad	scePadResetOrientationForTracker	int	std::int32_t handle
+libScePad	scePadSetActiveProfileSlot	int	std::int32_t deviceId, std::uint32_t slot
+libScePad	scePadSetAngularVelocityBiasCorrectionState	int	int handle, bool enabled
+libScePad	scePadSetAngularVelocityDeadbandState	int	int handle, bool enable
+libScePad	scePadSetAudioOutPath	int	int handle, int path
+libScePad	scePadSetAutoPowerOffCount	int	std::int32_t count
+libScePad	scePadSetButtonRemappingInfo	int	std::int32_t handle, const PadButtonRemappingInfo* info
+libScePad	scePadSetConnection	int	std::int32_t handle, bool connected
+libScePad	scePadSetControllerTypeLeonardo	int	std::int32_t deviceId, std::int32_t controllerType
+libScePad	scePadSetExtensionReport	int	std::int32_t handle, const PadExtensionReport* report
+libScePad	scePadSetFeatureReport	int	std::int32_t handle, std::uint8_t reportId, const void* data, std::size_t size
+libScePad	scePadSetFeatureReport2	int	std::int32_t handle, std::uint8_t reportId, const void* data, std::size_t size
+libScePad	scePadSetForceIntercepted	int	bool enabled
+libScePad	scePadSetIsCoPilot	int	std::int32_t handle, bool enabled
+libScePad	scePadSetLightBar	int	int handle, const PadLightBarParam* param
+libScePad	scePadSetLightBarBaseBrightness	int	std::int32_t handle, std::uint32_t brightness
+libScePad	scePadSetLightBarBlinking	int	std::int32_t handle, const PadLightBarBlinkingParameter* parameter
+libScePad	scePadSetLightBarForTracker	int	std::int32_t handle, const PadLightBarParam* color
+libScePad	scePadSetLoginUserNumber	int	std::int32_t number
+libScePad	scePadSetLotusDisableIrKey	int	std::int32_t handle
+libScePad	scePadSetLotusEnableIrKey	int	std::int32_t handle
+libScePad	scePadSetLotusIrCodeSetData	int	std::int32_t handle, std::uint8_t packetIndex, const void* data, std::size_t dataSize
+libScePad	scePadSetLotusIrCodeSetEnd	int	std::int32_t handle
+libScePad	scePadSetLotusIrCodeSetStart	int	std::int32_t handle, std::uint8_t codeSet, std::uint16_t code, std::size_t dataSize
+libScePad	scePadSetMotionSensorState	int	int handle, bool enable
+libScePad	scePadSetMuteLed	int	std::int32_t handle, std::uint32_t mode
+libScePad	scePadSetPS4BcVibrationMode	int	std::uint8_t mode
+libScePad	scePadSetParticularMode	int	bool mode
+libScePad	scePadSetPowerSavingState	int	std::int32_t handle, std::uint8_t state
+libScePad	scePadSetProcessFocus	int	const PadProcessFocusParameter* parameter
+libScePad	scePadSetProcessPrivilege	int	int privilege
+libScePad	scePadSetProcessPrivilegeOfButtonRemapping	int	bool enabled
+libScePad	scePadSetProfileEditMode	int	std::int32_t handle, bool enabled, std::uint32_t profile
+libScePad	scePadSetProfileHunt	int	std::int32_t handle, std::int32_t profileId, PadHuntProfile* profile, std::uint32_t* result
+libScePad	scePadSetProfileIndicatorAnimation	int	std::int32_t handle, std::uint8_t animation
+libScePad	scePadSetProfileLeonardo	int	std::int32_t handle, std::int32_t profileId, PadLeonardoProfile* profile, std::uint32_t* result
+libScePad	scePadSetSavedSettingInfo	int	std::int32_t handle, const PadSavedSettingInfo* info
+libScePad	scePadSetSelectButtonCustomizeMode	int	std::int32_t handle, bool enabled
+libScePad	scePadSetShareButtonMaskForRemotePlay	int	std::uint8_t mask
+libScePad	scePadSetStickTriggerTuningMode	int	std::int32_t handle, std::uint32_t mode
+libScePad	scePadSetStickTuningParam	int	std::int32_t handle, std::uint32_t stick, const PadStickTuningParameter* parameter
+libScePad	scePadSetTiltCorrectionState	int	int handle, bool enabled
+libScePad	scePadSetToggleAllReleaseLeonardo	int	std::int32_t handle
+libScePad	scePadSetTriggerEffect	int	int handle, const void* param
+libScePad	scePadSetTriggerEffectExt	int	std::int32_t handle, const PadTriggerEffectExtended* effect
+libScePad	scePadSetTriggerEffectStrength	int	std::int32_t handle, std::uint32_t strength
+libScePad	scePadSetTriggerTuningParam	int	std::int32_t handle, const PadTriggerTuningParameter* parameter
+libScePad	scePadSetUserColor	int	std::int32_t handle, std::uint32_t color
+libScePad	scePadSetUserNumber	int	std::int32_t handle, std::int32_t number
+libScePad	scePadSetVibration	int	int handle, const PadVibrationParam* param
+libScePad	scePadSetVibrationForce	int	std::int32_t handle, const PadVibrationParam* param
+libScePad	scePadSetVibrationMode	int	int handle, int mode
+libScePad	scePadSetVibrationStrength	int	std::int32_t handle, std::uint32_t strength
+libScePad	scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse	int	bool enabled
+libScePad	scePadSetVirtualDeviceComponentInformation	int	std::int32_t deviceId, const PadVirtualDeviceComponentInformation* info
+libScePad	scePadSetVolumeGain	int	int handle, const PadVolumeGain* gain
+libScePad	scePadSetVrTrackingMode	int	std::uint8_t mode
+libScePad	scePadShareOutputData	int	std::int32_t source, std::int32_t destination
+libScePad	scePadShareOutputDataWithFunctionType	int	std::int32_t source, std::int32_t destination, std::uint32_t functionType
+libScePad	scePadStartRecording	int	void
+libScePad	scePadStopRecording	int	void
+libScePad	scePadSwitchConnection	int	std::int32_t handle, std::uint32_t flags
+libScePad	scePadUiReadState	int	std::int32_t handle, PadUiData* data
+libScePad	scePadUiReadStateForTuning	int	std::int32_t handle, PadUiTuningData* data
+libScePad	scePadUnknown_n3kSX62fgNo	int	
+libScePad	scePadVertualDeviceAddDevice	int	const PadVirtualDeviceParameter* parameter, PadVirtualDeviceId* deviceId
+libScePad	scePadVirtualDeviceAddDevice	int	const PadVirtualDeviceParameter* parameter, PadVirtualDeviceId* deviceId
+libScePad	scePadVirtualDeviceDeleteDevice	int	std::int32_t deviceId
+libScePad	scePadVirtualDeviceDisableButtonRemapping	int	bool disabled
+libScePad	scePadVirtualDeviceGetRemoteSetting	int	std::int32_t deviceId, PadRemoteSetting* setting
+libScePad	scePadVirtualDeviceInsertData	int	std::int32_t deviceId, const PadData* data
+libScePad	scePadVirtualDeviceInsertTriggerInternalState	int	std::int32_t deviceId, const PadVirtualTriggerInternalState* state
+libScePad	scePadVirtualDeviceSetTriggerEffectSetting	int	std::int32_t handle, const PadVirtualTriggerSetting* setting
+libScePad	scePadVrControllerGetDeviceInformation	int	std::int32_t handle, PadVrControllerDeviceInformation* info
+libScePad	scePadVrControllerGetPhysicalUsbConnectionStatus	int	PadVrUsbConnectionStatus* status
+libScePad	scePadVrControllerGetTriggerEffectState	int	std::int32_t leftHandle, std::int32_t rightHandle, PadTriggerEffectStateInformation* states
+libScePad	scePadVrControllerGetTriggerEffectStates	int	std::int32_t leftHandle, std::int32_t rightHandle, PadTriggerEffectStateInformation* states
+libScePad	scePadVrControllerRead	int	std::int32_t handle, PadVrControllerData* data, std::int32_t count
+libScePad	scePadVrControllerReadCombinedState	int	std::int32_t leftHandle, std::int32_t rightHandle, PadVrControllerCombinedState* state
+libScePad	scePadVrControllerReadState	int	int handle, PadVrControllerData* state
+libScePad	scePadVrControllerSetTriggerEffect	int	std::int32_t handle, const PadVrTriggerEffect* effect
+libScePad	scePadVrControllerSetTriggerEffects	int	std::int32_t leftHandle, std::int32_t rightHandle, const PadVrTriggerEffects* effects
+libScePad	scePadVrControllerSetVibration	int	std::int32_t handle, std::uint8_t intensity
+libScePad	scePadVrControllerSetVibrationMode	int	std::int32_t handle, std::uint32_t mode
+libSceUserService	sceUserServiceDestroyUser	int	void
+libSceUserService	sceUserServiceGetA11yControllerADeviceUniqueIds	int	void
+libSceUserService	sceUserServiceGetA11yControllerAName	int	void
+libSceUserService	sceUserServiceGetA11yControllerBDeviceUniqueIds	int	void
+libSceUserService	sceUserServiceGetA11yControllerBName	int	void
+libSceUserService	sceUserServiceGetA11yControllerInitialSetupProgress	int	void
+libSceUserService	sceUserServiceGetA11yControllerLedBrightness	int	void
+libSceUserService	sceUserServiceGetAccessibilityChatTranscription	int	int user_id, int32_t* chat_transcription
+libSceUserService	sceUserServiceGetAccessibilityKeyremapData	int	void
+libSceUserService	sceUserServiceGetAccessibilityKeyremapDataAston	int	void
+libSceUserService	sceUserServiceGetAccessibilityKeyremapEnable	int	std::int32_t userId, std::int32_t* enabled
+libSceUserService	sceUserServiceGetAccessibilityKeyremapEnableAston	int	void
+libSceUserService	sceUserServiceGetAccessibilityPressAndHoldDelay	int	int user_id, int32_t* press_and_hold_delay
+libSceUserService	sceUserServiceGetAccessibilityTriggerEffect	int	int user_id, int32_t* trigger_effect
+libSceUserService	sceUserServiceGetAccessibilityVibration	int	int user_id, int32_t* vibration
+libSceUserService	sceUserServiceGetAccessibilityZoom	int	std::int32_t userId, std::int32_t* zoom
+libSceUserService	sceUserServiceGetAccessibilityZoomEnabled	int	int user_id, int32_t* zoom_enabled
+libSceUserService	sceUserServiceGetAccessibilityZoomFollowFocus	int	int user_id, int32_t* zoom_follow_focus
+libSceUserService	sceUserServiceGetAccountRemarks	int	void
+libSceUserService	sceUserServiceGetAgeLevel	int	int user_id, uint32_t* age_level
+libSceUserService	sceUserServiceGetAgeVerified	int	void
+libSceUserService	sceUserServiceGetAppSortOrder	int	void
+libSceUserService	sceUserServiceGetAppearOfflineSetting	int	void
+libSceUserService	sceUserServiceGetAudioFocus	int	void
+libSceUserService	sceUserServiceGetAutoLoginEnabled	int	void
+libSceUserService	sceUserServiceGetCaptureStatus	int	void
+libSceUserService	sceUserServiceGetCaptureStatus2	int	void
+libSceUserService	sceUserServiceGetCaptureStatus3	int	void
+libSceUserService	sceUserServiceGetChatStatus	int	void
+libSceUserService	sceUserServiceGetControlCenterFunctionControlSettings	int	void
+libSceUserService	sceUserServiceGetControlCenterStatus	int	void
+libSceUserService	sceUserServiceGetCreatedVersion	int	void
+libSceUserService	sceUserServiceGetCurrentUserGroupIndex	int	std::int32_t* index
+libSceUserService	sceUserServiceGetDefaultNewUserGroupName	int	char* name, std::size_t size
+libSceUserService	sceUserServiceGetDeletedUserInfo	int	void
+libSceUserService	sceUserServiceGetDiscPlayerFlag	int	void
+libSceUserService	sceUserServiceGetEvent	int	SceUserServiceEvent* event
+libSceUserService	sceUserServiceGetEventCalendarType	int	void
+libSceUserService	sceUserServiceGetEventFilterTeamEvent	int	void
+libSceUserService	sceUserServiceGetEventSortEvent	int	void
+libSceUserService	sceUserServiceGetEventSortTitle	int	void
+libSceUserService	sceUserServiceGetEventUiFlag	int	void
+libSceUserService	sceUserServiceGetEventVsh	int	SceUserServiceEvent* event
+libSceUserService	sceUserServiceGetFaceRecognitionDeleteCount	int	void
+libSceUserService	sceUserServiceGetFaceRecognitionRegisterCount	int	void
+libSceUserService	sceUserServiceGetFileBrowserFilter	int	
+libSceUserService	sceUserServiceGetFileBrowserSortContent	int	
+libSceUserService	sceUserServiceGetFileBrowserSortTitle	int	
+libSceUserService	sceUserServiceGetFileSelectorFilter	int	
+libSceUserService	sceUserServiceGetFileSelectorSortContent	int	
+libSceUserService	sceUserServiceGetFileSelectorSortTitle	int	
+libSceUserService	sceUserServiceGetForegroundUser	int	int* user_id
+libSceUserService	sceUserServiceGetFriendCustomListLastFocus	int	void
+libSceUserService	sceUserServiceGetFriendFlag	int	void
+libSceUserService	sceUserServiceGetGamePresets	int	int user_id, UserServiceGamePresets* presets
+libSceUserService	sceUserServiceGetGazeActivate	int	void
+libSceUserService	sceUserServiceGetGazeCalibData	int	void
+libSceUserService	sceUserServiceGetGlsAccessTokenNiconicoLive	int	void
+libSceUserService	sceUserServiceGetGlsAccessTokenTwitch	int	void
+libSceUserService	sceUserServiceGetGlsAccessTokenUstream	int	void
+libSceUserService	sceUserServiceGetGlsAnonymousUserId	int	void
+libSceUserService	sceUserServiceGetGlsBcTags	int	void
+libSceUserService	sceUserServiceGetGlsBcTitle	int	void
+libSceUserService	sceUserServiceGetGlsBroadcastChannel	int	void
+libSceUserService	sceUserServiceGetGlsBroadcastService	int	void
+libSceUserService	sceUserServiceGetGlsBroadcastUiLayout	int	void
+libSceUserService	sceUserServiceGetGlsBroadcastersComment	int	void
+libSceUserService	sceUserServiceGetGlsBroadcastersCommentColor	int	void
+libSceUserService	sceUserServiceGetGlsCamCrop	int	void
+libSceUserService	sceUserServiceGetGlsCameraBgFilter	int	void
+libSceUserService	sceUserServiceGetGlsCameraBrightness	int	void
+libSceUserService	sceUserServiceGetGlsCameraChromaKeyLevel	int	void
+libSceUserService	sceUserServiceGetGlsCameraContrast	int	void
+libSceUserService	sceUserServiceGetGlsCameraDepthLevel	int	void
+libSceUserService	sceUserServiceGetGlsCameraEdgeLevel	int	void
+libSceUserService	sceUserServiceGetGlsCameraEffect	int	void
+libSceUserService	sceUserServiceGetGlsCameraEliminationLevel	int	void
+libSceUserService	sceUserServiceGetGlsCameraPosition	int	void
+libSceUserService	sceUserServiceGetGlsCameraReflection	int	void
+libSceUserService	sceUserServiceGetGlsCameraSize	int	void
+libSceUserService	sceUserServiceGetGlsCameraTransparency	int	void
+libSceUserService	sceUserServiceGetGlsCommunityId	int	void
+libSceUserService	sceUserServiceGetGlsFloatingMessage	int	void
+libSceUserService	sceUserServiceGetGlsHintFlag	int	void
+libSceUserService	sceUserServiceGetGlsInitSpectating	int	void
+libSceUserService	sceUserServiceGetGlsIsCameraHidden	int	void
+libSceUserService	sceUserServiceGetGlsIsFacebookEnabled	int	void
+libSceUserService	sceUserServiceGetGlsIsMuteEnabled	int	void
+libSceUserService	sceUserServiceGetGlsIsRecDisabled	int	void
+libSceUserService	sceUserServiceGetGlsIsRecievedMessageHidden	int	void
+libSceUserService	sceUserServiceGetGlsIsTwitterEnabled	int	void
+libSceUserService	sceUserServiceGetGlsLanguageFilter	int	void
+libSceUserService	sceUserServiceGetGlsLfpsSortOrder	int	void
+libSceUserService	sceUserServiceGetGlsLiveQuality	int	void
+libSceUserService	sceUserServiceGetGlsLiveQuality2	int	void
+libSceUserService	sceUserServiceGetGlsLiveQuality3	int	void
+libSceUserService	sceUserServiceGetGlsLiveQuality4	int	void
+libSceUserService	sceUserServiceGetGlsLiveQuality5	int	void
+libSceUserService	sceUserServiceGetGlsMessageFilterLevel	int	void
+libSceUserService	sceUserServiceGetGlsOverlayPosition	int	void
+libSceUserService	sceUserServiceGetGlsStreamingMode	int	void
+libSceUserService	sceUserServiceGetGlsTtsFlags	int	void
+libSceUserService	sceUserServiceGetGlsTtsPitch	int	void
+libSceUserService	sceUserServiceGetGlsTtsSpeed	int	void
+libSceUserService	sceUserServiceGetGlsTtsVolume	int	void
+libSceUserService	sceUserServiceGetHearingAssistAdjustmentLevelLeft	int	void
+libSceUserService	sceUserServiceGetHearingAssistAdjustmentLevelRight	int	void
+libSceUserService	sceUserServiceGetHearingAssistAudiogramData	int	void
+libSceUserService	sceUserServiceGetHearingAssistMakeVoicesClearer	int	void
+libSceUserService	sceUserServiceGetHearingAssistPresetType	int	void
+libSceUserService	sceUserServiceGetHearingAssistSeparateLR	int	void
+libSceUserService	sceUserServiceGetHearingAssistUseAudiogramData	int	void
+libSceUserService	sceUserServiceGetHearingAssistUsePreset	int	void
+libSceUserService	sceUserServiceGetHearingAssistWeakenAdjustment	int	void
+libSceUserService	sceUserServiceGetHintShowFlag	int	void
+libSceUserService	sceUserServiceGetHintShowFlag2	int	void
+libSceUserService	sceUserServiceGetHintShowFlag3	int	void
+libSceUserService	sceUserServiceGetHmd2Brightness	int	void
+libSceUserService	sceUserServiceGetHmd2CinematicAudioRotation	int	void
+libSceUserService	sceUserServiceGetHmd2GazeActivate	int	void
+libSceUserService	sceUserServiceGetHmd2GazeTarget	int	void
+libSceUserService	sceUserServiceGetHmd2HideCameraImage	int	void
+libSceUserService	sceUserServiceGetHmd2MuteAssign	int	void
+libSceUserService	sceUserServiceGetHmd2PlayAreaShape	int	void
+libSceUserService	sceUserServiceGetHmd2ScreenSize	int	void
+libSceUserService	sceUserServiceGetHmd2Vibration	int	void
+libSceUserService	sceUserServiceGetHmuBrightness	int	void
+libSceUserService	sceUserServiceGetHmuZoom	int	void
+libSceUserService	sceUserServiceGetHoldAudioOutDevice	int	void
+libSceUserService	sceUserServiceGetHomeDirectory	int	std::uint32_t user_id, char* path, std::size_t size
+libSceUserService	sceUserServiceGetHrtf	int	void
+libSceUserService	sceUserServiceGetIPDLeft	int	void
+libSceUserService	sceUserServiceGetIPDRight	int	void
+libSceUserService	sceUserServiceGetImeAutoCapitalEnabled	int	
+libSceUserService	sceUserServiceGetImeInitFlag	int	
+libSceUserService	sceUserServiceGetImeInputSettings	int	void
+libSceUserService	sceUserServiceGetImeInputType	int	void
+libSceUserService	sceUserServiceGetImeLastUnit	int	void
+libSceUserService	sceUserServiceGetImePointerMode	int	void
+libSceUserService	sceUserServiceGetImePredictiveTextEnabled	int	
+libSceUserService	sceUserServiceGetImeRunCount	int	
+libSceUserService	sceUserServiceGetInitialUser	int	int* user_id
+libSceUserService	sceUserServiceGetIsCronosEnabled	int	void
+libSceUserService	sceUserServiceGetIsFakePlus	int	void
+libSceUserService	sceUserServiceGetIsFakePremium	int	void
+libSceUserService	sceUserServiceGetIsHrtfEnabled	int	void
+libSceUserService	sceUserServiceGetIsPersonalizedHrtfEnabled	int	void
+libSceUserService	sceUserServiceGetIsQuickSignup	int	void
+libSceUserService	sceUserServiceGetIsRemotePlayAllowed	int	void
+libSceUserService	sceUserServiceGetIsSpartacusEnabled	int	std::int32_t, bool* enabled
+libSceUserService	sceUserServiceGetJapaneseInputType	int	int user_id, int32_t* type
+libSceUserService	sceUserServiceGetKeyRepeatSpeed	int	void
+libSceUserService	sceUserServiceGetKeyRepeatStartingTime	int	void
+libSceUserService	sceUserServiceGetKeyboardType	int	int user_id, int32_t* type
+libSceUserService	sceUserServiceGetKratosPrimaryUser	int	int*
+libSceUserService	sceUserServiceGetLastLoginOrder	int	void
+libSceUserService	sceUserServiceGetLightBarBaseBrightness	int	void
+libSceUserService	sceUserServiceGetLoginFlag	int	void
+libSceUserService	sceUserServiceGetLoginUserIdList	int	UserServiceLoginUserIdList* user_id_list
+libSceUserService	sceUserServiceGetMicLevel	int	void
+libSceUserService	sceUserServiceGetMonoOutput	int	void
+libSceUserService	sceUserServiceGetMouseHandType	int	void
+libSceUserService	sceUserServiceGetMousePointerSpeed	int	void
+libSceUserService	sceUserServiceGetNotificationBehavior	int	void
+libSceUserService	sceUserServiceGetNotificationSettings	int	void
+libSceUserService	sceUserServiceGetNotificationSettings2	int	void
+libSceUserService	sceUserServiceGetNotificationSettings_1	int	void
+libSceUserService	sceUserServiceGetNotificationSettings_2	int	void
+libSceUserService	sceUserServiceGetNotificationSettings_3	int	void
+libSceUserService	sceUserServiceGetNpAccountId	int	int user_id, uint64_t* account_id
+libSceUserService	sceUserServiceGetNpAccountUpgradeFlag	int	void
+libSceUserService	sceUserServiceGetNpAge	int	void
+libSceUserService	sceUserServiceGetNpAuthErrorFlag	int	void
+libSceUserService	sceUserServiceGetNpCountryCode	int	void
+libSceUserService	sceUserServiceGetNpDateOfBirth	int	void
+libSceUserService	sceUserServiceGetNpEnv	int	void
+libSceUserService	sceUserServiceGetNpLanguageCode	int	void
+libSceUserService	sceUserServiceGetNpLanguageCode2	int	void
+libSceUserService	sceUserServiceGetNpLoginId	int	void
+libSceUserService	sceUserServiceGetNpNpId	int	void
+libSceUserService	sceUserServiceGetNpOfflineAccountAdult	int	void
+libSceUserService	sceUserServiceGetNpOfflineAccountId	int	void
+libSceUserService	sceUserServiceGetNpOnlineId	int	void
+libSceUserService	sceUserServiceGetNpSubAccount	int	void
+libSceUserService	sceUserServiceGetPadProfileDataHuntList	int	void
+libSceUserService	sceUserServiceGetPadSpeakerVolume	int	void
+libSceUserService	sceUserServiceGetParentalBdAge	int	void
+libSceUserService	sceUserServiceGetParentalBrowser	int	void
+libSceUserService	sceUserServiceGetParentalContentControl	int	void
+libSceUserService	sceUserServiceGetParentalDvd	int	void
+libSceUserService	sceUserServiceGetParentalDvdRegion	int	void
+libSceUserService	sceUserServiceGetParentalGame	int	void
+libSceUserService	sceUserServiceGetParentalGameAgeLevel	int	void
+libSceUserService	sceUserServiceGetParentalGameWhiteList	int	void
+libSceUserService	sceUserServiceGetParentalMorpheus	int	void
+libSceUserService	sceUserServiceGetPartyChatTranscriptionFlag	int	void
+libSceUserService	sceUserServiceGetPartyChatTranscriptionLanguageType	int	void
+libSceUserService	sceUserServiceGetPartyMuteList	int	void
+libSceUserService	sceUserServiceGetPartyMuteListA	int	void
+libSceUserService	sceUserServiceGetPartySettingFlags	int	void
+libSceUserService	sceUserServiceGetPasscode	int	void
+libSceUserService	sceUserServiceGetPbtcAdditionalTime	int	void
+libSceUserService	sceUserServiceGetPbtcFlag	int	void
+libSceUserService	sceUserServiceGetPbtcFridayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcFridayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcFridayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcMode	int	void
+libSceUserService	sceUserServiceGetPbtcMondayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcMondayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcMondayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcPlayTime	int	void
+libSceUserService	sceUserServiceGetPbtcPlayTimeLastUpdated	int	void
+libSceUserService	sceUserServiceGetPbtcSaturdayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcSaturdayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcSaturdayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcSundayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcSundayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcSundayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcThursdayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcThursdayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcThursdayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcTuesdayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcTuesdayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcTuesdayHoursStart	int	void
+libSceUserService	sceUserServiceGetPbtcTzOffset	int	void
+libSceUserService	sceUserServiceGetPbtcWednesdayDuration	int	void
+libSceUserService	sceUserServiceGetPbtcWednesdayHoursEnd	int	void
+libSceUserService	sceUserServiceGetPbtcWednesdayHoursStart	int	void
+libSceUserService	sceUserServiceGetPlatformPrivacyWs1	int	int32_t user_id, int32_t* value
+libSceUserService	sceUserServiceGetPlatformPrivacyWs1Internal	int	void
+libSceUserService	sceUserServiceGetPlayTogetherFlags	int	void
+libSceUserService	sceUserServiceGetPlayingBigAppTitleId	int	void
+libSceUserService	sceUserServiceGetProControllerAlreadyNoticed	int	void
+libSceUserService	sceUserServiceGetProControllerBtAddress	int	void
+libSceUserService	sceUserServiceGetProControllerUniqueId1	int	void
+libSceUserService	sceUserServiceGetProControllerUniqueId2	int	void
+libSceUserService	sceUserServiceGetProControllerUniqueId3	int	void
+libSceUserService	sceUserServiceGetPsCloudFeedbackTime	int	void
+libSceUserService	sceUserServiceGetPsnPasswordForDebug	int	void
+libSceUserService	sceUserServiceGetRegisteredHomeUserIdList	int	std::int32_t* userIds, std::int32_t* count
+libSceUserService	sceUserServiceGetRegisteredUserIdList	int	UserServiceRegisteredUserIdList* user_id_list
+libSceUserService	sceUserServiceGetSaveDataAutoSync	int	void
+libSceUserService	sceUserServiceGetSaveDataAutoUpload	int	void
+libSceUserService	sceUserServiceGetSaveDataSort	int	void
+libSceUserService	sceUserServiceGetSaveDataTutorialFlag	int	void
+libSceUserService	sceUserServiceGetSecureHomeDirectory	int	std::uint32_t user_id, char* path, std::size_t size
+libSceUserService	sceUserServiceGetShareButtonAssign	int	
+libSceUserService	sceUserServiceGetShareDailymotionAccessToken	int	
+libSceUserService	sceUserServiceGetShareDailymotionRefreshToken	int	
+libSceUserService	sceUserServiceGetSharePlayFlags	int	void
+libSceUserService	sceUserServiceGetSharePlayFramerateHost	int	void
+libSceUserService	sceUserServiceGetSharePlayResolutionHost	int	void
+libSceUserService	sceUserServiceGetShareStatus	int	void
+libSceUserService	sceUserServiceGetShareStatus2	int	void
+libSceUserService	sceUserServiceGetShareStatus3	int	void
+libSceUserService	sceUserServiceGetSparkEqIndex	int	void
+libSceUserService	sceUserServiceGetSparkEqParam	int	void
+libSceUserService	sceUserServiceGetSparkEqProfile	int	void
+libSceUserService	sceUserServiceGetSystemLoggerHashedAccountId	int	void
+libSceUserService	sceUserServiceGetSystemLoggerHashedAccountIdClockType	int	void
+libSceUserService	sceUserServiceGetSystemLoggerHashedAccountIdParam	int	void
+libSceUserService	sceUserServiceGetSystemLoggerHashedAccountIdTtl	int	void
+libSceUserService	sceUserServiceGetTeamShowAboutTeam	int	void
+libSceUserService	sceUserServiceGetThemeBgImageDimmer	int	
+libSceUserService	sceUserServiceGetThemeBgImageWaveColor	int	
+libSceUserService	sceUserServiceGetThemeBgImageZoom	int	
+libSceUserService	sceUserServiceGetThemeEntitlementId	int	
+libSceUserService	sceUserServiceGetThemeHomeShareOwner	int	
+libSceUserService	sceUserServiceGetThemeTextShadow	int	
+libSceUserService	sceUserServiceGetThemeWaveColor	int	
+libSceUserService	sceUserServiceGetTopMenuLimitItem	int	void
+libSceUserService	sceUserServiceGetTopMenuNotificationFlag	int	void
+libSceUserService	sceUserServiceGetTopMenuTutorialFlag	int	void
+libSceUserService	sceUserServiceGetTraditionalChineseInputType	int	int user_id, int32_t* type
+libSceUserService	sceUserServiceGetTriggerEffectEnabled	int	void
+libSceUserService	sceUserServiceGetTriggerEffectStrength	int	void
+libSceUserService	sceUserServiceGetUserColor	int	int user_id, int* color
+libSceUserService	sceUserServiceGetUserGroupName	int	int groupIndex, char* name, std::size_t size
+libSceUserService	sceUserServiceGetUserGroupNameList	int	int groupIndex, char* nameList, std::size_t size, std::int32_t* count
+libSceUserService	sceUserServiceGetUserGroupNum	int	std::int32_t* count
+libSceUserService	sceUserServiceGetUserName	int	int user_id, char* name, size_t size
+libSceUserService	sceUserServiceGetUserNumber	int	int user_id, int32_t* number
+libSceUserService	sceUserServiceGetUserStatus	int	void
+libSceUserService	sceUserServiceGetUserWithHearingAssist	int	std::int32_t* userId
+libSceUserService	sceUserServiceGetVibrationEnabled	int	void
+libSceUserService	sceUserServiceGetVibrationStrength	int	void
+libSceUserService	sceUserServiceGetVoiceAgentEnable	int	void
+libSceUserService	sceUserServiceGetVoiceAgentEnableByButton	int	void
+libSceUserService	sceUserServiceGetVoiceAgentEnableFeedback	int	void
+libSceUserService	sceUserServiceGetVoiceAgentEnableWup	int	void
+libSceUserService	sceUserServiceGetVoiceAgentLanguage	int	void
+libSceUserService	sceUserServiceGetVoiceAgentSessionTimeout	int	void
+libSceUserService	sceUserServiceGetVoiceAgentStatusBit	int	void
+libSceUserService	sceUserServiceGetVoiceAgentStatusBitFactory	int	void
+libSceUserService	sceUserServiceGetVoiceAgentTtsSpeed	int	void
+libSceUserService	sceUserServiceGetVoiceAgentTtsVolume	int	void
+libSceUserService	sceUserServiceGetVoiceRecognitionLastUsedOsk	int	void
+libSceUserService	sceUserServiceGetVoiceRecognitionTutorialState	int	void
+libSceUserService	sceUserServiceGetVolumeForController	int	void
+libSceUserService	sceUserServiceGetVolumeForGenericUSB	int	void
+libSceUserService	sceUserServiceGetVolumeForMorpheusSidetone	int	void
+libSceUserService	sceUserServiceGetVolumeForSidetone	int	void
+libSceUserService	sceUserServiceInitialize	int	const UserServiceInitParam* params
+libSceUserService	sceUserServiceInitialize2	int	std::int32_t priority, KernelCpumask affinityMask
+libSceUserService	sceUserServiceInitializeForShellCore	int	void*
+libSceUserService	sceUserServiceIsGuestUser	int	std::int32_t userId
+libSceUserService	sceUserServiceIsKratosPrimaryUser	bool	int
+libSceUserService	sceUserServiceIsKratosUser	int	void
+libSceUserService	sceUserServiceIsLoggedIn	int	int userId
+libSceUserService	sceUserServiceIsLoggedInWithoutLock	int	int userId
+libSceUserService	sceUserServiceIsSharePlayClientUser	int	std::int32_t userId
+libSceUserService	sceUserServiceIsUserStorageAccountBound	int	void
+libSceUserService	sceUserServiceLogin	int	void
+libSceUserService	sceUserServiceLogout	int	void
+libSceUserService	sceUserServiceRegisterEventCallback	int	UserServiceEventCallback callback, void* userData
+libSceUserService	sceUserServiceSetA11yControllerADeviceUniqueIds	int	void
+libSceUserService	sceUserServiceSetA11yControllerAName	int	void
+libSceUserService	sceUserServiceSetA11yControllerBDeviceUniqueIds	int	void
+libSceUserService	sceUserServiceSetA11yControllerBName	int	void
+libSceUserService	sceUserServiceSetAccessibilityKeyremapData	int	void
+libSceUserService	sceUserServiceSetAccessibilityKeyremapDataAston	int	void
+libSceUserService	sceUserServiceSetAccessibilityKeyremapEnable	int	void
+libSceUserService	sceUserServiceSetAccessibilityKeyremapEnableAston	int	
+libSceUserService	sceUserServiceSetAccessibilityZoom	int	void
+libSceUserService	sceUserServiceSetAccountRemarks	int	void
+libSceUserService	sceUserServiceSetAgeVerified	int	void
+libSceUserService	sceUserServiceSetAppSortOrder	int	void
+libSceUserService	sceUserServiceSetAppearOfflineSetting	int	void
+libSceUserService	sceUserServiceSetAutoLoginEnabled	int	void
+libSceUserService	sceUserServiceSetCaptureStatus	int	void
+libSceUserService	sceUserServiceSetCaptureStatus2	int	void
+libSceUserService	sceUserServiceSetCaptureStatus3	int	void
+libSceUserService	sceUserServiceSetChatStatus	int	void
+libSceUserService	sceUserServiceSetControlCenterFunctionControlSettings	int	void
+libSceUserService	sceUserServiceSetControlCenterStatus	int	void
+libSceUserService	sceUserServiceSetCreatedVersion	int	void
+libSceUserService	sceUserServiceSetDiscPlayerFlag	int	void
+libSceUserService	sceUserServiceSetEventCalendarType	int	void
+libSceUserService	sceUserServiceSetEventFilterTeamEvent	int	void
+libSceUserService	sceUserServiceSetEventSortEvent	int	void
+libSceUserService	sceUserServiceSetEventSortTitle	int	void
+libSceUserService	sceUserServiceSetEventUiFlag	int	void
+libSceUserService	sceUserServiceSetFaceRecognitionDeleteCount	int	void
+libSceUserService	sceUserServiceSetFaceRecognitionRegisterCount	int	void
+libSceUserService	sceUserServiceSetFileBrowserFilter	int	
+libSceUserService	sceUserServiceSetFileBrowserSortContent	int	
+libSceUserService	sceUserServiceSetFileBrowserSortTitle	int	
+libSceUserService	sceUserServiceSetFileSelectorFilter	int	
+libSceUserService	sceUserServiceSetFileSelectorSortContent	int	
+libSceUserService	sceUserServiceSetFileSelectorSortTitle	int	
+libSceUserService	sceUserServiceSetForegroundUser	int	int userId
+libSceUserService	sceUserServiceSetFriendCustomListLastFocus	int	void
+libSceUserService	sceUserServiceSetFriendFlag	int	void
+libSceUserService	sceUserServiceSetGamePresets	int	void
+libSceUserService	sceUserServiceSetGazeActivate	int	void
+libSceUserService	sceUserServiceSetGazeCalibData	int	void
+libSceUserService	sceUserServiceSetGlsAccessTokenNiconicoLive	int	void
+libSceUserService	sceUserServiceSetGlsAccessTokenTwitch	int	void
+libSceUserService	sceUserServiceSetGlsAccessTokenUstream	int	void
+libSceUserService	sceUserServiceSetGlsAnonymousUserId	int	void
+libSceUserService	sceUserServiceSetGlsBcTags	int	void
+libSceUserService	sceUserServiceSetGlsBcTitle	int	void
+libSceUserService	sceUserServiceSetGlsBroadcastChannel	int	void
+libSceUserService	sceUserServiceSetGlsBroadcastService	int	void
+libSceUserService	sceUserServiceSetGlsBroadcastUiLayout	int	void
+libSceUserService	sceUserServiceSetGlsBroadcastersComment	int	void
+libSceUserService	sceUserServiceSetGlsBroadcastersCommentColor	int	void
+libSceUserService	sceUserServiceSetGlsCamCrop	int	void
+libSceUserService	sceUserServiceSetGlsCameraBgFilter	int	void
+libSceUserService	sceUserServiceSetGlsCameraBrightness	int	void
+libSceUserService	sceUserServiceSetGlsCameraChromaKeyLevel	int	void
+libSceUserService	sceUserServiceSetGlsCameraContrast	int	void
+libSceUserService	sceUserServiceSetGlsCameraDepthLevel	int	void
+libSceUserService	sceUserServiceSetGlsCameraEdgeLevel	int	void
+libSceUserService	sceUserServiceSetGlsCameraEffect	int	void
+libSceUserService	sceUserServiceSetGlsCameraEliminationLevel	int	void
+libSceUserService	sceUserServiceSetGlsCameraPosition	int	void
+libSceUserService	sceUserServiceSetGlsCameraReflection	int	void
+libSceUserService	sceUserServiceSetGlsCameraSize	int	void
+libSceUserService	sceUserServiceSetGlsCameraTransparency	int	void
+libSceUserService	sceUserServiceSetGlsCommunityId	int	void
+libSceUserService	sceUserServiceSetGlsFloatingMessage	int	void
+libSceUserService	sceUserServiceSetGlsHintFlag	int	void
+libSceUserService	sceUserServiceSetGlsInitSpectating	int	void
+libSceUserService	sceUserServiceSetGlsIsCameraHidden	int	void
+libSceUserService	sceUserServiceSetGlsIsFacebookEnabled	int	void
+libSceUserService	sceUserServiceSetGlsIsMuteEnabled	int	void
+libSceUserService	sceUserServiceSetGlsIsRecDisabled	int	void
+libSceUserService	sceUserServiceSetGlsIsRecievedMessageHidden	int	void
+libSceUserService	sceUserServiceSetGlsIsTwitterEnabled	int	void
+libSceUserService	sceUserServiceSetGlsLanguageFilter	int	void
+libSceUserService	sceUserServiceSetGlsLfpsSortOrder	int	void
+libSceUserService	sceUserServiceSetGlsLiveQuality	int	void
+libSceUserService	sceUserServiceSetGlsLiveQuality2	int	void
+libSceUserService	sceUserServiceSetGlsLiveQuality3	int	void
+libSceUserService	sceUserServiceSetGlsLiveQuality4	int	void
+libSceUserService	sceUserServiceSetGlsLiveQuality5	int	void
+libSceUserService	sceUserServiceSetGlsMessageFilterLevel	int	void
+libSceUserService	sceUserServiceSetGlsOverlayPosition	int	void
+libSceUserService	sceUserServiceSetGlsStreamingMode	int	void
+libSceUserService	sceUserServiceSetGlsTtsFlags	int	void
+libSceUserService	sceUserServiceSetGlsTtsPitch	int	void
+libSceUserService	sceUserServiceSetGlsTtsSpeed	int	void
+libSceUserService	sceUserServiceSetGlsTtsVolume	int	void
+libSceUserService	sceUserServiceSetHearingAssistAdjustmentLevelLeft	int	void
+libSceUserService	sceUserServiceSetHearingAssistAdjustmentLevelRight	int	void
+libSceUserService	sceUserServiceSetHearingAssistAudiogramData	int	void
+libSceUserService	sceUserServiceSetHearingAssistMakeVoicesClearer	int	void
+libSceUserService	sceUserServiceSetHearingAssistPresetType	int	void
+libSceUserService	sceUserServiceSetHearingAssistSeparateLR	int	void
+libSceUserService	sceUserServiceSetHearingAssistUseAudiogramData	int	void
+libSceUserService	sceUserServiceSetHearingAssistUsePreset	int	void
+libSceUserService	sceUserServiceSetHearingAssistWeakenAdjustment	int	void
+libSceUserService	sceUserServiceSetHintShowFlag	int	void
+libSceUserService	sceUserServiceSetHintShowFlag2	int	void
+libSceUserService	sceUserServiceSetHintShowFlag3	int	void
+libSceUserService	sceUserServiceSetHmd2Brightness	int	void
+libSceUserService	sceUserServiceSetHmd2CinematicAudioRotation	int	
+libSceUserService	sceUserServiceSetHmd2GazeActivate	int	void
+libSceUserService	sceUserServiceSetHmd2GazeTarget	int	void
+libSceUserService	sceUserServiceSetHmd2MuteAssign	int	void
+libSceUserService	sceUserServiceSetHmd2PlayAreaShape	int	void
+libSceUserService	sceUserServiceSetHmd2ScreenSize	int	void
+libSceUserService	sceUserServiceSetHmd2Vibration	int	void
+libSceUserService	sceUserServiceSetHmuBrightness	int	void
+libSceUserService	sceUserServiceSetHmuZoom	int	void
+libSceUserService	sceUserServiceSetHoldAudioOutDevice	int	void
+libSceUserService	sceUserServiceSetHrtf	int	void
+libSceUserService	sceUserServiceSetIPDLeft	int	void
+libSceUserService	sceUserServiceSetIPDRight	int	void
+libSceUserService	sceUserServiceSetImeAutoCapitalEnabled	int	
+libSceUserService	sceUserServiceSetImeInitFlag	int	
+libSceUserService	sceUserServiceSetImeInputSettings	int	void
+libSceUserService	sceUserServiceSetImeInputType	int	void
+libSceUserService	sceUserServiceSetImeLastUnit	int	void
+libSceUserService	sceUserServiceSetImePointerMode	int	void
+libSceUserService	sceUserServiceSetImePredictiveTextEnabled	int	
+libSceUserService	sceUserServiceSetImeRunCount	int	
+libSceUserService	sceUserServiceSetIsFakePlus	int	void
+libSceUserService	sceUserServiceSetIsFakePremium	int	void
+libSceUserService	sceUserServiceSetIsHrtfEnabled	int	void
+libSceUserService	sceUserServiceSetIsPersonalizedHrtfEnabled	int	
+libSceUserService	sceUserServiceSetIsQuickSignup	int	void
+libSceUserService	sceUserServiceSetIsRemotePlayAllowed	int	void
+libSceUserService	sceUserServiceSetJapaneseInputType	int	void
+libSceUserService	sceUserServiceSetKeyRepeatSpeed	int	void
+libSceUserService	sceUserServiceSetKeyRepeatStartingTime	int	void
+libSceUserService	sceUserServiceSetKeyboardType	int	void
+libSceUserService	sceUserServiceSetLightBarBaseBrightness	int	void
+libSceUserService	sceUserServiceSetLoginFlag	int	void
+libSceUserService	sceUserServiceSetMicLevel	int	void
+libSceUserService	sceUserServiceSetMonoOutput	int	void
+libSceUserService	sceUserServiceSetMouseHandType	int	void
+libSceUserService	sceUserServiceSetMousePointerSpeed	int	void
+libSceUserService	sceUserServiceSetNotificationBehavior	int	void
+libSceUserService	sceUserServiceSetNotificationSettings	int	void
+libSceUserService	sceUserServiceSetNotificationSettings2	int	void
+libSceUserService	sceUserServiceSetNotificationSettings_1	int	void
+libSceUserService	sceUserServiceSetNotificationSettings_2	int	void
+libSceUserService	sceUserServiceSetNotificationSettings_3	int	void
+libSceUserService	sceUserServiceSetNpAccountUpgradeFlag	int	void
+libSceUserService	sceUserServiceSetNpAge	int	void
+libSceUserService	sceUserServiceSetNpAuthErrorFlag	int	void
+libSceUserService	sceUserServiceSetNpCountryCode	int	void
+libSceUserService	sceUserServiceSetNpDateOfBirth	int	void
+libSceUserService	sceUserServiceSetNpEnv	int	void
+libSceUserService	sceUserServiceSetNpLanguageCode	int	void
+libSceUserService	sceUserServiceSetNpLanguageCode2	int	void
+libSceUserService	sceUserServiceSetNpLoginId	int	void
+libSceUserService	sceUserServiceSetNpNpId	int	void
+libSceUserService	sceUserServiceSetNpOfflineAccountAdult	int	void
+libSceUserService	sceUserServiceSetNpOnlineId	int	void
+libSceUserService	sceUserServiceSetNpSubAccount	int	void
+libSceUserService	sceUserServiceSetPadProfileDataHuntList	int	void
+libSceUserService	sceUserServiceSetPadSpeakerVolume	int	void
+libSceUserService	sceUserServiceSetParentalBdAge	int	void
+libSceUserService	sceUserServiceSetParentalBrowser	int	void
+libSceUserService	sceUserServiceSetParentalContentControl	int	void
+libSceUserService	sceUserServiceSetParentalDvd	int	void
+libSceUserService	sceUserServiceSetParentalDvdRegion	int	void
+libSceUserService	sceUserServiceSetParentalGame	int	void
+libSceUserService	sceUserServiceSetParentalGameAgeLevel	int	void
+libSceUserService	sceUserServiceSetParentalGameWhiteList	int	void
+libSceUserService	sceUserServiceSetParentalMorpheus	int	void
+libSceUserService	sceUserServiceSetPartyChatTranscriptionFlag	int	void
+libSceUserService	sceUserServiceSetPartyChatTranscriptionLanguageType	int	void
+libSceUserService	sceUserServiceSetPartyChatTranscriptionVoiceType	int	void
+libSceUserService	sceUserServiceSetPartyMuteList	int	void
+libSceUserService	sceUserServiceSetPartyMuteListA	int	void
+libSceUserService	sceUserServiceSetPartySettingFlags	int	void
+libSceUserService	sceUserServiceSetPasscode	int	void
+libSceUserService	sceUserServiceSetPbtcAdditionalTime	int	void
+libSceUserService	sceUserServiceSetPbtcFlag	int	void
+libSceUserService	sceUserServiceSetPbtcFridayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcFridayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcFridayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcMode	int	void
+libSceUserService	sceUserServiceSetPbtcMondayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcMondayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcMondayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcPlayTime	int	void
+libSceUserService	sceUserServiceSetPbtcPlayTimeLastUpdated	int	void
+libSceUserService	sceUserServiceSetPbtcSaturdayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcSaturdayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcSaturdayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcSundayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcSundayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcSundayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcThursdayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcThursdayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcThursdayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcTuesdayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcTuesdayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcTuesdayHoursStart	int	void
+libSceUserService	sceUserServiceSetPbtcTzOffset	int	void
+libSceUserService	sceUserServiceSetPbtcWednesdayDuration	int	void
+libSceUserService	sceUserServiceSetPbtcWednesdayHoursEnd	int	void
+libSceUserService	sceUserServiceSetPbtcWednesdayHoursStart	int	void
+libSceUserService	sceUserServiceSetPlatformPrivacyWs1	int	void
+libSceUserService	sceUserServiceSetPlayTogetherFlags	int	void
+libSceUserService	sceUserServiceSetProControllerAlreadyNoticed	int	void
+libSceUserService	sceUserServiceSetProControllerUniqueId1	int	void
+libSceUserService	sceUserServiceSetProControllerUniqueId2	int	void
+libSceUserService	sceUserServiceSetProControllerUniqueId3	int	void
+libSceUserService	sceUserServiceSetPsCloudFeedbackTime	int	void
+libSceUserService	sceUserServiceSetPsnPasswordForDebug	int	void
+libSceUserService	sceUserServiceSetSaveDataAutoSync	int	void
+libSceUserService	sceUserServiceSetSaveDataAutoUpload	int	void
+libSceUserService	sceUserServiceSetSaveDataSort	int	void
+libSceUserService	sceUserServiceSetSaveDataTutorialFlag	int	void
+libSceUserService	sceUserServiceSetShareButtonAssign	int	
+libSceUserService	sceUserServiceSetShareDailymotionAccessToken	int	
+libSceUserService	sceUserServiceSetShareDailymotionRefreshToken	int	
+libSceUserService	sceUserServiceSetSharePlayFlags	int	void
+libSceUserService	sceUserServiceSetSharePlayFramerateHost	int	void
+libSceUserService	sceUserServiceSetSharePlayResolutionHost	int	void
+libSceUserService	sceUserServiceSetShareStatus	int	void
+libSceUserService	sceUserServiceSetShareStatus2	int	void
+libSceUserService	sceUserServiceSetShareStatus3	int	void
+libSceUserService	sceUserServiceSetSparkEqIndex	int	void
+libSceUserService	sceUserServiceSetSparkEqProfile	int	void
+libSceUserService	sceUserServiceSetSystemLoggerHashedAccountId	int	void
+libSceUserService	sceUserServiceSetSystemLoggerHashedAccountIdClockType	int	void
+libSceUserService	sceUserServiceSetSystemLoggerHashedAccountIdParam	int	void
+libSceUserService	sceUserServiceSetSystemLoggerHashedAccountIdTtl	int	void
+libSceUserService	sceUserServiceSetTeamShowAboutTeam	int	void
+libSceUserService	sceUserServiceSetThemeBgImageDimmer	int	
+libSceUserService	sceUserServiceSetThemeBgImageWaveColor	int	
+libSceUserService	sceUserServiceSetThemeBgImageZoom	int	
+libSceUserService	sceUserServiceSetThemeEntitlementId	int	
+libSceUserService	sceUserServiceSetThemeHomeShareOwner	int	
+libSceUserService	sceUserServiceSetThemeTextShadow	int	
+libSceUserService	sceUserServiceSetThemeWaveColor	int	
+libSceUserService	sceUserServiceSetTopMenuLimitItem	int	void
+libSceUserService	sceUserServiceSetTopMenuNotificationFlag	int	void
+libSceUserService	sceUserServiceSetTopMenuTutorialFlag	int	void
+libSceUserService	sceUserServiceSetTraditionalChineseInputType	int	void
+libSceUserService	sceUserServiceSetTriggerEffectEnabled	int	void
+libSceUserService	sceUserServiceSetTriggerEffectStrength	int	void
+libSceUserService	sceUserServiceSetUserGroupIndex	int	int index
+libSceUserService	sceUserServiceSetUserGroupName	int	int groupIndex, const char* name
+libSceUserService	sceUserServiceSetUserName	int	void
+libSceUserService	sceUserServiceSetUserStatus	int	void
+libSceUserService	sceUserServiceSetUserWithHearingAssist	int	
+libSceUserService	sceUserServiceSetVibrationEnabled	int	void
+libSceUserService	sceUserServiceSetVibrationStrength	int	void
+libSceUserService	sceUserServiceSetVoiceAgentEnable	int	void
+libSceUserService	sceUserServiceSetVoiceAgentEnableByButton	int	
+libSceUserService	sceUserServiceSetVoiceAgentEnableFeedback	int	void
+libSceUserService	sceUserServiceSetVoiceAgentEnableWup	int	void
+libSceUserService	sceUserServiceSetVoiceAgentLanguage	int	void
+libSceUserService	sceUserServiceSetVoiceAgentSessionTimeout	int	void
+libSceUserService	sceUserServiceSetVoiceAgentStatusBit	int	void
+libSceUserService	sceUserServiceSetVoiceAgentStatusBitFactory	int	void
+libSceUserService	sceUserServiceSetVoiceAgentTtsSpeed	int	void
+libSceUserService	sceUserServiceSetVoiceAgentTtsVolume	int	void
+libSceUserService	sceUserServiceSetVoiceRecognitionLastUsedOsk	int	void
+libSceUserService	sceUserServiceSetVoiceRecognitionTutorialState	int	void
+libSceUserService	sceUserServiceSetVolumeForController	int	void
+libSceUserService	sceUserServiceSetVolumeForGenericUSB	int	void
+libSceUserService	sceUserServiceSetVolumeForMorpheusSidetone	int	void
+libSceUserService	sceUserServiceSetVolumeForSidetone	int	void
+libSceUserService	sceUserServiceTerminate	int	void
+libSceUserService	sceUserServiceTerminateForShellCore	int	void
+libSceUserService	sceUserServiceUnregisterEventCallback	int	UserServiceEventCallback callback, void* userData
+libSceUserService	sceUserServiceUpdateCronosCountryList	int	void
+libSceVideoOut	sceDbgVideoOutAddOutputModeVr60Privilege	int	
+libSceVideoOut	sceVideoOutAddBuffer	int	
+libSceVideoOut	sceVideoOutAddBuffer4k2kPrivilege	int	
+libSceVideoOut	sceVideoOutAddBufferAnisoPrivilege	int	
+libSceVideoOut	sceVideoOutAddBufferAttributeOption	void	VideoOutBufferAttribute2* attribute, uint64_t option
+libSceVideoOut	sceVideoOutAddBufferHdrPrivilege	int	
+libSceVideoOut	sceVideoOutAddBufferYccPrivilege	int	
+libSceVideoOut	sceVideoOutAddDisplayPositionEvent	int	
+libSceVideoOut	sceVideoOutAddDriver	int	
+libSceVideoOut	sceVideoOutAddFlipEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddOutputModeEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddPreVblankStartEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddS3dHmdPrivilege	int	
+libSceVideoOut	sceVideoOutAddSetModeEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddStereoBuffer	int	
+libSceVideoOut	sceVideoOutAddVblankEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddVrrActiveStatusEvent	int	KernelEqueue eq, int handle, void* udata
+libSceVideoOut	sceVideoOutAddVrrStatusFlagsPrivilege	int	
+libSceVideoOut	sceVideoOutAdjustColor	int	int handle, const VideoOutColorSettings* settings
+libSceVideoOut	sceVideoOutAdjustColor2_	int	
+libSceVideoOut	sceVideoOutAdjustColorSpaceConversion	int	int handle, const VideoOutColorSpaceConversionSettings* settings
+libSceVideoOut	sceVideoOutAdjustColorSpaceConversion_	int	int handle, const VideoOutColorSpaceConversionSettings* settings, uint32_t settingsSize
+libSceVideoOut	sceVideoOutAdjustColor_	int	int handle, const VideoOutColorSettings* settings, uint32_t settingsSize
+libSceVideoOut	sceVideoOutAllowOutputResolutionWqhdDetection	int	int handle
+libSceVideoOut	sceVideoOutClearFlipMaster	int	std::int32_t handle
+libSceVideoOut	sceVideoOutClearVrrMaster	int	
+libSceVideoOut	sceVideoOutClose	int	int handle
+libSceVideoOut	sceVideoOutColorSettingsSetGamma	int	VideoOutColorSettings* settings, float gamma
+libSceVideoOut	sceVideoOutColorSettingsSetGamma_	int	VideoOutColorSettings* settings, float gamma, uint32_t settingsSize
+libSceVideoOut	sceVideoOutColorSpaceConversionSettingsSetDefaultSdrToHdrConversion	int	VideoOutColorSpaceConversionSettings* settings
+libSceVideoOut	sceVideoOutColorSpaceConversionSettingsSetDefaultSdrToHdrConversion_	int	VideoOutColorSpaceConversionSettings* settings, uint32_t settingsSize
+libSceVideoOut	sceVideoOutColorSpaceConversionSettingsSetSdrToHdrConversion	int	VideoOutColorSpaceConversionSettings* settings, float lumaScale, uint32_t option
+libSceVideoOut	sceVideoOutColorSpaceConversionSettingsSetSdrToHdrConversion_	int	VideoOutColorSpaceConversionSettings* settings, float lumaScale, uint32_t option, uint32_t settingsSize
+libSceVideoOut	sceVideoOutConfigureLayout	int	
+libSceVideoOut	sceVideoOutConfigureOptionsInitialize_	int	
+libSceVideoOut	sceVideoOutConfigureOutput	int	int handle, uint64_t mode, const VideoOutOutputOptions* options, void* reservedPtr, uint64_t reserved
+libSceVideoOut	sceVideoOutConfigureOutputEx	int	
+libSceVideoOut	sceVideoOutConfigureOutputModeExSubmitDoneUnsafe_	int	
+libSceVideoOut	sceVideoOutConfigureOutputModeEx_	int	
+libSceVideoOut	sceVideoOutConfigureOutputMode_	int	int handle, std::uint32_t reserved, const void* mode, std::uint64_t forwarded, std::uint64_t unused, std::uint32_t size
+libSceVideoOut	sceVideoOutControlHdcpEncryption	int	
+libSceVideoOut	sceVideoOutCursorDisable	int	int32_t, int32_t
+libSceVideoOut	sceVideoOutCursorEnable	int	int32_t, int32_t, const void*
+libSceVideoOut	sceVideoOutCursorIsUpdatePending	int	
+libSceVideoOut	sceVideoOutCursorSet2xMagnify	int	int32_t, int32_t, bool
+libSceVideoOut	sceVideoOutCursorSetHotSpot	int	
+libSceVideoOut	sceVideoOutCursorSetImageAddress	int	int32_t, int32_t, const void*
+libSceVideoOut	sceVideoOutCursorSetPosition	int	int32_t, int32_t, uint32_t, uint32_t
+libSceVideoOut	sceVideoOutCursorSetPositionStereo	int	
+libSceVideoOut	sceVideoOutCurveSamplePointsCalc_	int	
+libSceVideoOut	sceVideoOutDebugAddVrrPrivilege	int	
+libSceVideoOut	sceVideoOutDebugBlankPipe	int	
+libSceVideoOut	sceVideoOutDebugLatencyMeasureGetLatestLatency	int	
+libSceVideoOut	sceVideoOutDebugReadCrc	int	
+libSceVideoOut	sceVideoOutDebugSetDrr	int	
+libSceVideoOut	sceVideoOutDebugSetGlobalAlpha	int	
+libSceVideoOut	sceVideoOutDebugTriggerRefresh	int	
+libSceVideoOut	sceVideoOutDeleteDisplayPositionEvent	int	
+libSceVideoOut	sceVideoOutDeleteDriver	int	
+libSceVideoOut	sceVideoOutDeleteFlipEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDeleteOutputModeEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDeletePreVblankStartEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDeleteSetModeEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDeleteVblankEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDeleteVrrActiveStatusEvent	int	KernelEqueue eq, int handle
+libSceVideoOut	sceVideoOutDriverAddEvent	int	
+libSceVideoOut	sceVideoOutDriverDecrementBufferLabel	int	
+libSceVideoOut	sceVideoOutDriverDeleteEvent	int	
+libSceVideoOut	sceVideoOutDriverGetBufferLabelAddress	int	
+libSceVideoOut	sceVideoOutDriverGetEopHandle	int	
+libSceVideoOut	sceVideoOutDriverGetFinishedEopHandle	int	
+libSceVideoOut	sceVideoOutDriverGetLatestEopHandle	int	
+libSceVideoOut	sceVideoOutDriverIncrementBufferLabel	int	
+libSceVideoOut	sceVideoOutDriverResetBufferLabel	int	
+libSceVideoOut	sceVideoOutDriverTriggerEvent	int	
+libSceVideoOut	sceVideoOutGetBufferInformation	int	
+libSceVideoOut	sceVideoOutGetBufferLabelAddress	int	int handle, uintptr_t* address
+libSceVideoOut	sceVideoOutGetCoredumpOutputMode	int	
+libSceVideoOut	sceVideoOutGetCurrentOutputMode_	int	std::uint64_t bus, void* mode
+libSceVideoOut	sceVideoOutGetDeviceCapabilityInfo_	int	int handle, void* info, std::uint64_t size
+libSceVideoOut	sceVideoOutGetDeviceInfoExOts_	int	
+libSceVideoOut	sceVideoOutGetDeviceInfoEx_	int	int handle, const void* reserved, void* info, std::uint32_t size
+libSceVideoOut	sceVideoOutGetEventCount	int	const KernelEvent* ev
+libSceVideoOut	sceVideoOutGetEventData	int	const KernelEvent* ev, int64_t* data
+libSceVideoOut	sceVideoOutGetEventId	int	const KernelEvent* ev
+libSceVideoOut	sceVideoOutGetFlipStatus	int	int handle, VideoOutFlipStatus* status
+libSceVideoOut	sceVideoOutGetFlipStatusNative	int	
+libSceVideoOut	sceVideoOutGetHandleByBus	int	
+libSceVideoOut	sceVideoOutGetHdmiKsvList_	int	
+libSceVideoOut	sceVideoOutGetHdmiMonitorInfoNoMask_	int	
+libSceVideoOut	sceVideoOutGetHdmiMonitorInfo_	int	
+libSceVideoOut	sceVideoOutGetHdmiRawEdid_	int	
+libSceVideoOut	sceVideoOutGetMonitorInfo	int	
+libSceVideoOut	sceVideoOutGetOutputStatus	int	int handle, VideoOutOutputStatus* status
+libSceVideoOut	sceVideoOutGetOutputStatusEx	int	
+libSceVideoOut	sceVideoOutGetOutputStatusWithVrr	int	int handle, void* status
+libSceVideoOut	sceVideoOutGetPipelineStatus	int	std::uint32_t* out, std::uint64_t reserved
+libSceVideoOut	sceVideoOutGetPortStatusInfo	int	
+libSceVideoOut	sceVideoOutGetPortStatusInfoByBusSpecifier_	int	
+libSceVideoOut	sceVideoOutGetPortStatusInfo_	int	
+libSceVideoOut	sceVideoOutGetResolutionStatus	int	int handle, VideoOutResolutionStatus* status
+libSceVideoOut	sceVideoOutGetStatusForWebcore	int	
+libSceVideoOut	sceVideoOutGetVblankStatus	int	int handle, VideoOutVblankStatus* status
+libSceVideoOut	sceVideoOutGetVideoOutModeByBusSpecifier_	int	
+libSceVideoOut	sceVideoOutHdmiMonitorInfoIsSupportedHdcpVersion	int	
+libSceVideoOut	sceVideoOutHdmiMonitorInfoIsSupportedVideoOutMode_	int	
+libSceVideoOut	sceVideoOutInitializeOutputOptions	int	VideoOutOutputOptions* options
+libSceVideoOut	sceVideoOutIsFlipPending	int	int handle
+libSceVideoOut	sceVideoOutIsOutputSupported	int	int handle, uint64_t mode, const VideoOutOutputOptions* options, void* reservedPtr, uint64_t reserved
+libSceVideoOut	sceVideoOutLatencyControlWaitBeforeInput	int	int handle
+libSceVideoOut	sceVideoOutLatencyMeasureSetStartPoint	int	int handle, uint32_t point
+libSceVideoOut	sceVideoOutLatencyMeasureSetStartPointAuto	int	
+libSceVideoOut	sceVideoOutLockBuffer	int	
+libSceVideoOut	sceVideoOutModeSetAny_	void	void* mode, std::uint32_t size
+libSceVideoOut	sceVideoOutOpen	int	int userId, int busType, int index, const void* param
+libSceVideoOut	sceVideoOutPostProcessorAddCallback	int	
+libSceVideoOut	sceVideoOutPostProcessorRemoveCallback	int	
+libSceVideoOut	sceVideoOutRazorAddCallback	int	
+libSceVideoOut	sceVideoOutRazorRecallCallbacks	int	
+libSceVideoOut	sceVideoOutRazorRemoveCallback	int	
+libSceVideoOut	sceVideoOutRegisterBufferAttribute	int	
+libSceVideoOut	sceVideoOutRegisterBuffers	int	int handle, int bufferIndexStart, void* const* addresses, int bufferNum, const VideoOutBufferAttribute* attribute
+libSceVideoOut	sceVideoOutRegisterBuffers2	int	int handle, int setIndex, int bufferIndexStart, const VideoOutBuffers* buffers, int bufferNum, const VideoOutBufferAttribute2* attribute, int category, void* option
+libSceVideoOut	sceVideoOutRegisterStereoBuffers	int	
+libSceVideoOut	sceVideoOutRemoveBuffer	int	
+libSceVideoOut	sceVideoOutRemoveBufferAttributeOption	void	VideoOutBufferAttribute2* attribute, uint64_t option
+libSceVideoOut	sceVideoOutSetAlphaControl	int	
+libSceVideoOut	sceVideoOutSetBlankAfterResume	int	
+libSceVideoOut	sceVideoOutSetBufferAttribute	void	VideoOutBufferAttribute* attribute, uint32_t pixelFormat, uint32_t tilingMode, uint32_t aspectRatio, uint32_t width, uint32_t height, uint32_t pitchInPixel
+libSceVideoOut	sceVideoOutSetBufferAttribute2	void	VideoOutBufferAttribute2* attribute, uint64_t pixelFormat, uint32_t tilingMode, uint32_t width, uint32_t height, uint64_t option, uint32_t dccControl, uint64_t dccCbRegisterClearColor
+libSceVideoOut	sceVideoOutSetConfigurationMode	int	
+libSceVideoOut	sceVideoOutSetContentDynamicRange	int	
+libSceVideoOut	sceVideoOutSetContentType	int	
+libSceVideoOut	sceVideoOutSetDisplayEventPosition	int	
+libSceVideoOut	sceVideoOutSetDrrMonitorCapability	int	
+libSceVideoOut	sceVideoOutSetFlipMaster	int	std::int32_t handle, std::int32_t masterHandle
+libSceVideoOut	sceVideoOutSetFlipRate	int	int handle, int rate
+libSceVideoOut	sceVideoOutSetGamutMetadata_	int	
+libSceVideoOut	sceVideoOutSetGlobalAlpha	int	
+libSceVideoOut	sceVideoOutSetGlobalBlendSpace	int	int handle, uint32_t space, uint32_t option
+libSceVideoOut	sceVideoOutSetToneMap_	int	
+libSceVideoOut	sceVideoOutSetVrrMaster	int	
+libSceVideoOut	sceVideoOutSetWindowModeMargins	int	int handle, int top, int bottom
+libSceVideoOut	sceVideoOutSubmitChangeBufferAttribute	int	int handle, int setIndex, const VideoOutBufferAttribute* attribute
+libSceVideoOut	sceVideoOutSubmitChangeBufferAttribute2	int	int handle, int setIndex, const VideoOutBufferAttribute2* attribute, void* option
+libSceVideoOut	sceVideoOutSubmitEopFlip	int	int handle, int index, int flipMode, int64_t flipArg, std::uint32_t* token
+libSceVideoOut	sceVideoOutSubmitFlip	int	int handle, int index, int flipMode, int64_t flipArg
+libSceVideoOut	sceVideoOutSysAddFlipEvent	int	
+libSceVideoOut	sceVideoOutSysAddSetModeEvent	int	
+libSceVideoOut	sceVideoOutSysAddSetModeEvent2	int	KernelEqueue eq, int index, void* udata
+libSceVideoOut	sceVideoOutSysAddVblankEvent	int	
+libSceVideoOut	sceVideoOutSysAddVblankEvent2	int	
+libSceVideoOut	sceVideoOutSysChangePipelineLayout	int	
+libSceVideoOut	sceVideoOutSysClose	int	
+libSceVideoOut	sceVideoOutSysConfigureLayout	int	
+libSceVideoOut	sceVideoOutSysConfigureOutput	int	
+libSceVideoOut	sceVideoOutSysConfigureOutputMode	int	
+libSceVideoOut	sceVideoOutSysCursorDisable	int	
+libSceVideoOut	sceVideoOutSysCursorEnable	int	
+libSceVideoOut	sceVideoOutSysCursorIsUpdatePending	int	
+libSceVideoOut	sceVideoOutSysCursorObtain	int	
+libSceVideoOut	sceVideoOutSysCursorRelease	int	
+libSceVideoOut	sceVideoOutSysCursorSetPosition	int	
+libSceVideoOut	sceVideoOutSysCursorSetSize	int	
+libSceVideoOut	sceVideoOutSysDeleteFlipEvent	int	
+libSceVideoOut	sceVideoOutSysDeleteVblankEvent	int	
+libSceVideoOut	sceVideoOutSysDeleteVblankEvent2	int	
+libSceVideoOut	sceVideoOutSysFloatPort	int	
+libSceVideoOut	sceVideoOutSysGetBus	int	int handle
+libSceVideoOut	sceVideoOutSysGetColorConversionStatus	int	
+libSceVideoOut	sceVideoOutSysGetCurrentOutputMode	int	
+libSceVideoOut	sceVideoOutSysGetCursorInfo	int	
+libSceVideoOut	sceVideoOutSysGetDeviceInfo	int	
+libSceVideoOut	sceVideoOutSysGetFlipStatus	int	
+libSceVideoOut	sceVideoOutSysGetKsvList	int	
+libSceVideoOut	sceVideoOutSysGetMonitorInfo	int	
+libSceVideoOut	sceVideoOutSysGetMonitorInfo_	int	
+libSceVideoOut	sceVideoOutSysGetOutputStatus	int	
+libSceVideoOut	sceVideoOutSysGetOutputStatusEx	int	
+libSceVideoOut	sceVideoOutSysGetPipelineStatus	int	
+libSceVideoOut	sceVideoOutSysGetResolutionStatus	int	
+libSceVideoOut	sceVideoOutSysGetResolutionStatus2	int	
+libSceVideoOut	sceVideoOutSysGetVblankStatus	int	
+libSceVideoOut	sceVideoOutSysGetVblankStatus2	int	
+libSceVideoOut	sceVideoOutSysGetVideoOutModeByBusSpecifier	int	
+libSceVideoOut	sceVideoOutSysHdmiMonitorInfoIsMorpheus	int	
+libSceVideoOut	sceVideoOutSysInitMode	void	void* mode
+libSceVideoOut	sceVideoOutSysIsModeS3d	int	const void* mode
+libSceVideoOut	sceVideoOutSysIsOutputSupported	int	
+libSceVideoOut	sceVideoOutSysIsSupportedByMonitorInfo_	int	
+libSceVideoOut	sceVideoOutSysIsUserStatusHdr	int	
+libSceVideoOut	sceVideoOutSysIsUserStatusSystemDefault	int	
+libSceVideoOut	sceVideoOutSysIsUserStatusVr	int	
+libSceVideoOut	sceVideoOutSysLatencyMeasureGetLatestLatency	int	
+libSceVideoOut	sceVideoOutSysModeIsHdr	int	const void* mode
+libSceVideoOut	sceVideoOutSysModeIsSystemDefault	int	const void* mode
+libSceVideoOut	sceVideoOutSysModeIsVr	int	const void* mode
+libSceVideoOut	sceVideoOutSysModeIsVrLegacy	int	const void* mode
+libSceVideoOut	sceVideoOutSysModeIsVrNative	int	const void* mode
+libSceVideoOut	sceVideoOutSysOpenInternal	int	
+libSceVideoOut	sceVideoOutSysOpenPostProcessor	int	
+libSceVideoOut	sceVideoOutSysOpenVrNative	int	
+libSceVideoOut	sceVideoOutSysReadCrc	int	
+libSceVideoOut	sceVideoOutSysReadCrc64	int	
+libSceVideoOut	sceVideoOutSysResetAtGpuReset	int	
+libSceVideoOut	sceVideoOutSysSetBusTransfer	int	
+libSceVideoOut	sceVideoOutSysSetColorMode	int	
+libSceVideoOut	sceVideoOutSysSetDcePipeMode	int	
+libSceVideoOut	sceVideoOutSysSetDimmer	int	
+libSceVideoOut	sceVideoOutSysSetDimmer2	int	
+libSceVideoOut	sceVideoOutSysSetDrrPeg	int	
+libSceVideoOut	sceVideoOutSysSetDrrPegRefreshRate	int	
+libSceVideoOut	sceVideoOutSysSetHdcpEncryption	int	
+libSceVideoOut	sceVideoOutSysSetHdrMetadata	int	
+libSceVideoOut	sceVideoOutSysSetOverscanRatio	int	
+libSceVideoOut	sceVideoOutSysSetVrrSetting	int	
+libSceVideoOut	sceVideoOutSysUpdateDisplayParameter	int	
+libSceVideoOut	sceVideoOutSysUpdatePrivilege	int	
+libSceVideoOut	sceVideoOutSysUpdateRenderingMode	int	
+libSceVideoOut	sceVideoOutUnlockBuffer	int	
+libSceVideoOut	sceVideoOutUnregisterBufferAttribute	int	
+libSceVideoOut	sceVideoOutUnregisterBuffers	int	int handle, int setIndex
+libSceVideoOut	sceVideoOutVrrPegToFixedRate	int	int handle, uint64_t arg1, uint64_t arg2
+libSceVideoOut	sceVideoOutVrrUnpegFromFixedRate	int	int handle
+libSceVideoOut	sceVideoOutWaitVblank	int	int handle

@@ -70,7 +70,7 @@ func TestOverlappingInstructionsRun(t *testing.T) {
 	img := make([]byte, 0x100)
 	copy(img[0x40:], []byte{0x85, 0xff, 0x74, 0x03, 0xb8, 0x11, 0x22, 0xff, 0xc0, 0xc3})
 	loaded := &elfloader.LoadedELF{
-		MemoryImage:  img,
+		MemoryImage:  elfloader.NewImage(0, img),
 		ExecRanges:   []elfloader.AddrRange{{Start: 0, End: uint64(len(img))}},
 		SymbolByAddr: map[uint64]elfloader.Symbol{},
 		SymbolByName: map[string]elfloader.Symbol{},

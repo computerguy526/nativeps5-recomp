@@ -72,6 +72,8 @@ func AnalyzeBinarySeeded(path string, allSymbols bool) (*AnalysisReport, error) 
 
 	opCounts := make(map[x86asm.Op]int)
 	missingCounts := make(map[x86asm.Op]int)
+	supportedByOp := make(map[x86asm.Op]int)
+	probe := lifter.NewArm64Lifter(nil)
 	totalInsts := 0
 	supportedInsts := 0
 	unsupportedInsts := 0
@@ -117,12 +119,16 @@ func AnalyzeBinarySeeded(path string, allSymbols bool) (*AnalysisReport, error) 
 		functionCount++
 		for _, b := range fn.Blocks {
 			hle.ObserveBlock(b.Insts, syscallShims)
+			probe.ResetFlags()
 			for _, inst := range b.Insts {
 				op := inst.Inst.Op
 				opCounts[op]++
 				totalInsts++
-				if lifter.IsOpcodeSupported(op) {
+				// Derived from the actual lowering: an instruction is unsupported iff the
+				// lifter would emit a diagnostic stub for it.
+				if _, bad := probe.Probe(inst, fn); !bad {
 					supportedInsts++
+					supportedByOp[op]++
 				} else {
 					unsupportedInsts++
 					missingCounts[op]++
@@ -159,14 +165,12 @@ func AnalyzeBinarySeeded(path string, allSymbols bool) (*AnalysisReport, error) 
 	})
 
 	var supportedFreqs []OpcodeFrequency
-	for op, count := range opCounts {
-		if lifter.IsOpcodeSupported(op) {
-			supportedFreqs = append(supportedFreqs, OpcodeFrequency{
-				Op:    op,
-				Name:  op.String(),
-				Count: count,
-			})
-		}
+	for op, count := range supportedByOp {
+		supportedFreqs = append(supportedFreqs, OpcodeFrequency{
+			Op:    op,
+			Name:  op.String(),
+			Count: count,
+		})
 	}
 	sort.Slice(supportedFreqs, func(i, j int) bool {
 		return supportedFreqs[i].Count > supportedFreqs[j].Count

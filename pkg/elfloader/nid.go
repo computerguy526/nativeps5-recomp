@@ -122,15 +122,19 @@ func (l *LoadedELF) LibraryForNID(name string) string {
 	if len(parts) < 2 || parts[1] == "" {
 		return "plaintext"
 	}
-	if l == nil || len(l.ImportLibs) == 0 {
-		return parts[1]
+	ref := parts[1]
+	if l != nil && l.LibIDSecond && len(parts) >= 3 && parts[2] != "" {
+		ref = parts[2] // PS5: NID#module#library
 	}
-	id, ok := decodeSCEID(parts[1])
+	if l == nil || len(l.ImportLibs) == 0 {
+		return ref
+	}
+	id, ok := decodeSCEID(ref)
 	if !ok {
-		return parts[1]
+		return ref
 	}
 	if lib, ok := l.ImportLibs[id]; ok {
 		return lib
 	}
-	return parts[1]
+	return ref
 }

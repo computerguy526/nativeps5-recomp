@@ -45,22 +45,23 @@ var bloodborne109Patches = []bbBytePatch{
 	{0x2018f32, []byte{0xc7, 0x85, 0x68, 0xff, 0xff, 0xff, 0x89, 0x88, 0x08, 0x3d}, []byte{0xc7, 0x85, 0x68, 0xff, 0xff, 0xff, 0x89, 0x88, 0x88, 0x3c}},
 }
 
+// bloodborneBias is the placement bias of the matched image (set by isBloodborne109).
+var bloodborneBias uint64
+
 // isBloodborne109 reports whether loaded matches the Bloodborne v1.09 guest image at all
 // 19 frame-pacing instruction sites.
 func isBloodborne109(loaded *elfloader.LoadedELF) bool {
-	if loaded == nil || len(loaded.MemoryImage) == 0 {
+	if loaded == nil {
 		return false
 	}
-	img := loaded.MemoryImage
+	// The patch table holds link-time addresses; the image may have been placed elsewhere.
 	for _, p := range bloodborne109Patches {
-		end := p.addr + uint64(len(p.orig))
-		if end > uint64(len(img)) {
-			return false
-		}
-		if !bytes.Equal(img[p.addr:end], p.orig) {
+		got := loaded.MemoryImage.Bytes(p.addr+loaded.Bias, uint64(len(p.orig)))
+		if got == nil || !bytes.Equal(got, p.orig) {
 			return false
 		}
 	}
+	bloodborneBias = loaded.Bias
 	return true
 }
 
@@ -68,7 +69,7 @@ func isBloodborne109(loaded *elfloader.LoadedELF) bool {
 // Bloodborne v1.09 byte-patched instruction sites.
 func bloodbornePatchInst(inst disasm.Instruction) disasm.Instruction {
 	for _, p := range bloodborne109Patches {
-		if p.addr == inst.Address && len(p.repl) > 0 {
+		if p.addr+bloodborneBias == inst.Address && len(p.repl) > 0 {
 			if decoded, err := x86asm.Decode(p.repl, 64); err == nil {
 				inst.Inst = decoded
 			}
@@ -82,7 +83,7 @@ func bloodbornePatchInst(inst disasm.Instruction) disasm.Instruction {
 // replacing the fixed 1/30.0f store with the dynamic measured frame delta clamped to
 // [target_dt, 1/30.0f] so gameplay speed remains 1.0x across 30..60 FPS.
 func bloodborneDynamicDeltaLines(addr uint64) ([]string, bool) {
-	if addr != 0x2018e36 {
+	if addr != 0x2018e36+bloodborneBias {
 		return nil, false
 	}
 	return []string{

@@ -40,7 +40,7 @@ func unresolvedTestELF() *elfloader.LoadedELF {
 	put(namedGot, namedPlt)
 	return &elfloader.LoadedELF{
 		FileName:    "eboot.bin",
-		MemoryImage: img,
+		MemoryImage: elfloader.NewImage(0, img),
 		MaxVAddr:    0x600000,
 		// The eboot's own segments (ELF program header flags) and one a merged companion module
 		// (libSceFios2) appended after OrigMaxVAddr, which module info must not report.
@@ -108,6 +108,8 @@ func TestUnresolvedImportsAreBound(t *testing.T) {
 		`recomp_register_unresolved(0x560040ULL, "kgOk-kzW+8M", "sceRazorCpuInit", "libSceFoo");`,
 		"recomp_register_fn(0x540000ULL, fn_0x540000);",
 		"recomp_register_fn(0x560000ULL, fn_0x560000);",
+		// GOT-style (-fno-plt) import served by a host shim needs a dispatch entry too.
+		"recomp_register_fn(0x560020ULL, fn_0x560020);",
 	} {
 		if !strings.Contains(code, want) {
 			t.Errorf("guest_modules.c lacks %q", want)
@@ -125,5 +127,43 @@ func TestUnresolvedImportsAreBound(t *testing.T) {
 	}
 	if !strings.Contains(string(synth), "_fn_0x560000:\n    adrp x0, _shim_unresolved_stub@PAGE") {
 		t.Errorf("no stub for the unresolved GOT slot in the synth file:\n%s", synth)
+	}
+	if !strings.Contains(string(synth), "_fn_0x560020:\n    adrp x0, _shim_memcpy@PAGE") {
+		t.Errorf("no stub for the shim-bound GOT slot in the synth file:\n%s", synth)
+	}
+}
+
+// An import of a module left out with -exclude-module must bind to the excluded-module stub
+// (never to a host shim that happens to share its name), be reported as such, and leave
+// imports of the remaining modules alone.
+func TestExcludedModuleImportsAreStubbed(t *testing.T) {
+	loaded := unresolvedTestELF()
+	loaded.MarkExcludedExports("kitt_webkit-ps5-shipping.prx", []elfloader.Symbol{
+		{Name: "memcpy"}, // would otherwise bind shim_memcpy
+		{Name: "AbCdEfGhIjK#A#A"},
+	})
+	em := NewAsmEmitter(loaded, nil, nil)
+	for _, addr := range []uint64{shimmedPlt, shimmedGot, unresPlt, unresGot} {
+		if got := em.shimMap[addr]; got != "shim_unresolved_stub" {
+			t.Errorf("0x%x bound to %q, want the excluded-module stub", addr, got)
+		}
+	}
+	if got := em.shimMap[unresGlobDat]; got != "shim_unresolved_stub" {
+		t.Errorf("non-excluded unresolved import changed: %q", got)
+	}
+	if imp := em.unresolved[shimmedPlt]; imp.lib != "excluded:kitt_webkit-ps5-shipping.prx" {
+		t.Errorf("lib = %q", imp.lib)
+	}
+	if imp := em.unresolved[unresGlobDat]; imp.lib != "libSceFoo" {
+		t.Errorf("non-excluded import lib = %q", imp.lib)
+	}
+	hle := NewHLEReport(loaded, nil)
+	if hle.ExcludedCount != 2 {
+		t.Errorf("ExcludedCount = %d, want 2", hle.ExcludedCount)
+	}
+	for _, s := range hle.Imports {
+		if s.Name == "memcpy" && s.Class != ImportExcluded {
+			t.Errorf("memcpy class %v", s.Class)
+		}
 	}
 }

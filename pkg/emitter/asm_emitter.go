@@ -3,7 +3,10 @@ package emitter
 import (
 	"bufio"
 	"bytes"
+	"cmp"
+	"debug/elf"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,9 +14,12 @@ import (
 	"slices"
 	"strings"
 
+	"ps4-recomp/pkg/diag"
 	"ps4-recomp/pkg/disasm"
 	"ps4-recomp/pkg/elfloader"
+	"ps4-recomp/pkg/guestmem"
 	"ps4-recomp/pkg/lifter"
+	"ps4-recomp/pkg/tcache"
 )
 
 type GuestModule struct {
@@ -64,11 +70,14 @@ func uniqueModuleNames(fileName string, aliases []string) []string {
 
 // AsmEmitter emits Apple Silicon ARM64 assembly (.s) files from disassembled functions.
 type AsmEmitter struct {
-	elf          *elfloader.LoadedELF
-	disasm       *disasm.Disassembler
-	lifter       *lifter.Arm64Lifter
-	shimMap      map[uint64]string
-	AppDir       string
+	elf     *elfloader.LoadedELF
+	disasm  *disasm.Disassembler
+	lifter  *lifter.Arm64Lifter
+	shimMap map[uint64]string
+	AppDir  string
+	// Mem is the guest memory model of the title (nil: the runtime's default base-mode
+	// config is used, as in emitter tests).
+	Mem          *guestmem.Manifest
 	Modules      []GuestModule
 	ChunkSize    int
 	Funcs        []disasm.ReachableFunc
@@ -76,9 +85,23 @@ type AsmEmitter struct {
 	linesBuf     []string
 	knownFuncSet map[uint64]bool
 	bb60fps      bool
+	patch        *patchState // applied patch profile (patchpoints.go); nil = none
 	// unresolved describes every import slot (PLT stub and GOT slot address) that no host
 	// shim and no loaded module satisfies. Each one is bound to shim_unresolved_stub.
 	unresolved map[uint64]unresolvedImport
+	// FuncInfoOf, when set, extracts the census facts of every function just before it is lowered;
+	// FuncInfos collects them in function order.
+	FuncInfoOf func(fn *disasm.Function) diag.FuncInfo
+	FuncInfos  []diag.FuncInfo
+	// Workers is the number of chunks lifted concurrently (each on its own lifter and decoder
+	// clone); the output does not depend on it. Cache, when set with a ChunkSink, skips lifting
+	// the chunks whose key is unchanged. EmitDrops counts weak function entries that decoding
+	// dropped after discovery (always 0 in practice; nonzero would make clones diverge).
+	Workers   int
+	Cache     *tcache.Index
+	EmitDrops int
+	// ChunkStats is filled by EmitChunkedAsm.
+	ChunkStats ChunkStats
 	// UnresolvedFuncImports and UnresolvedDataImports count the unresolved import relocations:
 	// JUMP_SLOT ones are calls, GLOB_DAT/R_X86_64_64 ones are address loads (a data import is
 	// bound to the same stub, so reading it as data yields the stub's address).
@@ -90,6 +113,61 @@ type AsmEmitter struct {
 	// Warnings collects generation-time problems that do not stop the generation (the caller
 	// prints them in its summary).
 	Warnings []string
+
+	// Comments keeps the lifter's per-instruction annotations ("// 0xADDR: INST") and the
+	// original formatting in the assembly. The default is lean output: no comments, tab
+	// indentation, no blanks. Nothing depends on the comments (Facts and the pc map carry the
+	// same information in structured form).
+	Comments bool
+	// PCMap emits the compact host-pc -> guest-pc table (__DATA,__nps5_pcmap) the runtime crash
+	// handler reads (see pcmap.go). PCMapStrict turns a mismatch between the table and the
+	// assembled code (asserted by the assembler) from a warning into an error.
+	PCMap       bool
+	PCMapStrict bool
+	// ChunkSink, when set, receives each chunk's assembly instead of the emitter writing the
+	// .s file: the sink assembles and deletes it (streaming build), so the whole program's
+	// assembly text never exists at once.
+	ChunkSink ChunkSink
+	// Facts is the structured census/addrmap data collected while emitting.
+	Facts diag.AsmFacts
+
+	// replParams / replReports: function-level replacements (funcrepl.go).
+	replParams  map[string]uint64
+	replReports []*ReplReport
+}
+
+// AsmChunk is the rendered assembly of one chunk.
+type AsmChunk struct {
+	Index int
+	Path  string // where the .s file belongs (the sink decides whether to write it)
+	Data  []byte // the assembly text; valid until Chunk returns; nil when Cached
+	Funcs int
+	Insts int
+	// DataHash is the sha256 of the assembly. Cached: the chunk is unchanged since the object the
+	// sink already has (CanReuse said so); Data is nil.
+	DataHash string
+	Cached   bool
+	Bytes    int64
+}
+
+// ObjectReuser is implemented by a sink that keeps the objects of earlier chunks: the emitter
+// asks whether the object for a chunk whose assembly hashes to DataHash is still there before it
+// skips lifting the chunk, and records its identity in the cache index afterwards.
+type ObjectReuser interface {
+	CanReuse(c AsmChunk) bool
+	ObjectInfo(c AsmChunk) (hash string, size, zsize int64)
+}
+
+// ChunkStats summarises one EmitChunkedAsm.
+type ChunkStats struct {
+	Chunks, Lifted, FromCache, Workers int
+	LiftCPU                            float64
+}
+
+// ChunkSink consumes rendered chunks one at a time, in order. It may block (back-pressure
+// from a bounded assembler pool) and may return an error to stop the emission.
+type ChunkSink interface {
+	Chunk(c AsmChunk) error
 }
 
 // maxModuleSegments is the number of segments a module registers with the runtime
@@ -131,19 +209,26 @@ func collectUnresolvedImports(loaded *elfloader.LoadedELF, shimMap map[uint64]st
 		default:
 			continue
 		}
-		if rel.SymName == "" || rel.Offset+8 > uint64(len(loaded.MemoryImage)) {
+		if rel.SymName == "" {
 			continue
 		}
-		if _, ok := LookupShim(rel.SymName); ok {
+		slot, mapped := loaded.MemoryImage.U64(rel.Offset)
+		if !mapped {
 			continue
 		}
-		slot := binary.LittleEndian.Uint64(loaded.MemoryImage[rel.Offset : rel.Offset+8])
+		excludedMod, excluded := loaded.IsExcludedImport(rel.SymName)
+		if _, ok := LookupShim(rel.SymName); ok && !excluded {
+			continue
+		}
 		if slot != rel.Offset && (rel.PltAddr == 0 || slot != rel.PltAddr) {
 			continue
 		}
 		imp := unresolvedImport{nid: elfloader.NIDPrefix(rel.SymName), lib: loaded.LibraryForNID(rel.SymName)}
 		if canon, ok := elfloader.ResolveNID(rel.SymName); ok {
 			imp.name = canon
+		}
+		if excluded {
+			imp.lib = "excluded:" + excludedMod
 		}
 		if rel.Type == elfloader.R_X86_64_JUMP_SLOT {
 			funcs++
@@ -184,19 +269,36 @@ func NewAsmEmitter(loaded *elfloader.LoadedELF, d *disasm.Disassembler, l *lifte
 		if name == "" || addr == 0 {
 			return
 		}
-		if shim, ok := LookupShim(name); ok {
+		if shim, ok := LookupShim(name); ok && !isFallbackShim(shim) {
 			shimMap[addr] = shim
 		}
 	}
+	// A fallback (HLE libc) shim only serves an import that nothing else satisfied: the slot
+	// still points at itself or at its own PLT stub after module relocation.
+	slotSatisfied := func(rel elfloader.Relocation) bool {
+		slot, mapped := loaded.MemoryImage.U64(rel.Offset)
+		if !mapped {
+			return false
+		}
+		return slot != rel.Offset && (rel.PltAddr == 0 || slot != rel.PltAddr)
+	}
 	for _, rel := range loaded.Relocations {
-		if rel.Type == elfloader.R_X86_64_JUMP_SLOT && rel.Offset+8 <= uint64(len(loaded.MemoryImage)) {
+		if _, ex := loaded.IsExcludedImport(rel.SymName); ex {
+			continue // bound to the excluded-module stub by collectUnresolvedImports
+		}
+		if rel.SymName != "" {
+			if shim, ok := LookupShim(rel.SymName); ok && isFallbackShim(shim) && slotSatisfied(rel) {
+				continue
+			}
+		}
+		if rel.Type == elfloader.R_X86_64_JUMP_SLOT && loaded.MemoryImage.Has(rel.Offset, 8) {
 			if rel.SymName != "" {
 				if shim, ok := LookupShim(rel.SymName); ok {
 					if rel.PltAddr != 0 {
 						shimMap[rel.PltAddr] = shim
 					}
 					shimMap[rel.Offset] = shim
-					binary.LittleEndian.PutUint64(loaded.MemoryImage[rel.Offset:rel.Offset+8], rel.Offset)
+					loaded.MemoryImage.PutU64(rel.Offset, rel.Offset)
 					continue
 				}
 			}
@@ -214,11 +316,17 @@ func NewAsmEmitter(loaded *elfloader.LoadedELF, d *disasm.Disassembler, l *lifte
 		}
 		shimMap[rel.Offset] = shim
 	}
+	// Only code symbols: the PS5 SDK's libc++ keeps data objects named after the functions they
+	// point to (".bss calloc"), and binding those would turn a data address into a shim.
 	for _, sym := range loaded.Symbols {
-		bindAddr(sym.Name, sym.Address)
+		if sym.Type != elf.STT_OBJECT && sym.Type != elf.STT_TLS {
+			bindAddr(sym.Name, sym.Address)
+		}
 	}
 	for _, sym := range loaded.DynSymbols {
-		bindAddr(sym.Name, sym.Address)
+		if sym.Type != elf.STT_OBJECT && sym.Type != elf.STT_TLS {
+			bindAddr(sym.Name, sym.Address)
+		}
 	}
 
 	unresolved, unresFuncs, unresData, unresDataNames := collectUnresolvedImports(loaded, shimMap)
@@ -270,6 +378,16 @@ func (e *AsmEmitter) EmitAll(outDir string) ([]string, error) {
 		return nil, fmt.Errorf("failed to emit guest_image.bin: %w", err)
 	}
 
+	if e.Mem != nil {
+		mj, err := e.Mem.JSON()
+		if err != nil {
+			return nil, err
+		}
+		if err := writeFileIfChanged(filepath.Join(outDir, "memory_manifest.json"), mj); err != nil {
+			return nil, err
+		}
+	}
+
 	trampPath := filepath.Join(outDir, "trampoline_arm64.s")
 	if err := e.EmitTrampoline(trampPath); err != nil {
 		return nil, fmt.Errorf("failed to emit trampoline_arm64.s: %w", err)
@@ -281,6 +399,20 @@ func (e *AsmEmitter) EmitAll(outDir string) ([]string, error) {
 		return nil, fmt.Errorf("failed to emit chunked assembly: %w", err)
 	}
 	buildFiles = append(buildFiles, codeFiles...)
+	if err := e.checkUnsupported(outDir); err != nil {
+		return nil, err
+	}
+	if err := e.CheckPatchSites(); err != nil {
+		return nil, err
+	}
+	if pt, err := e.WritePatchTable(outDir); err != nil {
+		return nil, fmt.Errorf("failed to write %s: %w", PatchTableFile, err)
+	} else if pt != "" {
+		buildFiles = append(buildFiles, pt)
+	}
+	if err := e.writeLifterManifest(outDir); err != nil {
+		return nil, err
+	}
 
 	modPath := filepath.Join(outDir, "guest_modules.c")
 	if err := e.EmitGuestModules(modPath); err != nil {
@@ -291,13 +423,132 @@ func (e *AsmEmitter) EmitAll(outDir string) ([]string, error) {
 	if _, err := os.Stat(synthPath); err == nil {
 		buildFiles = append(buildFiles, synthPath)
 	}
+	if p, err := e.emitReplParams(outDir); err != nil {
+		return nil, err
+	} else if p != "" {
+		buildFiles = append(buildFiles, p)
+	}
 
 	return buildFiles, nil
 }
 
-// EmitGuestImage writes the raw loaded guest memory image.
+// LifterManifest records the translate-time choices that the generated code depends on; the
+// runtime/loader must agree with them (addr_mode "base": x28 = host base of guest memory,
+// guest address added at every access; "identity": guest VA == host VA, x28 unused).
+type LifterManifest struct {
+	AddrMode  string `json:"addr_mode"`
+	CallModel string `json:"call_model"`
+	TSO       bool   `json:"tso"`
+	// TSORelaxed: functions lifted without x86 memory ordering (NPS5_TSO_RELAX_FUNCS), as hex entry addresses.
+	TSORelaxed []string `json:"tso_relaxed_functions,omitempty"`
+	// TSOElide: which stack accesses are emitted without ordering ("off": every RSP/RBP-based
+	// one, "stack": the proven-private ones only; docs/m3/tsoelide.md).
+	TSOElide string `json:"tso_elide"`
+	// ROLoads, RedZoneLeaf, BMIPeep: the m3-lift2 options (docs/m3/lift2.md).
+	ROLoads          bool `json:"ro_loads"`
+	RedZoneLeaf      bool `json:"redzone_leaf"`
+	BMIPeep          bool `json:"bmi_peep"`
+	AllowUnsupported bool `json:"allow_unsupported"`
+	UnsupportedSites int  `json:"unsupported_sites"`
+	// FuncRepl lists the function-level replacements in effect (funcrepl.go).
+	FuncRepl []*ReplReport `json:"func_replace,omitempty"`
+}
+
+func hexAddrs(a []uint64) []string {
+	var out []string
+	for _, v := range a {
+		out = append(out, fmt.Sprintf("0x%x", v))
+	}
+	return out
+}
+
+func (e *AsmEmitter) writeLifterManifest(outDir string) error {
+	m := LifterManifest{
+		AddrMode:         e.lifter.AddrMode().String(),
+		CallModel:        lifter.GetCallModel().String(),
+		TSO:              e.lifter.TSO(),
+		TSORelaxed:       hexAddrs(e.lifter.TSORelaxed()),
+		TSOElide:         e.lifter.TSOElide().String(),
+		ROLoads:          lifter.GetROLoads(),
+		RedZoneLeaf:      lifter.GetRedZoneLeaf(),
+		BMIPeep:          lifter.GetBMIPeep(),
+		AllowUnsupported: e.lifter.AllowUnsupported(),
+		UnsupportedSites: len(e.lifter.Unsupported()),
+		FuncRepl:         e.replReports,
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileIfChanged(filepath.Join(outDir, "lifter_manifest.json"), append(b, '\n'))
+}
+
+// checkUnsupported applies the unsupported-instruction policy after the code is emitted: the
+// list goes to unsupported.txt, and unless the lifter allows unsupported instructions the
+// translation fails with it.
+func (e *AsmEmitter) checkUnsupported(outDir string) error {
+	sites := e.lifter.Unsupported()
+	if len(sites) == 0 {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "unsupported.txt"), []byte(lifter.FormatUnsupported(sites, 0)), 0o644); err != nil {
+		return err
+	}
+	if !e.lifter.AllowUnsupported() {
+		return fmt.Errorf("%s(full list: %s)", lifter.FormatUnsupported(sites, 40), filepath.Join(outDir, "unsupported.txt"))
+	}
+	e.Warnings = append(e.Warnings, fmt.Sprintf("%d unsupported instruction(s) emitted as diagnostic stubs (see unsupported.txt)", len(sites)))
+	return nil
+}
+
+// GuestImageMagic opens guest_image.bin (recomp_runtime.c: load_guest_image).
+const GuestImageMagic = "NPS5IMG\x01"
+
+// EncodeGuestImage serialises the sparse guest image for the runtime loader:
+//
+//	magic[8]  u32 nregions  u32 nsegments
+//	nregions  x { u64 guest_addr, u64 size, u64 file_offset }
+//	nsegments x { u64 guest_addr, u64 memsz, u32 pf_flags, u32 reserved }
+//	region bytes, at their file offsets
+//
+// Regions are the contiguous byte runs to copy to guest addresses; segments carry the ELF
+// protection of each mapped segment so the loader can map guest code read-only (it is data to
+// the host and is never executed).
+func EncodeGuestImage(img *elfloader.Image, segs []*elfloader.Segment) []byte {
+	regions := img.Regions()
+	hdr := 16 + 24*len(regions) + 24*len(segs)
+	total := hdr
+	for _, r := range regions {
+		total += len(r.Data)
+	}
+	out := make([]byte, hdr, total)
+	copy(out, GuestImageMagic)
+	binary.LittleEndian.PutUint32(out[8:], uint32(len(regions)))
+	binary.LittleEndian.PutUint32(out[12:], uint32(len(segs)))
+	p := 16
+	off := uint64(hdr)
+	for _, r := range regions {
+		binary.LittleEndian.PutUint64(out[p:], r.Addr)
+		binary.LittleEndian.PutUint64(out[p+8:], uint64(len(r.Data)))
+		binary.LittleEndian.PutUint64(out[p+16:], off)
+		off += uint64(len(r.Data))
+		p += 24
+	}
+	for _, s := range segs {
+		binary.LittleEndian.PutUint64(out[p:], s.Vaddr)
+		binary.LittleEndian.PutUint64(out[p+8:], s.Memsz)
+		binary.LittleEndian.PutUint32(out[p+16:], uint32(s.Flags))
+		p += 24
+	}
+	for _, r := range regions {
+		out = append(out, r.Data...)
+	}
+	return out
+}
+
+// EmitGuestImage writes the loaded guest memory image (EncodeGuestImage).
 func (e *AsmEmitter) EmitGuestImage(path string) error {
-	return writeFileIfChanged(path, e.elf.MemoryImage)
+	return writeFileIfChanged(path, EncodeGuestImage(e.elf.MemoryImage, e.elf.CodeProtectionSegments()))
 }
 
 func (e *AsmEmitter) functionAddrs() []uint64 {
@@ -388,15 +639,8 @@ func (e *AsmEmitter) EmitChunkedAsm(outDir string, targetBudget int) ([]string, 
 	}
 
 	var generatedFiles []string
-
-	for chunkIdx, chunkAddrs := range chunks {
-		chunkFileName := fmt.Sprintf("code_%03d.s", chunkIdx)
-		chunkPath := filepath.Join(outDir, chunkFileName)
-		regPath := filepath.Join(outDir, fmt.Sprintf("code_%03d_reg.c", chunkIdx))
-		if err := e.emitSingleAsmChunk(chunkPath, chunkIdx, chunkAddrs); err != nil {
-			return nil, fmt.Errorf("failed to emit %s: %w", chunkFileName, err)
-		}
-		generatedFiles = append(generatedFiles, chunkPath, regPath)
+	if err := e.emitChunks(outDir, chunks, &generatedFiles); err != nil {
+		return nil, err
 	}
 
 	dispatchPath := filepath.Join(outDir, "dispatch.c")
@@ -408,102 +652,17 @@ func (e *AsmEmitter) EmitChunkedAsm(outDir string, targetBudget int) ([]string, 
 	return generatedFiles, nil
 }
 
-func (e *AsmEmitter) emitSingleAsmChunk(path string, chunkIdx int, chunkAddrs []uint64) error {
-	var buf bytes.Buffer
-	w := bufio.NewWriter(&buf)
-
-	if _, err := fmt.Fprintf(w, "// Chunk %d (%d functions)\n%s\n.p2align 2\n\n", chunkIdx, len(chunkAddrs), guestTextSection); err != nil {
-		return err
-	}
-
-	for _, addr := range chunkAddrs {
-		if shim, isShimmed := e.shimMap[addr]; isShimmed {
-			// Forward directly to host shim via bridge
-			writeShimStub(w, fmt.Sprintf("_fn_0x%x", addr), shim, addr)
+// isCallContinuation reports whether the lowering of a CALL ends where the callee returns to:
+// with the bl itself or with the local label after a call to a block of the same function.
+func isCallContinuation(lines []string) bool {
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t == "" || strings.HasPrefix(t, "//") {
 			continue
 		}
-
-		fn, err := e.loadFunction(addr)
-		if err != nil {
-			return fmt.Errorf("0x%x: %w", addr, err)
-		}
-		if fn == nil {
-			continue
-		}
-
-		fmt.Fprintf(w, ".globl _fn_0x%x\n_fn_0x%x:\n", addr, addr)
-		fmt.Fprintf(w, "    str x30, [sp, #-16]!\n")
-
-		for bi, blockAddr := range fn.BlockOrder {
-			block := fn.Blocks[blockAddr]
-			if block == nil {
-				continue
-			}
-
-			fmt.Fprintf(w, "\nL_fn_0x%x_loc_0x%x:\n", addr, blockAddr)
-			e.lifter.ResetFlags()
-
-			var lastInst disasm.Instruction
-			for _, inst := range block.Insts {
-				if e.bb60fps {
-					inst = bloodbornePatchInst(inst)
-					if custom, ok := bloodborneDynamicDeltaLines(inst.Address); ok {
-						for _, line := range custom {
-							w.WriteString(line)
-							w.WriteByte('\n')
-						}
-						lastInst = inst
-						continue
-					}
-				}
-				lastInst = inst
-				nextPC := inst.Address + uint64(inst.Inst.Len)
-				lines, err := e.lifter.LiftInstructionToBuf(inst, nextPC, fn, e.linesBuf[:0])
-				if err != nil {
-					fmt.Fprintf(w, "    // 0x%x: %s [UNSUPPORTED: %v]\n    brk #0\n", inst.Address, inst.Inst.String(), err)
-				} else {
-					e.linesBuf = lines
-					for _, line := range lines {
-						w.WriteString(line)
-						w.WriteByte('\n')
-					}
-				}
-			}
-			// A block that falls through hands the next one CF in the block-boundary sense.
-			if n := len(block.Insts); n > 0 {
-				for _, line := range e.lifter.EndBlock(lastInst) {
-					w.WriteString(line)
-					w.WriteByte('\n')
-				}
-				// The next emitted block is not always the fall-through successor
-				// (overlapping instruction streams): branch to it then.
-				var next uint64
-				hasNext := false
-				for _, a := range fn.BlockOrder[bi+1:] {
-					if fn.Blocks[a] != nil {
-						next, hasNext = a, true
-						break
-					}
-				}
-				for _, line := range e.lifter.FallThrough(fn, lastInst, next, hasNext) {
-					w.WriteString(line)
-					w.WriteByte('\n')
-				}
-			}
-		}
-		w.WriteString("    ldr x30, [sp], #16\n    ret\n\n")
+		return strings.HasPrefix(t, "bl ") || t == "1:"
 	}
-
-	// Chunk registration function in C (for dispatch table)
-	regFileName := strings.TrimSuffix(path, ".s") + "_reg.c"
-	if err := e.emitChunkRegistration(regFileName, chunkIdx, chunkAddrs); err != nil {
-		return err
-	}
-
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	return writeFileIfChanged(path, buf.Bytes())
+	return false
 }
 
 // guestTextSection holds all code that runs with the guest registers pinned in host registers:
@@ -511,20 +670,28 @@ func (e *AsmEmitter) emitSingleAsmChunk(path string, chunkIdx int, chunkAddrs []
 // runtime tells guest code from host code by this section (recomp_pc_in_guest_code).
 const guestTextSection = ".section __TEXT,__recomp_guest,regular,pure_instructions"
 
+// ShimStubViaGOT makes shim stubs load the shim address through the GOT (tier-1 fragments).
+var ShimStubViaGOT bool
+
 // writeShimStub emits the guest-callable symbol sym of a host shim for guest address addr:
 // guest code calls it like any recompiled function, and it hands the shim and addr (stored
 // to ctx->rip, so diagnostics name the shim a thread is in) to _recomp_call_shim.
 func writeShimStub(w io.Writer, sym, shim string, addr uint64) {
+	if l, ok := leanInfo(shim); ok && !ShimStubViaGOT { // fragments (GOT-bound) use the full bridge: the lean path needs PC-relative symbols
+		writeLeanStub(w, sym, l, shim, addr)
+		return
+	}
 	fmt.Fprintf(w, ".globl %s\n%s:\n", sym, sym)
-	fmt.Fprintf(w, "    adrp x0, _%s@PAGE\n", shim)
-	fmt.Fprintf(w, "    add  x0, x0, _%s@PAGEOFF\n", shim)
-	fmt.Fprintf(w, "    movz x1, #0x%x\n", addr&0xffff)
-	for shift := 16; shift < 64; shift += 16 {
-		if chunk := (addr >> shift) & 0xffff; chunk != 0 {
-			fmt.Fprintf(w, "    movk x1, #0x%x, lsl #%d\n", chunk, shift)
+	if lifter.GetCallModel() == lifter.CallFlat {
+		// Call entry, then the jump entry (the bridge returns like a guest RET).
+		for _, line := range lifter.FlatCallEntry() {
+			fmt.Fprintln(w, line)
+		}
+		for _, line := range lifter.FlatJumpEntryLabel(sym) {
+			fmt.Fprintln(w, line)
 		}
 	}
-	fmt.Fprintf(w, "    b    _recomp_call_shim\n\n")
+	writeFullBridgeCall(w, shim, addr)
 }
 
 func (e *AsmEmitter) emitChunkRegistration(path string, chunkIdx int, chunkAddrs []uint64) error {
@@ -552,7 +719,7 @@ func (e *AsmEmitter) emitChunkRegistration(path string, chunkIdx int, chunkAddrs
 // EmitTrampoline writes the ARM64 assembly bridge between the host C runtime and guest
 // assembly (trampolineAsm).
 func (e *AsmEmitter) EmitTrampoline(path string) error {
-	return writeFileIfChanged(path, []byte(trampolineAsm))
+	return writeFileIfChanged(path, []byte(e.lifter.RewriteGuestMem(TrampolineSource(lifter.GetCallModel())+X87BridgeSource(lifter.GetCallModel()))))
 }
 
 // EmitDispatch ties all chunk registrations together.
@@ -590,12 +757,19 @@ func (e *AsmEmitter) EmitMainRunner(path string) error {
 		vfsInitArg = fmt.Sprintf("%q", e.AppDir)
 	}
 
+	memConfig := "// Guest memory model: the runtime default (base mode, console layout)."
+	if e.Mem != nil {
+		memConfig = e.Mem.CConfig()
+	}
+
 	content := fmt.Sprintf(`#include "recomp_runtime.h"
 #include "ps4_vfs.h"
 #include "ps4_sysmodule.h"
 
 extern void recomp_init_dispatch_table(void);
 extern void recomp_enter_guest(GuestContext *ctx, uint64_t target_fn);
+
+%s
 
 typedef struct {
     int argc;
@@ -604,8 +778,10 @@ typedef struct {
 
 // Guest code runs on a secondary host thread so the host main thread stays free
 // for AppKit (window creation, event pumping, dialogs).
+void nps5_guest_thread_qos(int is_main);
 static void *guest_main(void *p) {
     GuestMainArgs *a = (GuestMainArgs *)p;
+    nps5_guest_thread_qos(1);
     int argc = a->argc;
     char **argv = a->argv;
     printf("[ps4-recomp] Initializing runtime (ARM64 Assembly Backend)...\n");
@@ -662,7 +838,7 @@ int main(int argc, char **argv) {
     ps4_host_run_main_loop();
     return 0;
 }
-`, vfsInitArg, tlsInitSource(e.elf.TLSModules), e.elf.ProcParamAddr, entryAddr, entryName, entryAddr, entryAddr, entryAddr, vfsInitArg)
+`, memConfig, vfsInitArg, tlsInitSource(e.elf.TLSModules), e.elf.ProcParamAddr, entryAddr, entryName, entryAddr, entryAddr, entryAddr, vfsInitArg)
 
 	return writeFileIfChanged(path, []byte(content))
 }
@@ -783,6 +959,13 @@ func (e *AsmEmitter) EmitGuestModules(path string) error {
 		}
 		fmt.Fprintf(w, "__attribute__((weak)) void %s(GuestContext *ctx) { recomp_unimplemented_shim(ctx, %q); }\n", s, s)
 	}
+	// A lean stub calls lean_<name>; where the runtime does not define it (a build without the module
+	// that has the lean variant), the weak fallback runs the full shim on the stored context.
+	for _, s := range sortedShims {
+		if l, ok := leanInfo(s); ok {
+			w.WriteString(leanWeakFallback(l.Lean, s))
+		}
+	}
 	w.WriteString("\n")
 
 	w.WriteString("static const RecompModuleExport recomp_host_shim_exports[] = {\n")
@@ -830,6 +1013,34 @@ func (e *AsmEmitter) EmitGuestModules(path string) error {
 		}
 		unresolvedSynth = append(unresolvedSynth, addr)
 		fmt.Fprintf(w, "    extern void fn_0x%x(GuestContext *ctx);\n    recomp_register_fn(0x%xULL, fn_0x%x);\n", addr, addr, addr)
+	}
+	// GOT-style imports (-fno-plt, `call [rip+GOT]`) bound to a host shim: the slot
+	// holds its own address as the stub ID and is never a CFG target, so it
+	// needs the same synthesized stub + registration as an unresolved slot.
+	type gotShim struct {
+		addr uint64
+		shim string
+	}
+	var gotShims []gotShim
+	if e.elf != nil {
+		seenGOT := make(map[uint64]bool)
+		for _, rel := range e.elf.Relocations {
+			for _, addr := range []uint64{rel.PltAddr, rel.Offset} {
+				shim, ok := e.shimMap[addr]
+				if addr == 0 || !ok || shim == unresolvedStubShim || isFunc[addr] || seenGOT[addr] {
+					continue
+				}
+				if _, un := e.unresolved[addr]; un {
+					continue
+				}
+				seenGOT[addr] = true
+				gotShims = append(gotShims, gotShim{addr, shim})
+			}
+		}
+		slices.SortFunc(gotShims, func(a, b gotShim) int { return cmp.Compare(a.addr, b.addr) })
+	}
+	for _, g := range gotShims {
+		fmt.Fprintf(w, "    extern void fn_0x%x(GuestContext *ctx);\n    recomp_register_fn(0x%xULL, fn_0x%x);\n", g.addr, g.addr, g.addr)
 	}
 	for _, line := range synthRegs {
 		w.WriteString(line)
@@ -944,14 +1155,38 @@ func (e *AsmEmitter) EmitGuestModules(path string) error {
 	var sBuf bytes.Buffer
 	sw := bufio.NewWriter(&sBuf)
 	sw.WriteString("// Synthetic shims ARM64 bridge\n" + guestTextSection + "\n.p2align 2\n\n")
+	stub := func(addr uint64, shim string) {
+		writeShimStub(sw, fmt.Sprintf("_fn_0x%x", addr), shim, addr)
+		e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Chunk: filepath.Base(synthPath)})
+	}
 	for _, entry := range synthList {
-		writeShimStub(sw, fmt.Sprintf("_fn_0x%x", entry.addr), entry.shim, entry.addr)
+		stub(entry.addr, entry.shim)
 	}
 	for _, addr := range unresolvedSynth {
-		writeShimStub(sw, fmt.Sprintf("_fn_0x%x", addr), unresolvedStubShim, addr)
+		stub(addr, unresolvedStubShim)
+	}
+	for _, g := range gotShims {
+		stub(g.addr, g.shim)
 	}
 	if err := sw.Flush(); err != nil {
 		return err
 	}
 	return writeFileIfChanged(synthPath, sBuf.Bytes())
+}
+
+// leanWeakFallback is the weak C definition of a lean function for runtimes built without its module. The lean return carries
+// rax only (the lean bridge reloads rax and r8-r15 from the saved registers), so a full shim run here must not change anything else
+// the guest could observe: it runs on the saved context with the argument registers set, its own return-address pop is undone (the
+// lean bridge returns itself), and a shim that changed rdx, a callee-saved register or xmm0 is refused loudly rather than silently
+// losing the write.
+func leanWeakFallback(lean, shim string) string {
+	return fmt.Sprintf("__attribute__((weak)) uint64_t %s(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, GuestContext *ctx) {\n"+
+		"    ctx->rdi = a0; ctx->rsi = a1; ctx->rdx = a2; ctx->rcx = a3; ctx->r8 = a4; ctx->r9 = a5;\n"+
+		"    const uint64_t sp = ctx->rsp, rdx = ctx->rdx, rbx = ctx->rbx, rbp = ctx->rbp, r12 = ctx->r12, r13 = ctx->r13, r14 = ctx->r14, r15 = ctx->r15;\n"+
+		"    const uint64_t x0 = ctx->xmm[0].u64[0], x1 = ctx->xmm[0].u64[1];\n"+
+		"    %s(ctx);\n    ctx->rsp = sp;\n"+
+		"    if (ctx->rdx != rdx || ctx->rbx != rbx || ctx->rbp != rbp || ctx->r12 != r12 || ctx->r13 != r13 || ctx->r14 != r14 || ctx->r15 != r15 ||\n"+
+		"        ctx->xmm[0].u64[0] != x0 || ctx->xmm[0].u64[1] != x1) {\n"+
+		"        recomp_unimplemented_shim(ctx, \"%s (lean fallback would lose a guest register write; rebuild with the lean module)\");\n    }\n"+
+		"    return ctx->rax;\n}\n", lean, shim, lean)
 }

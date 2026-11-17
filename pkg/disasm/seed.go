@@ -13,9 +13,47 @@ import (
 // and every STT_FUNC symbol. When the image is stripped (few function symbols),
 // it also recovers pointers from relocations and read-only data.
 func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
+	opts := DefaultSeedOptions()
+	opts.AllSymbols = allSymbols
+	entries, _ := SeedEntryPointsOpts(loaded, opts)
+	return entries
+}
+
+// SeedOptions selects seed sources. DefaultSeedOptions is what the recompiler uses; the
+// switches exist so each source can be measured on its own (see docs/m1/discovery.md).
+type SeedOptions struct {
+	AllSymbols bool
+	// WritableData scans initialized writable segments (.data.rel.ro, .data, .got,
+	// init/fini arrays) for code pointers. PS5 SDK images put .data.rel.ro/.got/.rodata in
+	// one RW segment, so a read-only-only scan never sees vtables there.
+	WritableData bool
+	// LandingPads seeds the landing pads named by .gcc_except_table call-site records.
+	LandingPads bool
+	// ReturnSites seeds the address after every LSDA call-site region (a throwing call's
+	// return address), so a return or unwinder resume there has a dispatch entry.
+	ReturnSites bool
+}
+
+// DefaultSeedOptions enables every seed source that has been validated.
+func DefaultSeedOptions() SeedOptions {
+	return SeedOptions{WritableData: true, LandingPads: true}
+}
+
+// SeedReport counts the seeds each source contributed that no earlier source had.
+type SeedReport struct {
+	New map[string]int
+	// Rejected counts candidate pointers dropped by decode validation, per source.
+	Rejected map[string]int
+}
+
+// SeedEntryPointsOpts is SeedEntryPoints with explicit source switches and a per-source report.
+func SeedEntryPointsOpts(loaded *elfloader.LoadedELF, opts SeedOptions) ([]uint64, *SeedReport) {
+	rep := &SeedReport{New: map[string]int{}, Rejected: map[string]int{}}
 	if loaded == nil {
-		return nil
+		return nil, rep
 	}
+	allSymbols := opts.AllSymbols
+	src := "entry"
 	seen := make(map[uint64]struct{}, 256)
 	var entries []uint64
 	add := func(addr uint64) {
@@ -27,24 +65,35 @@ func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
 		}
 		seen[addr] = struct{}{}
 		entries = append(entries, addr)
+		rep.New[src]++
 	}
 	// Pointer relocations name function entries. When the target module carries unwind
 	// extents, the entry has to be one of those starts. A PC-relative reloc
 	// addend is not a pointer and is ignored.
 	addPtr := func(addr uint64) {
-		if loaded.InUnwindScope(addr) {
-			if loaded.IsFuncEntry(addr) {
-				add(addr)
-			}
+		if loaded.IsFuncEntry(addr) {
+			add(addr)
 			return
 		}
-		if !looksLikeFuncStart(loaded.MemoryImage, addr) {
+		if loaded.InFuncExtent(addr) {
+			// Strictly inside an FDE-covered function: a label or resume address, not an entry.
+			return
+		}
+		if len(loaded.FuncBounds) > 0 {
+			// Code the unwind tables do not cover (stripped or hand-written regions): the
+			// pointer has to look like a function start (gapEntryOK is the whole test).
+			if !gapEntryOK(loaded.MemoryImage, addr) {
+				rep.Rejected[src]++
+				return
+			}
+		} else if !looksLikeFuncStart(loaded.MemoryImage, addr) {
 			return
 		}
 		add(addr)
 	}
 
 	add(loaded.EntryPoint)
+	src = "init_array"
 	for _, addr := range loaded.InitArray {
 		add(addr)
 	}
@@ -52,6 +101,7 @@ func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
 		add(mainSym.Address)
 	}
 
+	src = "symbols"
 	funcSyms := 0
 	for _, sym := range loaded.Symbols {
 		if sym.Type != elf.STT_FUNC || sym.Address == 0 {
@@ -67,19 +117,19 @@ func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
 	// the symbol table is complete: static functions have no STT_FUNC dynsym.
 	// The applied slot is the pointer. After a module bias the reloc addend
 	// itself is stale, and a PC32 addend was never a virtual address.
+	src = "relocs"
 	for _, rel := range loaded.Relocations {
 		switch rel.Type {
 		case elfloader.R_X86_64_RELATIVE, elfloader.R_X86_64_64:
 		default:
 			continue
 		}
-		if rel.Offset+8 > uint64(len(loaded.MemoryImage)) {
-			continue
+		if val, ok := loaded.MemoryImage.U64(rel.Offset); ok {
+			addPtr(val)
 		}
-		val := binary.LittleEndian.Uint64(loaded.MemoryImage[rel.Offset : rel.Offset+8])
-		addPtr(val)
 	}
 
+	src = "ro_scan"
 	// Dense RO-segment scan recovers function pointer tables (vtables, relro)
 	// that are not in the dynamic symbol table or relocation table.
 
@@ -92,15 +142,16 @@ func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
 		if seg.Flags&elf.PF_W != 0 {
 			continue
 		}
-		if seg.Memsz < 8 || seg.Vaddr+8 > uint64(len(loaded.MemoryImage)) {
+		if seg.Memsz < 8 {
 			continue
 		}
-		end := seg.Vaddr + seg.Memsz
-		if end > uint64(len(loaded.MemoryImage)) {
-			end = uint64(len(loaded.MemoryImage))
+		// The segment's bytes as far as the image holds them (Memsz may run past the region).
+		data := loaded.MemoryImage.From(seg.Vaddr)
+		if uint64(len(data)) > seg.Memsz {
+			data = data[:seg.Memsz]
 		}
-		for addr := seg.Vaddr; addr+8 <= end; addr += 8 {
-			val := binary.LittleEndian.Uint64(loaded.MemoryImage[addr : addr+8])
+		for off := 0; off+8 <= len(data); off += 8 {
+			val := binary.LittleEndian.Uint64(data[off:])
 			if val&3 != 0 {
 				continue
 			}
@@ -108,20 +159,136 @@ func SeedEntryPoints(loaded *elfloader.LoadedELF, allSymbols bool) []uint64 {
 		}
 	}
 
-	if allSymbols && len(loaded.FuncBounds) > 0 {
-		for _, b := range loaded.FuncBounds {
-			add(b.Start)
+	if opts.WritableData {
+		src = "data_scan"
+		seedWritableData(loaded, addPtr, add, rep)
+	}
+
+	// Every .eh_frame FDE describes a function extent the compiler emitted,
+	// reachable or not (callbacks, virtual methods, tail-call targets, code
+	// reached only through indirect calls). Seeding all of them recovers
+	// functions the call graph and relocations alone miss.
+	src = "fde"
+	for _, b := range loaded.FuncBounds {
+		add(b.Start)
+	}
+	src = "fini"
+
+	// DT_FINI and DT_FINI_ARRAY entries run at exit and are called by nothing.
+	if loaded.DynamicTags != nil {
+		if fini, ok := loaded.DynamicTags[13]; ok {
+			add(fini)
+		}
+		if arr, ok := loaded.DynamicTags[26]; ok && arr != 0 {
+			sz := loaded.DynamicTags[28]
+			for off := uint64(0); off+8 <= sz; off += 8 {
+				fn, ok := loaded.MemoryImage.U64(arr + off)
+				if !ok {
+					break
+				}
+				add(fn)
+			}
 		}
 	}
 
-	return entries
+	if opts.LandingPads || opts.ReturnSites {
+		eh := ParseLSDA(loaded)
+		if opts.LandingPads {
+			src = "landing_pad"
+			for _, lp := range eh.LandingPads {
+				add(lp)
+			}
+		}
+		if opts.ReturnSites {
+			src = "return_site"
+			for _, rs := range eh.ReturnSites {
+				add(rs)
+			}
+		}
+	}
+
+	return entries, rep
 }
 
-func looksLikeFuncStart(img []byte, addr uint64) bool {
-	if addr >= uint64(len(img)) || !prologueByte(img[addr]) {
+// seedWritableData scans the file-backed part of every non-executable writable segment for
+// 8-aligned words that point into code. Integers collide with code addresses here, so a
+// candidate must be a known entry (FDE start) or pass plausibleEntry (16-aligned, and a
+// straight-line run of valid non-privileged instructions).
+func seedWritableData(loaded *elfloader.LoadedELF, addPtr func(uint64), add func(uint64), rep *SeedReport) {
+	img := loaded.MemoryImage
+	for _, seg := range loaded.Segments {
+		if seg.Flags&elf.PF_X != 0 || seg.Flags&elf.PF_W == 0 {
+			continue
+		}
+		n := seg.Filesz
+		if n > seg.Memsz {
+			n = seg.Memsz
+		}
+		data := img.From(seg.Vaddr)
+		if uint64(len(data)) > n {
+			data = data[:n]
+		}
+		// 8-aligned guest addresses inside the segment.
+		for off := (8 - seg.Vaddr%8) % 8; off+8 <= uint64(len(data)); off += 8 {
+			val := binary.LittleEndian.Uint64(data[off:])
+			if val == 0 || !loaded.InExecutable(val) || loaded.InData(val) {
+				continue
+			}
+			if loaded.IsFuncEntry(val) {
+				add(val)
+				continue
+			}
+			if loaded.InFuncExtent(val) {
+				// FDE-covered code: a real entry is an FDE start, anything else is a
+				// pointer into a function body (resume address, jump slot) or an integer.
+				continue
+			}
+			if val&15 != 0 || !plausibleEntry(img, val) {
+				rep.Rejected["data_scan"]++
+				continue
+			}
+			add(val)
+		}
+	}
+}
+
+// plausibleEntry decodes up to 6 instructions from addr and reports whether they form a
+// valid straight-line prologue-like run (no decode error, nothing privileged).
+func plausibleEntry(img *elfloader.Image, addr uint64) bool {
+	if !looksLikeFuncStart(img, addr) {
 		return false
 	}
-	inst, err := x86asm.Decode(img[addr:], 64)
+	return cleanRun(img, addr)
+}
+
+// cleanRun decodes up to 6 instructions from addr: no decode error and nothing privileged up
+// to the first terminator.
+func cleanRun(img *elfloader.Image, addr uint64) bool {
+	pc := addr
+	for i := 0; i < 6; i++ {
+		code := img.From(pc)
+		if code == nil {
+			return false
+		}
+		inst, err := x86asm.Decode(code, 64)
+		if err != nil || inst.Len == 0 || isPrivileged(inst.Op) {
+			return false
+		}
+		switch inst.Op {
+		case x86asm.RET, x86asm.JMP, x86asm.UD2, x86asm.INT:
+			return true
+		}
+		pc += uint64(inst.Len)
+	}
+	return true
+}
+
+func looksLikeFuncStart(img *elfloader.Image, addr uint64) bool {
+	code := img.From(addr)
+	if len(code) == 0 || !prologueByte(code[0]) {
+		return false
+	}
+	inst, err := x86asm.Decode(code, 64)
 	if err != nil || inst.Len == 0 || isPrivileged(inst.Op) {
 		return false
 	}
@@ -140,4 +307,27 @@ func prologueByte(b byte) bool {
 	default:
 		return false
 	}
+}
+
+// gapEntryOK reports whether addr, in code without unwind coverage, plausibly starts a
+// function: it decodes cleanly (plausibleEntry) and is 16-aligned or follows padding or a
+// terminator (int3, nop, ret).
+//
+// A 16-aligned address behind padding is where the compiler puts a function, so there the
+// first-byte prologue filter does not apply: only the clean run is required. Small virtual
+// methods and getters start with whatever their first statement is (cmp/test on a member, xor
+// eax, movzx, a VEX load) and are reached through vtables and callbacks only; filtered out,
+// they and everything only they call are missing from the translation.
+func gapEntryOK(img *elfloader.Image, addr uint64) bool {
+	prev := img.Bytes(addr-1, 1)
+	afterPad := len(prev) == 1 && (prev[0] == 0xCC || prev[0] == 0x90 || prev[0] == 0xC3)
+	if addr&15 == 0 && afterPad {
+		code := img.From(addr)
+		// Padding itself is not an entry (a pointer into an int3/nop run).
+		return len(code) > 0 && code[0] != 0xCC && cleanRun(img, addr)
+	}
+	if !plausibleEntry(img, addr) {
+		return false
+	}
+	return addr&15 == 0 || afterPad
 }
