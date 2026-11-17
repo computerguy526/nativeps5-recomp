@@ -10,6 +10,8 @@
 #include <mach/mach_vm.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,6 +122,42 @@ static int overflow(volatile int n) {
 }
 static void *overflow_thread(void *a) { (void)a; nps5_diag_thread_init(); overflow(0); return NULL; }
 
+// ---- a second thread fails while the first crash is being reported (the release play-test crash: the reporting
+// thread was in exit(), a render thread threw from a destroyed mutex and aborted -> "recursive crash", no summary).
+static _Atomic int g_second_go, g_second_in;
+static void *second_thread(void *a) {
+  (void)a;
+  while (!atomic_load(&g_second_go)) usleep(1000);
+  atomic_store(&g_second_in, 1);
+  abort(); // what std::terminate does
+}
+static void legacy_two(int sig, siginfo_t *si, void *u) { // stands for the stderr report + exit(1) of recomp_runtime.c
+  (void)sig; (void)si; (void)u;
+  atomic_store(&g_second_go, 1);
+  while (!atomic_load(&g_second_in)) usleep(1000);
+  usleep(300 * 1000); // the second thread is in its abort by now
+  nps5_diag_crash_finalize();
+  char p[700];
+  snprintf(p, sizeof p, "%s/legacy_done", getenv("NPS5_RUNS_DIR"));
+  FILE *f = fopen(p, "w");
+  if (f) fclose(f);
+  exit(7);
+}
+static void legacy_rec(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; abort(); } // same thread again
+static void chain_before_diag(void (*fn)(int, siginfo_t *, void *)) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sa.sa_sigaction = fn;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  nps5_diag_install_crash_handlers(); // ours in front again, fn = the handler it chains to
+}
+static void __attribute__((noreturn)) crash_null(void) {
+  __asm__ volatile("mov x2, #0\n ldr x1, [x2]\n" : : : "x1", "x2", "memory");
+  _exit(4);
+}
+
 static int run_self(const char *mode, const char *runs) {
   char cmd[2048];
   extern char **environ;
@@ -142,6 +180,8 @@ int main(int argc, char **argv) {
     nps5_diag_set_tier1_failure("bad_manifest", 0x1234, "eboot.bin", 0x34, "jump", det);
     abort();
   }
+  if (argc > 1 && !strcmp(argv[1], "two")) { pthread_t t; pthread_create(&t, NULL, second_thread, NULL); chain_before_diag(legacy_two); crash_null(); }
+  if (argc > 1 && !strcmp(argv[1], "rec")) { chain_before_diag(legacy_rec); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
   test_redact();
   test_thread_init();
@@ -166,6 +206,25 @@ int main(int argc, char **argv) {
   CHECK(file_has(d3, "^tier1_detail: open ~/x/lifter_manifest.json: no such file (work dir kept: ~/y)"));
   CHECK(file_has(d3, "^note: tier-1 miss at guest 0x1234 (eboot.bin+0x34): bad_manifest: open ~/x/"));
   if (getenv("HOME") && strlen(getenv("HOME")) > 1) CHECK(!file_has(d3, getenv("HOME")));
+  // second thread aborts during the report: the first report still finishes (legacy handler's exit code, summary
+  // written, no "recursive crash" exit), repeated because it is a race
+  char d4[600], d5[600];
+  for (int i = 0; i < 20; i++) {
+    snprintf(d4, sizeof d4, "%s.two%d", base, i); mkdir(d4, 0755);
+    st = run_self("two", d4);
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 7);
+    CHECK(file_has(d4, "nps5 crash report v1"));
+    CHECK(file_has(d4, "^fault_addr: 0x0"));
+    snprintf(cmd, sizeof cmd, "test -f '%s/legacy_done' && grep -q '^crashed: 1' '%s'/*/summary.txt && grep -q '\"result\": \"crash\"' '%s'/*/manifest.json", d4, d4, d4);
+    CHECK(system(cmd) == 0);
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", d4); system(cmd);
+  }
+  // a fault on the reporting thread itself is still cut short (exit 128 + SIGABRT), with the report on disk
+  snprintf(d5, sizeof d5, "%s.rec", base); mkdir(d5, 0755);
+  st = run_self("rec", d5);
+  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 128 + SIGABRT);
+  CHECK(file_has(d5, "nps5 crash report v1"));
+  snprintf(cmd, sizeof cmd, "rm -rf '%s'", d5); system(cmd);
   snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s' '%s'", d1, d2, d3); system(cmd);
   printf(fails ? "diag_unit: %d FAILURES\n" : "diag_unit: all passed\n", fails);
   return fails ? 1 : 0;

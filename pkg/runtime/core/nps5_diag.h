@@ -79,6 +79,8 @@ int nps5_diag_guest_fn_name(uint64_t fn_entry, const char **fn_name);
 // is reported by the crash handler instead of killing the process silently. Idempotent. Call first thing in every
 // guest or host thread's start routine (the constructor thread has one already).
 void nps5_diag_thread_init(void);
+// Writes the run bundle summary/manifest at once (crash handlers that end the process with exit()). Idempotent.
+void nps5_diag_crash_finalize(void);
 
 // Run-bundle path redaction: copies in to out (at most cap-1 bytes, always NUL-terminated; returns the length) with
 // the user's home directory replaced by "~". A path starts at the beginning of the text or after one of ":= ,;"

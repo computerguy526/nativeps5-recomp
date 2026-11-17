@@ -93,6 +93,7 @@ static struct timespec g_t0;
 static struct timeval g_wall0;
 static int g_started;
 static _Atomic int g_crashed;
+static _Atomic uintptr_t g_crash_owner; // the thread writing the crash report (set right after it wins g_crashed)
 static _Atomic int g_faults;
 static _Atomic int g_exiting;
 static char g_note[512];
@@ -1057,6 +1058,15 @@ static void diag_atexit_fwd(void) { diag_atexit(); }
 
 __attribute__((weak)) _Thread_local int g_nps5_in_crash_handler; // nps5_mem.h; weak in both files so each links alone
 
+// For a crash handler that ends the process itself (the stderr report in recomp_runtime.c calls exit): write the
+// bundle's summary and manifest NOW, before any library teardown runs, so they exist whatever exit() runs into.
+// Idempotent (the atexit call that follows is then a no-op); the alarm bounds everything that comes after.
+void nps5_diag_crash_finalize(void) {
+  signal(SIGALRM, SIG_DFL);
+  alarm(5);
+  diag_atexit_fwd();
+}
+
 #define NPS5_MAX_RESOLVERS 4
 typedef struct {
   Nps5FaultResolver plain;
@@ -1149,11 +1159,21 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
   alarm(2);
   int exp = 0;
   if (!atomic_compare_exchange_strong(&g_crashed, &exp, 1)) {
-    // A fault inside the handler (or a second thread crashing): give up quickly.
+    if (atomic_load(&g_crash_owner) != (uintptr_t)pthread_self()) {
+      // ANOTHER thread crashed while the first crash is still being reported (typical: the reporting thread is in
+      // exit(), library teardown destroys a mutex, a thread that still runs throws from it and std::terminate
+      // aborts). Ending the process here would cut the first report short (seen: no summary, "recursive crash").
+      // Park this thread: the reporting thread ends the process, and its alarm bounds the wait.
+      static const char m[] = "nps5: a second thread failed while the crash report is being written; it waits for the report\n";
+      (void)!write(2, m, sizeof m - 1);
+      for (;;) pause();
+    }
+    // A fault inside the handler on the reporting thread itself: give up quickly.
     static const char m[] = "nps5: recursive crash, aborting\n";
     (void)!write(2, m, sizeof m - 1);
     _exit(128 + sig);
   }
+  atomic_store(&g_crash_owner, (uintptr_t)pthread_self());
   atomic_fetch_add(&g_faults, 1);
   crash_report(sig, si, uctx);
   // Symbolise with dladdr in a second pass; it is not async-signal-safe, so the report above is

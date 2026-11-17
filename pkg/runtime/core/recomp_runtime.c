@@ -41,6 +41,7 @@ void recomp_set_current_ctx(GuestContext *ctx) {
 }
 
 static _Atomic int g_crashing = 0;
+__attribute__((weak)) void nps5_diag_crash_finalize(void); // nps5_diag.c
 
 int ps4_host_crashing(void) { return g_crashing; }
 
@@ -232,6 +233,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
     backtrace_symbols_fd(callstack, frames, 2);
   }
   fflush(stderr);
+  if (nps5_diag_crash_finalize) nps5_diag_crash_finalize(); // run bundle complete before exit() runs library teardown
   exit(1);
 }
 

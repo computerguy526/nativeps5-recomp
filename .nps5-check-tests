@@ -5,3 +5,4 @@ for f in tools/*.sh; do bash -n "$f" || exit 1; done
 bash tools/kernelfs_unit.sh
 bash tools/diag_unit.sh
 bash tools/hlesys_unit.sh
+GOFLAGS=-mod=vendor go test ./pkg/runtime -run TestHostAccessHooks -count=1
