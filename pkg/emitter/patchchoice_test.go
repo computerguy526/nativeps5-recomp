@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"ps4-recomp/pkg/disasm"
+	"ps4-recomp/pkg/elfloader"
 	"ps4-recomp/pkg/lifter"
 
 	"golang.org/x/arch/x86/x86asm"
@@ -310,6 +311,41 @@ func TestShippedProfileUpscaling(t *testing.T) {
 	}
 	if nf != 2 || ni != 2 {
 		t.Errorf("%d float and %d integer sites", nf, ni)
+	}
+	// Every site names the function that contains it (the binder refuses sites without it).
+	for _, s := range up.Sites {
+		a, err1 := strconv.ParseUint(strings.TrimPrefix(s.Addr, "0x"), 16, 64)
+		fn, err2 := strconv.ParseUint(strings.TrimPrefix(s.Func, "0x"), 16, 64)
+		if err1 != nil || err2 != nil || len(s.FuncSHA256) != 64 || a < fn || a >= fn+s.FuncSize {
+			t.Errorf("site %s: function identity %q +%d %q", s.Addr, s.Func, s.FuncSize, s.FuncSHA256)
+		}
+	}
+}
+
+// TestShippedProfileBindsTitle binds the shipped PPSA21564 profile to the title's eboot.bin
+// (NPS5_TEST_PPSA21564_EBOOT = path of the user's own dump; skipped without it): every site,
+// with its function identity, matches build 01.007.
+func TestShippedProfileBindsTitle(t *testing.T) {
+	path := os.Getenv("NPS5_TEST_PPSA21564_EBOOT")
+	if path == "" {
+		t.Skip("NPS5_TEST_PPSA21564_EBOOT not set")
+	}
+	p, err := LoadPatchProfile(filepath.Join("..", "..", "profiles", "patches", "PPSA21564.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := elfloader.LoadELF(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &AsmEmitter{elf: l, shimMap: map[uint64]string{}}
+	e.lifter = lifter.NewArm64LifterMode(nil, lifter.AddrBase)
+	rep, err := e.ApplyPatchProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sites != 5 || strings.Join(rep.Keys, ",") != "fast_lighting,upscaling" {
+		t.Errorf("report %+v", rep)
 	}
 }
 

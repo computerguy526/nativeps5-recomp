@@ -56,6 +56,9 @@
               "addr": "0x73be6f6",
               "bytes": "c5fa10051e15f900",
               "op": "value-f32",
+              "func": "0x73be670",
+              "func_size": 79354,
+              "func_sha256": "585365f787f546fecda455c39edd27ccd2a2fbd3161c62cd6626a287f54d480f",
               "values": [
                 "1920",
                 "1600",
@@ -67,6 +70,9 @@
               "addr": "0x73be705",
               "bytes": "48ba8007000038040000",
               "op": "value",
+              "func": "0x73be670",
+              "func_size": 79354,
+              "func_sha256": "585365f787f546fecda455c39edd27ccd2a2fbd3161c62cd6626a287f54d480f",
               "values": [
                 "0x43800000780",
                 "0x38400000640",
@@ -78,6 +84,9 @@
               "addr": "0x70d006c",
               "bytes": "c5f96e05a8fb2701",
               "op": "value-f32",
+              "func": "0x70cef60",
+              "func_size": 26565,
+              "func_sha256": "5b103fce3ff8de4c813be8c24e03c98fa5538a44d0179d28a1d302b5c58bc245",
               "values": [
                 "1920",
                 "1600",
@@ -89,6 +98,9 @@
               "addr": "0x70d0074",
               "bytes": "48b98007000038040000",
               "op": "value",
+              "func": "0x70cef60",
+              "func_size": 26565,
+              "func_sha256": "5b103fce3ff8de4c813be8c24e03c98fa5538a44d0179d28a1d302b5c58bc245",
               "values": [
                 "0x43800000780",
                 "0x38400000640",
