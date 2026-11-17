@@ -44,7 +44,7 @@ Where nativeps5 differs: the host is macOS arm64, the pull request template is o
 GOFLAGS=-mod=vendor go build -o bin/ps4-recomp ./cmd/ps4-recomp   # modules are vendored; go.mod asks for the Go version the build prints
 GOFLAGS=-mod=vendor go build -o bin/nps5 ./cmd/nps5               # or scripts/build.sh recomp in the entry repository
 go test ./pkg/diag/ ./pkg/elfloader/ ./pkg/disasm/ ./pkg/cli/ ./pkg/thunkgen/   # quick; go test ./pkg/... is the full set (minutes)
-bash tools/diag_unit.sh; bash tools/kernelfs_unit.sh; bash tools/hlesys_unit.sh; bash tools/framerate_unit.sh   # C unit tests, CPU only
+bash tools/diag_unit.sh; bash tools/kernelfs_unit.sh; bash tools/hlesys_unit.sh; bash tools/framerate_unit.sh; bash tools/avsync_unit.sh   # C unit tests, CPU only
 tools/regress.sh --quick      # calc3d frame 0 exact, syobon, greenhollow; use a private REGRESS_DIR
 ```
 
