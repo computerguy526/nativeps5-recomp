@@ -116,6 +116,10 @@ static void ao2_once(const char *what, const char *detail) {
   NPS5_LOG(NPS5_S_AUDIO, NPS5_L_WARN, "audioout2: %s: %s", what, detail);
 }
 
+extern int nps5_haptics_open(void);
+extern void nps5_haptics_push(const float *lr, uint32_t frames);
+#include "nps5_haptics_logic.h"
+
 #define RET32(ctx, v) do { (ctx)->rax = (uint64_t)(int64_t)(int32_t)(v); SHIM_RETURN(); } while (0)
 
 // ---- folding to stereo (gains from AnyPS5's STEREO_FOLDS)
@@ -298,7 +302,10 @@ void shim_sceAudioOut2PortCreate(GuestContext *ctx) {
   for (int i = 0; i < AO2_MAX_CH; i++) p->volume[i] = 1.0f;
   *out = (uint64_t)idx + 1;
   pthread_mutex_unlock(&g_lock);
-  if (pp->port_type == AO2_PORT_PAD_VIBRATION) ao2_once("PortCreate(vibration)", "haptic audio is dropped; the host has no controller haptics");
+  if (pp->port_type == AO2_PORT_PAD_VIBRATION) {
+    if (nps5_haptics_open()) ao2_once("PortCreate(vibration)", "haptic audio goes to the controller (HD or rumble; NPS5_HAPTICS=0 disables)");
+    else ao2_once("PortCreate(vibration)", "haptic audio is dropped (NPS5_HAPTICS=0)");
+  }
   RET32(ctx, AO2_OK);
 }
 
@@ -370,11 +377,19 @@ void shim_sceAudioOut2PortSetAttributes(GuestContext *ctx) {
 static void mix_context(GuestContext *ctx, Ao2Ctx *c, float *out) {
   memset(out, 0, (size_t)c->grain * 2 * sizeof(float));
   int idx = (int)(c - g_ctx);
+  float *hap = NULL;
   for (int pi = 0; pi < AO2_MAX_PORTS; pi++) {
     Ao2Port *p = &g_ports[pi];
     if (!p->used || p->ctx_idx != idx || p->channels == 0) continue;
     if (p->type == AO2_PORT_PAD_VIBRATION) {
-      if (p->nqueued) { free(p->queued[0].pcm); memmove(&p->queued[0], &p->queued[1], sizeof(Ao2Queued) * (size_t)(p->nqueued - 1)); p->nqueued--; }
+      if (p->nqueued) {
+        // Haptic audio: stereo accumulation for the controller (wait-free hand-off; see nps5_haptics.c).
+        if (!hap) hap = (float *)calloc((size_t)c->grain * 2, sizeof(float));
+        if (hap) nps5_hap_accumulate(p->queued[0].pcm, c->grain, p->channels, p->is_int16, p->volume, hap);
+        free(p->queued[0].pcm);
+        memmove(&p->queued[0], &p->queued[1], sizeof(Ao2Queued) * (size_t)(p->nqueued - 1));
+        p->nqueued--;
+      }
       continue;
     }
     const void *data = NULL;
@@ -406,6 +421,7 @@ static void mix_context(GuestContext *ctx, Ao2Ctx *c, float *out) {
     }
     free(owned);
   }
+  if (hap) { nps5_haptics_push(hap, c->grain); free(hap); }
   for (uint32_t i = 0; i < c->grain * 2; i++) {
     float v = out[i] * AO2_MASTER_GAIN;
     out[i] = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);

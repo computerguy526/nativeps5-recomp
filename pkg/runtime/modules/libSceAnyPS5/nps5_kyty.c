@@ -734,4 +734,19 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   return true;
 }
 
+// Pad vibration audio to the Kyty library's DualSense haptics (USB 4-channel device / Bluetooth HID audio). lr: stereo
+// float frames. Returns the microseconds queued, 0 when the library is not loaded or no DualSense took it. Called from
+// the haptics pump thread (never the audio thread).
+uint64_t nps5_kyty_queue_pad_audio(uint32_t freq, const float *lr, uint32_t frames) {
+  typedef uint64_t (*Fn)(uint32_t, int, const void *, uint32_t, uint32_t, int, float);
+  static Fn fn;
+  static int tried;
+  if (!g_lib) return 0;
+  if (!tried) { fn = (Fn)dlsym(g_lib, "KytyGpuQueuePadAudio"); tried = 1; }
+  return fn ? fn(freq, 0, lr, frames, 2, 1, 1.0f) : 0;
+}
+
+#else
+#include <stdint.h>
+uint64_t nps5_kyty_queue_pad_audio(uint32_t freq, const float *lr, uint32_t frames) { (void)freq; (void)lr; (void)frames; return 0; }
 #endif // NPS5_HAVE_ANYPS5_AGC
