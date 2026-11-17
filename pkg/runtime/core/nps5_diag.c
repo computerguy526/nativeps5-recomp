@@ -16,6 +16,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -1213,29 +1214,45 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
 
 // Per-thread alternate signal stack: the handlers use SA_ONSTACK, so a thread without one dies silently on a stack
 // overflow (the handler has no stack to run on). The stack is released through a pthread key destructor at thread exit.
-#define NPS5_THREAD_ALTSTACK (64 * 1024)
+// The stack is a private mapping with an inaccessible page below it: the handler may start deep inside another handler
+// (a fault that a resolver is still serving, then a crash or a sent signal on top), and a static or malloc'd 64 KiB
+// block then overflowed silently into neighbouring data that other threads keep writing (seen: stack-protector abort
+// at the end of write_pcmap_bin, no summary). Pages are committed on first touch, so the size costs address space only.
+#define NPS5_THREAD_ALTSTACK (256 * 1024)
+#define NPS5_MAIN_ALTSTACK (512 * 1024)
+#define NPS5_ALTSTACK_GUARD (16 * 1024)
 static pthread_key_t g_altstack_key;
 static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
+static void *altstack_map(size_t size) { // returns the usable base (above the guard), NULL on failure
+  char *m = mmap(NULL, size + NPS5_ALTSTACK_GUARD, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (m == MAP_FAILED) return NULL;
+  mprotect(m, NPS5_ALTSTACK_GUARD, PROT_NONE);
+  return m + NPS5_ALTSTACK_GUARD;
+}
 static void altstack_release(void *p) {
   stack_t off = {.ss_flags = SS_DISABLE};
   sigaltstack(&off, NULL);
-  free(p);
+  munmap((char *)p - NPS5_ALTSTACK_GUARD, NPS5_THREAD_ALTSTACK + NPS5_ALTSTACK_GUARD);
 }
 static void altstack_key_init(void) { pthread_key_create(&g_altstack_key, altstack_release); }
 void nps5_diag_thread_init(void) {
   stack_t cur;
   if (sigaltstack(NULL, &cur) == 0 && !(cur.ss_flags & SS_DISABLE)) return; // already installed (idempotent)
   pthread_once(&g_altstack_once, altstack_key_init);
-  void *mem = malloc(NPS5_THREAD_ALTSTACK);
+  void *mem = altstack_map(NPS5_THREAD_ALTSTACK);
   if (!mem) return;
   stack_t ss = {.ss_sp = mem, .ss_size = NPS5_THREAD_ALTSTACK, .ss_flags = 0};
-  if (sigaltstack(&ss, NULL) != 0) { free(mem); return; }
+  if (sigaltstack(&ss, NULL) != 0) { munmap((char *)mem - NPS5_ALTSTACK_GUARD, NPS5_THREAD_ALTSTACK + NPS5_ALTSTACK_GUARD); return; }
   pthread_setspecific(g_altstack_key, mem);
 }
 
 void nps5_diag_install_crash_handlers(void) {
-  stack_t ss = {.ss_sp = g_altstack, .ss_size = sizeof g_altstack, .ss_flags = 0};
-  sigaltstack(&ss, NULL);
+  stack_t cur;
+  if (!(sigaltstack(NULL, &cur) == 0 && !(cur.ss_flags & SS_DISABLE) && cur.ss_size >= NPS5_MAIN_ALTSTACK)) { // once per thread
+    void *mem = altstack_map(NPS5_MAIN_ALTSTACK); // kept for the life of the process
+    stack_t ss = {.ss_sp = mem ? mem : (void *)g_altstack, .ss_size = mem ? NPS5_MAIN_ALTSTACK : sizeof g_altstack, .ss_flags = 0};
+    sigaltstack(&ss, NULL);
+  }
   for (int i = 0; i < NSIG_HANDLED; i++) {
     struct sigaction cur;
     if (sigaction(k_sigs[i], NULL, &cur) == 0 && (cur.sa_flags & SA_SIGINFO) && cur.sa_sigaction == crash_handler) continue;

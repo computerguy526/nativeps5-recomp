@@ -158,6 +158,24 @@ static void __attribute__((noreturn)) crash_null(void) {
   _exit(4);
 }
 
+// ---- a crash on top of a handler that already runs deep on the alternate stack (a fault being served, then a crash
+// or a sent signal): the old 64 KiB stacks overflowed into neighbouring data; now there is room and a guard page.
+static void deep_handler(int sig) {
+  (void)sig;
+  volatile char pad[100 * 1024];
+  for (size_t i = 0; i < sizeof pad; i += 1024) pad[i] = (char)i;
+  __asm__ volatile("mov x2, #0\n ldr x1, [x2]\n" : : : "x1", "x2", "memory");
+  _exit(4 + pad[1024]);
+}
+static void deep_arm(void) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_flags = SA_ONSTACK;
+  sa.sa_handler = deep_handler;
+  sigaction(SIGUSR1, &sa, NULL);
+}
+static void *deep_thread(void *a) { (void)a; nps5_diag_thread_init(); pthread_kill(pthread_self(), SIGUSR1); return NULL; }
+
 static int run_self(const char *mode, const char *runs) {
   char cmd[2048];
   extern char **environ;
@@ -180,6 +198,8 @@ int main(int argc, char **argv) {
     nps5_diag_set_tier1_failure("bad_manifest", 0x1234, "eboot.bin", 0x34, "jump", det);
     abort();
   }
+  if (argc > 1 && !strcmp(argv[1], "deepmain")) { deep_arm(); raise(SIGUSR1); _exit(6); }
+  if (argc > 1 && !strcmp(argv[1], "deepthread")) { deep_arm(); pthread_t t; pthread_create(&t, NULL, deep_thread, NULL); pthread_join(t, NULL); _exit(6); }
   if (argc > 1 && !strcmp(argv[1], "two")) { pthread_t t; pthread_create(&t, NULL, second_thread, NULL); chain_before_diag(legacy_two); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "rec")) { chain_before_diag(legacy_rec); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
@@ -218,6 +238,17 @@ int main(int argc, char **argv) {
     snprintf(cmd, sizeof cmd, "test -f '%s/legacy_done' && grep -q '^crashed: 1' '%s'/*/summary.txt && grep -q '\"result\": \"crash\"' '%s'/*/manifest.json", d4, d4, d4);
     CHECK(system(cmd) == 0);
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", d4); system(cmd);
+  }
+  const char *deep[2] = {"deepmain", "deepthread"};
+  for (int i = 0; i < 2; i++) {
+    char d6[600]; snprintf(d6, sizeof d6, "%s.%s", base, deep[i]); mkdir(d6, 0755);
+    st = run_self(deep[i], d6);
+    CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV);
+    CHECK(file_has(d6, "^fault_addr: 0x0"));
+    CHECK(file_has(d6, "^backtrace"));
+    snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt", d6);
+    CHECK(system(cmd) == 0);
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", d6); system(cmd);
   }
   // a fault on the reporting thread itself is still cut short (exit 128 + SIGABRT), with the report on disk
   snprintf(d5, sizeof d5, "%s.rec", base); mkdir(d5, 0755);
