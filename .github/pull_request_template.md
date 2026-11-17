@@ -10,7 +10,7 @@
 
 <!-- Delete what does not apply and say what was NOT checked. Numbers, hashes and log lines only: no game files. -->
 - Unit tests: <!-- the commands you ran and their last line -->
-- `scripts/check.sh --range <base>..HEAD --tests` (run from a nativeps5 checkout, pointed at this repository): <!-- last line -->
+- The entry repository's `scripts/check.sh --range <base>..HEAD --tests`, run from inside this checkout (it checks the repository it is run in): <!-- last line -->
 - Title, scene and build: <!-- title ID and version, scene, run length, runs per side -->
 - Before / after: <!-- frame time p50 / p95 and fps from paired runs (`nps5 report`); memory peak -->
 - Picture: <!-- frame-dump comparison, if the change can affect rendering -->

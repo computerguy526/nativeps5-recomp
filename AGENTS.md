@@ -28,7 +28,7 @@ Where nativeps5 differs: the host is macOS arm64, the pull request template is o
 
 | Path | What |
 |---|---|
-| `cmd/ps4-recomp`, `cmd/nps5` | the translator and the `nps5` driver (`doctor`, `build`, `run`, `report`); other `cmd/*` are analysis tools |
+| `cmd/ps4-recomp`, `cmd/nps5` | the translator (`doctor` and the translate commands) and the `nps5` driver (`build`, `list`, `play`, `launcher`; `run`, `report` and the rest are in the entry repository's `scripts/nps5`); other `cmd/*` are analysis tools |
 | `pkg/elfloader`, `pkg/disasm`, `pkg/analyzer` | loading a SELF/ELF, x86 decoding, function and call-graph analysis |
 | `pkg/lifter`, `pkg/emitter`, `pkg/tcache` | the arm64 lifter, the C emitter (patch points: `pkg/emitter/patchpoints.go`), translation cache |
 | `pkg/runtime` | the C runtime linked into every translated program (memory, threads, kernel and libc emulation, tier-1 miss path in `core/nps5_tier1.c`) |
@@ -44,7 +44,7 @@ Where nativeps5 differs: the host is macOS arm64, the pull request template is o
 GOFLAGS=-mod=vendor go build -o bin/ps4-recomp ./cmd/ps4-recomp   # modules are vendored; go.mod asks for the Go version the build prints
 GOFLAGS=-mod=vendor go build -o bin/nps5 ./cmd/nps5               # or scripts/build.sh recomp in the entry repository
 go test ./pkg/diag/ ./pkg/elfloader/ ./pkg/disasm/ ./pkg/cli/ ./pkg/thunkgen/   # quick; go test ./pkg/... is the full set (minutes)
-bash tools/diag_unit.sh; bash tools/kernelfs_unit.sh; bash tools/hlesys_unit.sh   # C unit tests, CPU only
+bash tools/diag_unit.sh; bash tools/kernelfs_unit.sh; bash tools/hlesys_unit.sh; bash tools/framerate_unit.sh   # C unit tests, CPU only
 tools/regress.sh --quick      # calc3d frame 0 exact, syobon, greenhollow; use a private REGRESS_DIR
 ```
 
@@ -71,4 +71,4 @@ payloads are never committed.
   knowing what the game does with it. No special-casing a value seen in one title's trace.
 - Do not commit anything translated from a title; `3rdparty/` holds third-party code with its licence (`NOTICE`).
 
-Pull requests use `.github/pull_request_template.md` (it points at the entry repository's CONTRIBUTING.md; fill the evidence block with `nps5 report`, see docs/agents/evidence.md there). `scripts/check.sh --tree` of the entry repository run against this checkout must report 0 failures; this repository's `.nps5-check-tests` lists the CPU-only tests it runs.
+Pull requests use `.github/pull_request_template.md` (it points at the entry repository's CONTRIBUTING.md; fill the evidence block with `nps5 report`, see docs/agents/evidence.md there). The entry repository's `scripts/check.sh --tree`, run from inside this checkout, must report 0 failures; this repository's `.nps5-check-tests` lists the CPU-only tests it runs.
