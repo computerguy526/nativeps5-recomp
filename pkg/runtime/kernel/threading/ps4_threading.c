@@ -331,9 +331,25 @@ void nps5_guest_thread_qos(int is_main) {
 #endif
 }
 
+// NPS5_DIAG_THREAD_ALTSTACK=1: guest threads get their own alternate signal stack, so a stack overflow on one of
+// them is reported (nps5_diag_thread_init). Off by default: every fault handler of the thread then runs on that
+// 64 KiB stack, including the page-watch resolvers.
+extern void nps5_diag_thread_init(void) __attribute__((weak));
+static bool guest_thread_altstack(void) {
+  static _Atomic int on = -1;
+  int v = atomic_load_explicit(&on, memory_order_relaxed);
+  if (v < 0) {
+    const char *e = getenv("NPS5_DIAG_THREAD_ALTSTACK");
+    v = e && strcmp(e, "1") == 0;
+    atomic_store_explicit(&on, v, memory_order_relaxed);
+  }
+  return v != 0;
+}
+
 static void *recomp_host_thread_runner(void *arg) {
   RecompThread *t = (RecompThread *)arg;
   nps5_guest_thread_qos(0);
+  if (nps5_diag_thread_init && guest_thread_altstack()) nps5_diag_thread_init();
 
   while (!atomic_load_explicit(&t->start_ready, memory_order_acquire)) {
     sched_yield();

@@ -75,6 +75,53 @@ extern bool (*g_nps5_hostcall_fault_hook)(void *ucontext, uint64_t fault_addr);
 // when its fn_name is NULL).
 int nps5_diag_guest_fn_name(uint64_t fn_entry, const char **fn_name);
 
+// Gives the calling thread a private alternate signal stack (released at thread exit), so that a stack overflow on it
+// is reported by the crash handler instead of killing the process silently. Idempotent. Call first thing in every
+// guest or host thread's start routine (the constructor thread has one already).
+void nps5_diag_thread_init(void);
+
+// Run-bundle path redaction: copies in to out (at most cap-1 bytes, always NUL-terminated; returns the length) with
+// the user's home directory replaced by "~". A path starts at the beginning of the text or after one of ":= ,;"
+// (colon-separated lists, KEY=path, flag values). Starting there, `home` (the HOME captured at startup, may be NULL)
+// becomes "~", and /Users/<name> or /home/<name> becomes "~"; text that merely contains such a string elsewhere is
+// untouched. Pure, async-signal-safe (no allocation, no libc state).
+static inline size_t nps5_diag_redact_path_home(const char *in, char *out, size_t cap, const char *home) {
+  if (!out || !cap) return 0;
+  size_t hl = 0, w = 0;
+  if (home) { hl = 0; while (home[hl]) hl++; while (hl > 1 && home[hl - 1] == '/') hl--; if (hl < 2 || home[0] != '/') hl = 0; }
+  if (!in) in = "";
+  int at_start = 1;
+  while (*in && w + 1 < cap) {
+    if (at_start && in[0] == '/') {
+      size_t skip = 0;
+      if (hl) {
+        size_t i = 0;
+        while (i < hl && in[i] == home[i]) i++;
+        if (i == hl && (in[hl] == '/' || in[hl] == 0 || in[hl] == ':' || in[hl] == ' ' || in[hl] == ',' || in[hl] == ';')) skip = hl;
+      }
+      if (!skip) {
+        size_t pre = in[1] == 'U' ? 7 : in[1] == 'h' ? 6 : 0; // "/Users/" or "/home/"
+        const char *pat = in[1] == 'U' ? "/Users/" : "/home/";
+        size_t i = 0;
+        while (pre && i < pre && in[i] == pat[i]) i++;
+        if (pre && i == pre && in[pre] && in[pre] != '/' && in[pre] != ':') {
+          size_t j = pre;
+          while (in[j] && in[j] != '/' && in[j] != ':' && in[j] != ' ' && in[j] != ',' && in[j] != ';') j++;
+          skip = j;
+        }
+      }
+      if (skip) { out[w++] = '~'; in += skip; at_start = 0; continue; }
+    }
+    char c = *in++;
+    out[w++] = c;
+    at_start = (c == ':' || c == '=' || c == ' ' || c == ',' || c == ';');
+  }
+  out[w] = 0;
+  return w;
+}
+// The same with the HOME of this process (captured at startup); NPS5_DIAG_FULL_PATHS=1 disables the rewrite.
+size_t nps5_diag_redact_path(const char *in, char *out, size_t cap);
+
 // A one-line note that the crash report prints under "note:" (e.g. which import was missing).
 void nps5_diag_set_note(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void nps5_diag_set_exit_code(int code);

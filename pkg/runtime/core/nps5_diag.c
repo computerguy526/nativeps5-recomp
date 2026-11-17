@@ -679,6 +679,20 @@ static void sw_dec(Sw *w, int64_t v) {
 static void sw_kv(Sw *w, const char *k, const char *v) { sw_str(w, k); sw_str(w, ": "); sw_str(w, v); sw_str(w, "\n"); }
 static void sw_kx(Sw *w, const char *k, uint64_t v) { sw_str(w, k); sw_str(w, ": "); sw_hex(w, v); sw_str(w, "\n"); }
 
+// Paths written to the run bundle (manifest.json, crash.txt) have the user's home directory replaced by "~"
+// (nps5_diag_redact_path_home in nps5_diag.h; NPS5_DIAG_FULL_PATHS=1 keeps them whole). HOME is captured at startup:
+// the crash handler cannot call getenv.
+static char g_home[512];
+static int g_full_paths;
+size_t nps5_diag_redact_path(const char *in, char *out, size_t cap) {
+  return nps5_diag_redact_path_home(in, out, cap, g_full_paths ? NULL : g_home);
+}
+static void sw_kpath(Sw *w, const char *k, const char *v) {
+  char b[1100];
+  nps5_diag_redact_path(v, b, sizeof b);
+  sw_kv(w, k, b);
+}
+
 // ------------------------------------------------------------------ crash handler
 #define NSIG_HANDLED 5
 static const int k_sigs[NSIG_HANDLED] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
@@ -756,12 +770,13 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
   sw_str(&w, "t: "); sw_dec(&w, (int64_t)since_start()); sw_str(&w, " s since start\n");
   sw_str(&w, "tid: "); sw_dec(&w, (int64_t)cur_tid()); sw_str(&w, "\n");
   sw_kx(&w, "image_base", g_image_base);
-  sw_kv(&w, "addrmap", nps5_addrmap_path);
-  sw_kv(&w, "translate_bundle", nps5_translate_bundle);
+  sw_kpath(&w, "addrmap", nps5_addrmap_path);
+  sw_kpath(&w, "translate_bundle", nps5_translate_bundle);
   sw_kx(&w, "host_pc", pc);
   sw_kx(&w, "host_pc_image_offset", pc - g_image_base);
   sw_kx(&w, "host_lr", ss->__lr);
   sw_kx(&w, "host_sp", ss->__sp);
+  sw_flush(&w); // the header is on disk before any stack walk: a walk that dies leaves it behind
 
   // Backtrace by walking the frame-pointer chain (the shim bridge keeps a frame record).
   uint64_t fp = ss->__fp;
@@ -772,11 +787,13 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
   recs[nf] = 0;
   frames[nf++] = pc;
   if (ss->__lr) { recs[nf] = 0; frames[nf++] = ss->__lr; }
+  uint64_t bad_fp = 0; // a frame record that could not be read (a corrupt frame pointer)
   for (int i = 0; i < 36 && fp && (fp & 15) == 0; i++) {
-    uint64_t *f = (uint64_t *)(uintptr_t)fp;
     // Stay within 64 MiB above the current sp to avoid wild reads.
     if (fp < ss->__sp || fp > ss->__sp + (64ull << 20)) break;
-    uint64_t ret = f[1], next = f[0];
+    uint64_t rec[2]; // fault-safe: a corrupt fp is the usual crash, the walk must not fault inside the handler
+    if (!nps5_mem_safe_read((const void *)(uintptr_t)fp, rec, sizeof rec)) { bad_fp = fp; break; }
+    uint64_t ret = rec[1], next = rec[0];
     if (ret) { recs[nf] = fp; frames[nf++] = ret; }
     if (next <= fp) break;
     fp = next;
@@ -925,6 +942,7 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
   sw_str(&w, "guest_mxcsr_ctx: "); sw_hex(&w, ctx ? ctx->mxcsr : 0); sw_str(&w, "\n");
 
   sw_str(&w, "backtrace (frame-pointer walk, host pc -> guest if in guest code):\n");
+  if (bad_fp) { sw_str(&w, "  (walk truncated: unreadable frame record at "); sw_hex(&w, bad_fp); sw_str(&w, ")\n"); }
   for (int i = 0; i < nf; i++) {
     sw_str(&w, "  #"); sw_dec(&w, i); sw_str(&w, " "); sw_hex(&w, frames[i]);
     sw_str(&w, " (image+"); sw_hex(&w, frames[i] - g_image_base); sw_str(&w, ")");
@@ -941,6 +959,7 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
   // Guest call chain. The guest frames are not on the frame-pointer chain: each recompiled function
   // keeps [host lr, entry guest rsp] in a 16-byte host slot (asm_emitter.go), contiguous above the
   // shim bridge's 48-byte frame record. Walk them from the innermost guest frame found above.
+  sw_flush(&w);
   if (flat) {
     // The shadow return stack is the guest call chain: one entry per live guest call, each with
     // the host continuation of its call site. In guest code the live pointer is x29, elsewhere
@@ -1007,8 +1026,10 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
           sw_str(&w, "(no pc map entry)");
         }
         sw_str(&w, "\n");
-        uint64_t e = ((uint64_t *)(uintptr_t)p)[1];
-        lr = ((uint64_t *)(uintptr_t)p)[0];
+        uint64_t slot[2];
+        if (!nps5_mem_safe_read((const void *)(uintptr_t)(p), slot, sizeof slot)) { sw_str(&w, "  (chain truncated: unreadable frame slot)\n"); break; }
+        uint64_t e = slot[1];
+        lr = slot[0];
         if (e <= prev_e) break;
         prev_e = e;
       }
@@ -1122,6 +1143,10 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
     errno = saved_errno;
   }
   g_nps5_in_crash_handler = 1; // from here on no host access hook runs on this thread (nps5_mem.h)
+  // A real crash from here on: bound the time to death before anything that can block (dladdr and the report take
+  // dyld/stdio locks that the crashed thread may hold).
+  signal(SIGALRM, SIG_DFL);
+  alarm(2);
   int exp = 0;
   if (!atomic_compare_exchange_strong(&g_crashed, &exp, 1)) {
     // A fault inside the handler (or a second thread crashing): give up quickly.
@@ -1164,6 +1189,28 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
   diag_atexit_fwd();
   signal(sig, SIG_DFL);
   raise(sig);
+}
+
+// Per-thread alternate signal stack: the handlers use SA_ONSTACK, so a thread without one dies silently on a stack
+// overflow (the handler has no stack to run on). The stack is released through a pthread key destructor at thread exit.
+#define NPS5_THREAD_ALTSTACK (64 * 1024)
+static pthread_key_t g_altstack_key;
+static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
+static void altstack_release(void *p) {
+  stack_t off = {.ss_flags = SS_DISABLE};
+  sigaltstack(&off, NULL);
+  free(p);
+}
+static void altstack_key_init(void) { pthread_key_create(&g_altstack_key, altstack_release); }
+void nps5_diag_thread_init(void) {
+  stack_t cur;
+  if (sigaltstack(NULL, &cur) == 0 && !(cur.ss_flags & SS_DISABLE)) return; // already installed (idempotent)
+  pthread_once(&g_altstack_once, altstack_key_init);
+  void *mem = malloc(NPS5_THREAD_ALTSTACK);
+  if (!mem) return;
+  stack_t ss = {.ss_sp = mem, .ss_size = NPS5_THREAD_ALTSTACK, .ss_flags = 0};
+  if (sigaltstack(&ss, NULL) != 0) { free(mem); return; }
+  pthread_setspecific(g_altstack_key, mem);
 }
 
 void nps5_diag_install_crash_handlers(void) {
@@ -1286,11 +1333,15 @@ static void write_manifest(int finished) {
   }
   fprintf(f, "  \"tool\": {\"name\": \"nps5 runtime\", \"git_commit\": \"%s\", \"git_dirty\": %s},\n", nps5_build_commit,
           nps5_build_dirty ? "true" : "false");
-  json_escape(e1, sizeof e1, exe);
+  char rd[1100];
+  nps5_diag_redact_path(exe, rd, sizeof rd);
+  json_escape(e1, sizeof e1, rd);
   fprintf(f, "  \"executable\": \"%s\",\n", e1);
-  json_escape(e1, sizeof e1, nps5_input_path);
+  nps5_diag_redact_path(nps5_input_path, rd, sizeof rd);
+  json_escape(e1, sizeof e1, rd);
   fprintf(f, "  \"inputs\": [{\"path\": \"%s\", \"sha256\": \"%s\"}],\n", e1, nps5_input_sha256);
-  json_escape(e1, sizeof e1, nps5_translate_bundle);
+  nps5_diag_redact_path(nps5_translate_bundle, rd, sizeof rd);
+  json_escape(e1, sizeof e1, rd);
   fprintf(f, "  \"translate_bundle\": \"%s\",\n", e1);
   fprintf(f, "  \"host\": {\"model\": \"%s\", \"os_build\": \"%s\", \"os\": \"darwin\", \"arch\": \"arm64\"},\n", model, osb);
   fprintf(f, "  \"env\": {");
@@ -1306,7 +1357,9 @@ static void write_manifest(int finished) {
         if (kl >= sizeof k) break;
         memcpy(k, *e, kl);
         k[kl] = 0;
-        json_escape(v, sizeof v, eq + 1);
+        char rv[512];
+        nps5_diag_redact_path(eq + 1, rv, sizeof rv);
+        json_escape(v, sizeof v, rv);
         fprintf(f, "%s\"%s\": \"%s\"", first ? "" : ", ", k, v);
         first = 0;
         break;
@@ -1497,6 +1550,9 @@ static void term_handler(int sig) {
 __attribute__((constructor)) static void nps5_diag_init(void) {
   clock_gettime(CLOCK_MONOTONIC, &g_t0);
   gettimeofday(&g_wall0, NULL);
+  { const char *h = getenv("HOME"), *fp = getenv("NPS5_DIAG_FULL_PATHS");
+    if (h) strlcpy(g_home, h, sizeof g_home);
+    g_full_paths = fp && *fp == '1'; }
   parse_log_env();
   crash_mem_parse(getenv("NPS5_CRASH_MEM"));
   const char *th = getenv("NPS5_TRACE_HLE");

@@ -161,7 +161,7 @@ void nps5_host_write_end(void *p, size_t len);
 // range again and returns true when the caller should repeat the call (bounded by *tries, which the caller starts at
 // 0); false = not ours (no hooks, memory outside the guest reservation, or still failing after NPS5_KIO_RETRIES
 // attempts: a real bad pointer). Unreported, such a failure handed the title an error or a short read for a valid
-// buffer and it went on with unwritten memory (ASTRO BOT world map SIGBUS, work/kyty/mapcrash.md).
+// buffer and it went on with unwritten memory (a title crashed with SIGBUS on its world map that way).
 #define NPS5_KIO_RETRIES 64u
 bool nps5_host_write_refault(void *p, size_t len, unsigned *tries);
 // Before a kernel-mode read of host [p, p+len) (the source buffer of write/send/...).
