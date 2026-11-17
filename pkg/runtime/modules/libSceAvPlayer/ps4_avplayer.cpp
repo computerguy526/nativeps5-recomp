@@ -966,10 +966,13 @@ private:
                 if (m_is_looping.load()) {
                     AVPLAYER_LOG("Demuxer EOF reached, looping back to start");
                     avformat_seek_file(m_fmt_ctx, -1, 0, 0, 0, 0);
-                    if (m_video_codec_ctx) avcodec_flush_buffers(m_video_codec_ctx);
-                    if (m_audio_codec_ctx) avcodec_flush_buffers(m_audio_codec_ctx);
-                    m_start_time = std::chrono::steady_clock::now();
-                    m_total_pause_duration = std::chrono::steady_clock::duration(0);
+                    // A codec context may only be touched by its own decoder thread (a flush from here, while that
+                    // thread sat in send/receive, tripped ffmpeg's frame-thread assert 'fctx->async_lock' and
+                    // aborted the process): queue a flush marker (stream_index -1) behind the old packets instead.
+                    // The video decoder flushes, drops the frames of the old pass and restarts the clock.
+                    if (m_video_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_video_packets.push(std::move(mk)); }
+                    else { m_start_time = std::chrono::steady_clock::now(); m_total_pause_duration = std::chrono::steady_clock::duration(0); }
+                    if (m_audio_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_audio_packets.push(std::move(mk)); }
                     continue;
                 }
                 AVPLAYER_LOG("Demuxer EOF reached");
@@ -1005,6 +1008,15 @@ private:
                 continue;
             }
 
+            if (pkt->stream_index == -1) { // loop marker from the demuxer
+                av_packet_free(&pkt);
+                avcodec_flush_buffers(m_video_codec_ctx);
+                DecodedVideoFrame old;
+                while (m_ready_video_frames.try_pop(old)) m_free_video_buffers.push(std::move(old.buffer));
+                m_start_time = std::chrono::steady_clock::now();
+                m_total_pause_duration = std::chrono::steady_clock::duration(0);
+                continue;
+            }
             int ret = avcodec_send_packet(m_video_codec_ctx, pkt);
             av_packet_free(&pkt);
             if (ret < 0) continue;
@@ -1115,6 +1127,7 @@ private:
                 continue;
             }
 
+            if (pkt->stream_index == -1) { av_packet_free(&pkt); avcodec_flush_buffers(m_audio_codec_ctx); continue; }
             int ret = avcodec_send_packet(m_audio_codec_ctx, pkt);
             av_packet_free(&pkt);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
