@@ -92,6 +92,19 @@ enable. If a notarised build is ever wanted, those two entitlements are what it 
 The runtime no longer shows the inherited PS4Recomp settings dialog (PS4 Pro mode, MetalFX, HUD, language) by default; it is opt-in with
 `NPS5_SETTINGS_DIALOG=1` (`ps4_settings_policy.h`, test `TestSettingsDialogOptIn`). Language defaults to the system locale; `MTL_HUD_ENABLED` and `PS4_LANG` still apply.
 
+Game patches of the title's patch profile (`-patches profiles/patches/<title id>.json`) are settings too. An on/off patch is
+`patch.<key>=0|1` in the settings file and its own environment variable (ASTRO BOT: `NPS5_ASTRO_FAST_LIGHTING`, default on). A
+**choice setting** has options instead (`"options"`, `"default_option"`); its sites are constant loads (`value`: `mov r64/r32, imm`;
+`value-f32`: a scalar single load of a rip-relative constant) with one value per option, lowered as the ordinary load followed by a
+load from a slot of `nps5_guest_patch_values` (the code pages never change). The runtime picks the option once before the guest
+starts: the profile's default < `patch.<key>=<option name>` in the settings file or the dialog's pop-up < the environment
+(`NPS5_PATCH_<KEY>` or the profile's own variable; an option name or its 0-based position). An option can imply host environment
+(`"setenv"`), applied unless the environment already has the variable. ASTRO BOT 01.007: `upscaling` = `off` (native 1080p, the
+game's own upscaler) | `metalfx900` | `metalfx720` (default), variable `NPS5_ASTRO_UPSCALING`; the MetalFX options set
+`KYTY_METALFX=spatial`. Its sites are the dynamic-resolution level-0 size, so they take effect with the `dr` patch (level locked).
+Tests: `TestPatchChoice*`, `TestShippedProfileUpscaling`, `TestShippedProfileBindsTitle` (with `NPS5_TEST_PPSA21564_EBOOT`),
+lifter `TestPatchValue*`, cli `TestSettingsResolveChoicePatch`.
+
 ## Results (`tools/nps5_app_smoke.sh`, launched with `open -n`, killed after the wait)
 
 | title | build (warm obj cache) | cold GPU cache | warm, 10 s | moved/renamed .app |

@@ -6,5 +6,7 @@ bash tools/kernelfs_unit.sh
 bash tools/diag_unit.sh
 bash tools/hlesys_unit.sh
 GOFLAGS=-mod=vendor go test ./pkg/runtime -run TestHostAccessHooks -count=1
+GOFLAGS=-mod=vendor go test ./pkg/emitter/ -run 'Patch|Shipped' -count=1
+GOFLAGS=-mod=vendor go test ./pkg/lifter/ -run 'PatchValue' -count=1
 bash tools/framerate_unit.sh
 bash tools/avsync_unit.sh
