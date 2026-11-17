@@ -1,0 +1,2 @@
+{ "name": "PPSA21564",
+  "translate": { "gpu": "anyps5", "args": ["-allow-unsupported", "-patches", "profiles/patches/PPSA21564.json"] } }
