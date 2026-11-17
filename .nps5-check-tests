@@ -9,6 +9,7 @@ GOFLAGS=-mod=vendor go test ./pkg/runtime -run TestHostAccessHooks -count=1
 GOFLAGS=-mod=vendor go test ./pkg/emitter/ -run 'Patch|Shipped' -count=1
 GOFLAGS=-mod=vendor go test ./pkg/lifter/ -run 'PatchValue' -count=1
 bash tools/framerate_unit.sh
+bash tools/scene_prepare_unit.sh
 bash tools/haptics_unit.sh
 bash tools/avsync_unit.sh
 bash tools/avloop_unit.sh
