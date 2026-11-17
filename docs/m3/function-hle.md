@@ -13,6 +13,7 @@ Code: `pkg/emitter/funcrepl.go` (facility), `pkg/emitter/funcrepl_ue5.go` (profi
 ```
 -hle-malloc ue5-binned3          built-in per-title profiles (pkg/emitter/funcrepl_ue5.go)
 -hle-replace table.json          any table: {"name", "funcs":[{"name","addr","size","sha256","shim"}], "vtable_checks", "params"}
+-hle-replace-unverified         accept a table entry that has no sha256 and no vtable check (off: such an entry is refused)
 ```
 
 A **ReplacementSet** is a list of guest functions (link-time address, size, SHA-256 of its bytes) bound to host shims, a list of

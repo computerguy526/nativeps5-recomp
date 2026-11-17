@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,7 +30,7 @@ type Replacement struct {
 	Name   string `json:"name"`             // what the function is ("FMalloc::Malloc"), for logs
 	Addr   uint64 `json:"-"`                // link-time address, before the module's bias
 	Size   uint64 `json:"size"`             // bytes covered by SHA256
-	SHA256 string `json:"sha256,omitempty"` // hex digest of the image bytes [Addr, Addr+Size); empty = not verified
+	SHA256 string `json:"sha256,omitempty"` // hex digest of the image bytes [Addr, Addr+Size); empty = not verified by hash
 	Shim   string `json:"shim"`             // host function: void shim(GuestContext *ctx)
 }
 
@@ -52,10 +52,13 @@ type ReplParam struct {
 
 // ReplacementSet is a per-title table of replacements.
 type ReplacementSet struct {
-	Name         string // profile name, e.g. "ue5-binned3/PPSA30552"
-	Funcs        []Replacement
-	VTableChecks []VTableCheck
-	Params       []ReplParam
+	Name string // profile name, e.g. "ue5-binned3/PPSA30552"
+	// AllowUnverified admits a function that has neither a digest nor a vtable check naming it
+	// (-hle-replace-unverified). Without it such a function refuses the whole set.
+	AllowUnverified bool
+	Funcs           []Replacement
+	VTableChecks    []VTableCheck
+	Params          []ReplParam
 }
 
 // ReplReport is what ApplyReplacements did, for the log and the manifest.
@@ -64,7 +67,8 @@ type ReplReport struct {
 	Bias     uint64            `json:"bias"`
 	Replaced []ReplReportEntry `json:"replaced"`
 	Params   map[string]uint64 `json:"params,omitempty"`
-	// Unverified counts replacements without a digest (tables loaded from a file).
+	// Unverified counts replacements with neither a digest nor a vtable check (admitted only by
+	// ReplacementSet.AllowUnverified).
 	Unverified int `json:"unverified,omitempty"`
 }
 
@@ -93,8 +97,15 @@ func (e *AsmEmitter) ApplyReplacements(set *ReplacementSet, fragment bool) (*Rep
 			known[a] = true
 		}
 	}
+	if err := set.validate(); err != nil {
+		return nil, err
+	}
 	if err := set.checkImage(e.elf); err != nil {
 		return nil, err
+	}
+	checked := map[uint64]bool{}
+	for _, c := range set.VTableChecks {
+		checked[c.Func] = true
 	}
 	seen := map[uint64]bool{}
 	rep := &ReplReport{Set: set.Name, Bias: bias}
@@ -110,7 +121,10 @@ func (e *AsmEmitter) ApplyReplacements(set *ReplacementSet, fragment bool) (*Rep
 		if old, ok := e.shimMap[g]; ok {
 			return nil, fmt.Errorf("replacement %s: 0x%x is already bound to host shim %s", f.Name, g, old)
 		}
-		if f.SHA256 == "" {
+		if f.SHA256 == "" && !checked[f.Addr] {
+			if !set.AllowUnverified {
+				return nil, fmt.Errorf("replacement %s (0x%x): no sha256 and no vtable check, so nothing ties it to this binary (-hle-replace-unverified accepts that)", f.Name, f.Addr)
+			}
 			rep.Unverified++
 		}
 		if !fragment && !known[g] {
@@ -143,6 +157,41 @@ func (e *AsmEmitter) ApplyReplacements(set *ReplacementSet, fragment bool) (*Rep
 	return rep, nil
 }
 
+var shimIdentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validate checks the shape of the set: every function has a shim that is a C identifier (it is
+// written into generated assembly and C), a nonzero size and a link-time range inside the 48-bit
+// address space, and no two ranges overlap.
+func (set *ReplacementSet) validate() error {
+	type rng struct {
+		lo, hi uint64
+		name   string
+	}
+	rs := make([]rng, 0, len(set.Funcs))
+	for _, f := range set.Funcs {
+		if f.Shim != "" && !shimIdentRE.MatchString(f.Shim) {
+			return fmt.Errorf("replacement %s (0x%x): shim %q is not a C identifier", f.Name, f.Addr, f.Shim)
+		}
+		if f.Size == 0 {
+			return fmt.Errorf("replacement %s (0x%x): size is zero", f.Name, f.Addr)
+		}
+		if f.Addr >= maxLinkAddr || f.Size >= maxLinkAddr {
+			return fmt.Errorf("replacement %s: range 0x%x (+%d) is outside the 48-bit address space", f.Name, f.Addr, f.Size)
+		}
+		rs = append(rs, rng{f.Addr, f.Addr + f.Size, f.Name})
+	}
+	sort.SliceStable(rs, func(i, j int) bool { return rs[i].lo < rs[j].lo })
+	for i := 1; i < len(rs); i++ {
+		if rs[i].lo == rs[i-1].lo {
+			return fmt.Errorf("replacement %s: address 0x%x appears twice", rs[i].name, rs[i].lo)
+		}
+		if rs[i].lo < rs[i-1].hi {
+			return fmt.Errorf("replacements %s [0x%x,0x%x) and %s [0x%x,0x%x) overlap", rs[i-1].name, rs[i-1].lo, rs[i-1].hi, rs[i].name, rs[i].lo, rs[i].hi)
+		}
+	}
+	return nil
+}
+
 // checkImage verifies the digests of the functions and the vtable slots against the loaded image.
 func (set *ReplacementSet) checkImage(l *elfloader.LoadedELF) error {
 	bias := l.Bias
@@ -161,6 +210,9 @@ func (set *ReplacementSet) checkImage(l *elfloader.LoadedELF) error {
 		}
 	}
 	for _, c := range set.VTableChecks {
+		if c.Slot < 0 {
+			return fmt.Errorf("replacement set %s: vtable 0x%x slot %d is negative", set.Name, c.VTable, c.Slot)
+		}
 		slot := c.VTable + bias + 8*uint64(c.Slot)
 		v, ok := l.MemoryImage.U64(slot)
 		if !ok || v != c.Func+bias {
@@ -263,8 +315,14 @@ type replFileParam struct {
 	Value string `json:"value,omitempty"`
 }
 
+// parseAddr reads "0x<hex>" or decimal; there is no octal ("010" is ten).
 func parseAddr(s string) (uint64, error) {
-	v, err := strconv.ParseUint(strings.TrimSpace(s), 0, 64)
+	t := strings.ToLower(strings.TrimSpace(s))
+	base := 10
+	if h := strings.TrimPrefix(t, "0x"); h != t {
+		t, base = h, 16
+	}
+	v, err := strconv.ParseUint(t, base, 64)
 	if err != nil {
 		return 0, fmt.Errorf("bad address %q", s)
 	}
@@ -277,17 +335,16 @@ func parseAddr(s string) (uint64, error) {
 //	 "vtable_checks": [{"vtable": "0x5000", "slot": 6, "func": "0x1130"}],
 //	 "params": [{"key": "ue5m.vtable", "addr": "0x5000"}]}
 //
-// Addresses are link-time addresses. sha256 is optional; a function without one is not verified
-// (the report says how many).
+// Addresses are link-time addresses, "0x" hex or plain decimal. A function needs a sha256 or a
+// vtable check that names it; the set is refused otherwise unless ReplacementSet.AllowUnverified
+// is set.
 func LoadReplacementFile(path string) (*ReplacementSet, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var f replFile
-	if err := dec.Decode(&f); err != nil {
+	if err := decodeStrictJSON(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	set := &ReplacementSet{Name: f.Name}
@@ -306,7 +363,7 @@ func LoadReplacementFile(path string) (*ReplacementSet, error) {
 	for _, c := range f.VTableChecks {
 		vt, err1 := parseAddr(c.VTable)
 		fa, err2 := parseAddr(c.Func)
-		if err1 != nil || err2 != nil {
+		if err1 != nil || err2 != nil || c.Slot < 0 {
 			return nil, fmt.Errorf("%s: bad vtable check %+v", path, c)
 		}
 		set.VTableChecks = append(set.VTableChecks, VTableCheck{vt, c.Slot, fa})
@@ -323,6 +380,9 @@ func LoadReplacementFile(path string) (*ReplacementSet, error) {
 			return nil, fmt.Errorf("%s: param %s: %w", path, p.Key, err)
 		}
 		set.Params = append(set.Params, rp)
+	}
+	if err := set.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return set, nil
 }

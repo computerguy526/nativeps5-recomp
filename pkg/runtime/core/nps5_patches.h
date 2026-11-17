@@ -8,7 +8,8 @@
 //
 // Value of a setting, later wins: profile default; "patch.<key>=0|1" in the per-game settings file
 // (nps5_patches_cfg_line, written back by nps5_patches_cfg_write); the environment: the profile's
-// own variable (e.g. NPS5_ASTRO_FAST_LIGHTING) and NPS5_PATCH_<KEY>, "0" = off, anything else = on.
+// own variable (e.g. NPS5_ASTRO_FAST_LIGHTING) and NPS5_PATCH_<KEY>: 0|false|off|no = off,
+// 1|true|on|yes = on (case-insensitive); any other value is ignored with one warning line.
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
@@ -27,8 +28,9 @@ typedef struct {
     const uint64_t *sites; // guest addresses of the patched instructions
 } Nps5PatchDesc;
 
-// Called by the constructor of the generated nps5_patches.c. A table of another abi is ignored
-// (the flags keep the profile defaults).
+// Called by the constructor of the generated nps5_patches.c. A table of another abi, or one that
+// is inconsistent (slot >= nflags, duplicate slots, n > nflags, missing sites), registers nothing
+// and logs one line: the flags keep the profile defaults.
 void nps5_patches_register(int abi, const char *profile, const Nps5PatchDesc *descs, int n, uint8_t *flags, int nflags);
 
 int nps5_patches_count(void);

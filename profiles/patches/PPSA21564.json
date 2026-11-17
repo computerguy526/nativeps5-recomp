@@ -18,6 +18,9 @@
               "addr": "0x73eb996",
               "bytes": "0f84ed080000",
               "op": "branch-always",
+              "func": "0x73eb850",
+              "func_size": 6347,
+              "func_sha256": "ebde8cad879ca5de443adba036ec6d8cc0ad2a16fe79473e9e7dfbc137106345",
               "note": "lighting stage selection, function 0x73eb850 (guest 0x77eb850): 'test r14b,r14b; je' -> always the non-tiled renderer"
             }
           ]

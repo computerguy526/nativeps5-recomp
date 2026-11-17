@@ -2,9 +2,11 @@ package emitter
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,9 +24,10 @@ import (
 //
 // A patch profile (-patches <file>, e.g. profiles/patches/PPSA21564.json) lists, per build of a
 // title, named patches: each is one user setting and a set of guest instruction sites. A site
-// gives the link-time address, the instruction bytes this build must have there (asserted against
-// the loaded image: a profile never applies to a build it was not written for) and what the
-// patch does to that instruction. The translator does not bake the patched instruction in.
+// gives the link-time address, the instruction bytes this build must have there and the address,
+// size and SHA-256 of the function that contains it (all asserted against the loaded image: a
+// profile never applies to a build it was not written for; a site without the function identity
+// is refused) and what the patch does to that instruction. The translator does not bake the patched instruction in.
 // It lowers the site so that it tests one byte of nps5_guest_patch_flags (the setting's slot) and
 // behaves as the patched or as the original instruction: the code pages never change after the
 // link, and the same binary serves both values of the setting.
@@ -54,7 +57,7 @@ type PatchProfile struct {
 
 // PatchBuild is the patch set of one build (content version) of the title.
 type PatchBuild struct {
-	Version string  `json:"version"` // for people and logs; the asserted bytes select the build
+	Version string  `json:"version"` // required; for people and logs, the asserted function hashes select the build
 	Patches []Patch `json:"patches"`
 }
 
@@ -76,6 +79,11 @@ type PatchSite struct {
 	Bytes string `json:"bytes"` // the instruction this build has there, hex
 	Op    string `json:"op"`    // branch-always | branch-never
 	Note  string `json:"note,omitempty"`
+	// Identity of the function that contains the site, as in the -hle-replace tables: link-time
+	// address, byte size and hex SHA-256 of the image bytes [func, func+func_size).
+	Func       string `json:"func"`
+	FuncSize   uint64 `json:"func_size"`
+	FuncSHA256 string `json:"func_sha256"`
 }
 
 // Patch site operations.
@@ -97,16 +105,47 @@ func LoadPatchProfile(path string) (*PatchProfile, error) {
 	if err != nil {
 		return nil, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
 	var p PatchProfile
-	if err := dec.Decode(&p); err != nil {
+	if err := decodeStrictJSON(b, &p); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if strings.TrimSpace(p.TitleID) == "" {
+		return nil, fmt.Errorf("%s: title_id is required", path)
 	}
 	if len(p.Builds) == 0 {
 		return nil, fmt.Errorf("%s: no builds", path)
 	}
 	return &p, nil
+}
+
+// decodeStrictJSON decodes exactly one JSON value into v: unknown fields and any data after the
+// value are errors.
+func decodeStrictJSON(raw []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("unexpected data after the JSON value")
+	}
+	return nil
+}
+
+// maxLinkAddr bounds the addresses a profile may name (the canonical 48-bit user space).
+const maxLinkAddr = uint64(1) << 48
+
+// biasedAddr parses a link-time hex address and returns it with the module bias added; an address
+// outside the 48-bit space or a sum that wraps is an error.
+func biasedAddr(s string, bias uint64) (link, guest uint64, err error) {
+	link, err = parseHexAddr(s)
+	if err != nil {
+		return 0, 0, err
+	}
+	if link >= maxLinkAddr || link+bias < link || link+bias >= maxLinkAddr {
+		return 0, 0, fmt.Errorf("address %s is outside the 48-bit address space", s)
+	}
+	return link, link + bias, nil
 }
 
 // patchSiteBound is a site resolved against the loaded image.
@@ -148,6 +187,9 @@ func parseHexAddr(s string) (uint64, error) {
 // bindPatchBuild checks one build of a profile against the image and resolves its sites. The
 // error says which assertion failed.
 func (e *AsmEmitter) bindPatchBuild(b *PatchBuild) (*patchState, error) {
+	if strings.TrimSpace(b.Version) == "" {
+		return nil, fmt.Errorf("version is required")
+	}
 	if len(b.Patches) == 0 {
 		return nil, fmt.Errorf("no patches")
 	}
@@ -175,15 +217,17 @@ func (e *AsmEmitter) bindPatchBuild(b *PatchBuild) (*patchState, error) {
 		}
 		var guests []uint64
 		for _, s := range p.Sites {
-			link, err := parseHexAddr(s.Addr)
+			_, guest, err := biasedAddr(s.Addr, e.elf.Bias)
 			if err != nil {
 				return nil, fmt.Errorf("patch %s: address %q: %v", p.Key, s.Addr, err)
+			}
+			if err := e.checkSiteFunction(&s, guest); err != nil {
+				return nil, fmt.Errorf("patch %s: %w", p.Key, err)
 			}
 			want, err := hex.DecodeString(strings.ReplaceAll(s.Bytes, " ", ""))
 			if err != nil || len(want) == 0 {
 				return nil, fmt.Errorf("patch %s: bytes %q at %s", p.Key, s.Bytes, s.Addr)
 			}
-			guest := link + e.elf.Bias
 			got := e.elf.MemoryImage.Bytes(guest, uint64(len(want)))
 			if got == nil || !bytes.Equal(got, want) {
 				return nil, fmt.Errorf("patch %s: the image has %x at %s, the profile expects %x", p.Key, got, s.Addr, want)
@@ -214,6 +258,38 @@ func (e *AsmEmitter) bindPatchBuild(b *PatchBuild) (*patchState, error) {
 	return st, nil
 }
 
+// checkSiteFunction verifies the identity of the function that contains the site at guest: it
+// starts at s.Func, spans s.FuncSize bytes, includes the site, and its image bytes have the
+// SHA-256 s.FuncSHA256. Without that identity a profile could bind to another build that happens
+// to have the same instruction at the same address.
+func (e *AsmEmitter) checkSiteFunction(s *PatchSite, guest uint64) error {
+	if s.Func == "" || s.FuncSize == 0 || s.FuncSHA256 == "" {
+		return fmt.Errorf("site %s: func, func_size and func_sha256 are required", s.Addr)
+	}
+	want, err := hex.DecodeString(s.FuncSHA256)
+	if err != nil || len(want) != sha256.Size {
+		return fmt.Errorf("site %s: func_sha256 %q is not a hex SHA-256", s.Addr, s.FuncSHA256)
+	}
+	_, fn, err := biasedAddr(s.Func, e.elf.Bias)
+	if err != nil {
+		return fmt.Errorf("site %s: func %q: %v", s.Addr, s.Func, err)
+	}
+	if s.FuncSize >= maxLinkAddr || fn+s.FuncSize < fn {
+		return fmt.Errorf("site %s: func_size %d is out of range", s.Addr, s.FuncSize)
+	}
+	if guest < fn || guest >= fn+s.FuncSize {
+		return fmt.Errorf("site %s is not inside the function %s (+%d)", s.Addr, s.Func, s.FuncSize)
+	}
+	b := e.elf.MemoryImage.Bytes(fn, s.FuncSize)
+	if b == nil {
+		return fmt.Errorf("site %s: the function %s (+%d) is not in the image", s.Addr, s.Func, s.FuncSize)
+	}
+	if got := sha256.Sum256(b); !bytes.Equal(got[:], want) {
+		return fmt.Errorf("site %s: the function at %s is not the one this profile was made for (sha256 %x, want %.12s): a different build of the title", s.Addr, s.Func, got[:6], s.FuncSHA256)
+	}
+	return nil
+}
+
 func isRelCondBranch(inst x86asm.Inst) bool {
 	switch inst.Op {
 	case x86asm.JA, x86asm.JAE, x86asm.JB, x86asm.JBE, x86asm.JE, x86asm.JG, x86asm.JGE, x86asm.JL, x86asm.JLE,
@@ -230,6 +306,9 @@ func isRelCondBranch(inst x86asm.Inst) bool {
 func (e *AsmEmitter) ApplyPatchProfile(p *PatchProfile) (*PatchReport, error) {
 	if e.elf == nil {
 		return nil, fmt.Errorf("patch profile: no image")
+	}
+	if strings.TrimSpace(p.TitleID) == "" {
+		return nil, fmt.Errorf("patch profile: title_id is required")
 	}
 	var st *patchState
 	var why []string

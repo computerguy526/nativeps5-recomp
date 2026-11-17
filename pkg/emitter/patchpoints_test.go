@@ -1,6 +1,7 @@
 package emitter
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,13 +22,26 @@ func patchTestEmitter() *AsmEmitter {
 	return e
 }
 
+// The functions of the test image that contain the sites.
+var (
+	patchFn1 = []byte{0x45, 0x84, 0xf6, 0x0f, 0x84, 0xed, 0x08, 0x00, 0x00} // 0x1000
+	patchFn2 = []byte{0x75, 0x02}                                           // 0x2000
+)
+
+// withFn adds the identity of the function fb at link address fn to a site.
+func withFn(s PatchSite, fn uint64, fb []byte) PatchSite {
+	s.Func, s.FuncSize, s.FuncSHA256 = fmt.Sprintf("0x%x", fn), uint64(len(fb)), hexSHA(fb)
+	return s
+}
+
 func patchTestProfile() *PatchProfile {
 	return &PatchProfile{TitleID: "TEST00001", Builds: []PatchBuild{
-		{Version: "01.000", Patches: []Patch{{Key: "x", Title: "X", On: "a", Off: "b", Sites: []PatchSite{{Addr: "0x1003", Bytes: "0f84ee080000", Op: PatchBranchAlways}}}}},
+		{Version: "01.000", Patches: []Patch{{Key: "x", Title: "X", On: "a", Off: "b", Sites: []PatchSite{
+			withFn(PatchSite{Addr: "0x1003", Bytes: "0f84ee080000", Op: PatchBranchAlways}, 0x1000, []byte("another build"))}}}},
 		{Version: "01.007", Patches: []Patch{
 			{Key: "fast_lighting", Title: "Lighting", On: "Fast (non-tiled)", Off: "Full quality (tiled)", Description: "d \"q\" \\ é", Default: true,
-				Env: "NPS5_TEST_FAST_LIGHTING", Sites: []PatchSite{{Addr: "0x1003", Bytes: "0f 84 ed 08 00 00", Op: PatchBranchAlways}}},
-			{Key: "other", Title: "Other", On: "On", Off: "Off", Sites: []PatchSite{{Addr: "2000", Bytes: "7502", Op: PatchBranchNever}}},
+				Env: "NPS5_TEST_FAST_LIGHTING", Sites: []PatchSite{withFn(PatchSite{Addr: "0x1003", Bytes: "0f 84 ed 08 00 00", Op: PatchBranchAlways}, 0x1000, patchFn1)}},
+			{Key: "other", Title: "Other", On: "On", Off: "Off", Sites: []PatchSite{withFn(PatchSite{Addr: "2000", Bytes: "7502", Op: PatchBranchNever}, 0x2000, patchFn2)}},
 		}},
 	}}
 }
@@ -73,9 +87,46 @@ func TestPatchProfileRefusals(t *testing.T) {
 		want string
 	}{
 		{"other build's bytes", mut(func(p *Patch) { p.Sites[0].Bytes = "0f84ee080000" }), "the image has 0f84ed080000"},
-		{"not a branch", mut(func(p *Patch) { p.Sites[0] = PatchSite{Addr: "0x3000", Bytes: "b801000000", Op: PatchBranchAlways} }), "not a relative conditional branch"},
+		{"not a branch", mut(func(p *Patch) {
+			p.Sites[0] = withFn(PatchSite{Addr: "0x3000", Bytes: "b801000000", Op: PatchBranchAlways}, 0x3000, []byte{0xb8, 1, 0, 0, 0})
+		}), "not a relative conditional branch"},
 		{"half an instruction", mut(func(p *Patch) { p.Sites[0].Bytes = "0f84ed08" }), "not exactly one instruction"},
-		{"two instructions", mut(func(p *Patch) { p.Sites[0] = PatchSite{Addr: "0x1000", Bytes: "4584f60f84ed080000", Op: PatchBranchAlways} }), "not exactly one instruction"},
+		{"two instructions", mut(func(p *Patch) {
+			p.Sites[0] = withFn(PatchSite{Addr: "0x1000", Bytes: "4584f60f84ed080000", Op: PatchBranchAlways}, 0x1000, patchFn1)
+		}), "not exactly one instruction"},
+		{"odd-length hex", mut(func(p *Patch) { p.Sites[0].Bytes = "0f84ed08000" }), "bytes"},
+		{"malformed hex", mut(func(p *Patch) { p.Sites[0].Bytes = "0f84zz080000" }), "bytes"},
+		{"empty bytes", mut(func(p *Patch) { p.Sites[0].Bytes = "" }), "bytes"},
+		{"no function address", mut(func(p *Patch) { p.Sites[0].Func = "" }), "func, func_size and func_sha256 are required"},
+		{"no function size", mut(func(p *Patch) { p.Sites[0].FuncSize = 0 }), "func, func_size and func_sha256 are required"},
+		{"no function hash", mut(func(p *Patch) { p.Sites[0].FuncSHA256 = "" }), "func, func_size and func_sha256 are required"},
+		{"function hash not hex", mut(func(p *Patch) { p.Sites[0].FuncSHA256 = "xyz" }), "not a hex SHA-256"},
+		{"function hash too short", mut(func(p *Patch) { p.Sites[0].FuncSHA256 = "abcd" }), "not a hex SHA-256"},
+		{"other build's function", mut(func(p *Patch) { p.Sites[0].FuncSHA256 = hexSHA([]byte("another build")) }), "not the one this profile was made for"},
+		{"site outside its function", mut(func(p *Patch) { p.Sites[0] = withFn(p.Sites[0], 0x2000, patchFn2) }), "not inside the function"},
+		{"function not in the image", mut(func(p *Patch) { p.Sites[0].Func, p.Sites[0].FuncSize = "0x1003", 0x10000000 }), "not in the image"},
+		{"function size wraps", mut(func(p *Patch) { p.Sites[0].FuncSize = ^uint64(0) }), "out of range"},
+		{"site address above 48 bits", mut(func(p *Patch) { p.Sites[0].Addr = "0x1000000000000" }), "48-bit"},
+		{"site address wraps with the bias", mut(func(p *Patch) { p.Sites[0].Addr = "0xffffffffffffffff" }), "48-bit"},
+		{"function address above 48 bits", mut(func(p *Patch) { p.Sites[0].Func = "0x1000000000000" }), "48-bit"},
+		{"no version", func() *PatchProfile {
+			p := patchTestProfile()
+			p.Builds = p.Builds[1:]
+			p.Builds[0].Version = " "
+			return p
+		}(), "version is required"},
+		{"no title_id", func() *PatchProfile { p := patchTestProfile(); p.TitleID = ""; return p }(), "title_id is required"},
+		{"too many patches", func() *PatchProfile {
+			p := patchTestProfile()
+			p.Builds = p.Builds[1:]
+			pt := p.Builds[0].Patches[0]
+			p.Builds[0].Patches = nil
+			for i := 0; i <= MaxPatches; i++ {
+				pt.Key = fmt.Sprintf("k%d", i)
+				p.Builds[0].Patches = append(p.Builds[0].Patches, pt)
+			}
+			return p
+		}(), "at most"},
 		{"unknown operation", mut(func(p *Patch) { p.Sites[0].Op = "replace" }), "operation \"replace\""},
 		{"bad key", mut(func(p *Patch) { p.Key = "Fast Lighting" }), "patch key"},
 		{"duplicate key", mut(func(p *Patch) { p.Key = "other" }), "twice"},
@@ -83,7 +134,7 @@ func TestPatchProfileRefusals(t *testing.T) {
 		{"no texts", mut(func(p *Patch) { p.On = "" }), "texts are required"},
 		{"no sites", mut(func(p *Patch) { p.Sites = nil }), "no sites"},
 		{"site twice", mut(func(p *Patch) { p.Sites = append(p.Sites, p.Sites[0]) }), "listed twice"},
-		{"outside the image", mut(func(p *Patch) { p.Sites[0].Addr = "0xfffffff0" }), "the image has"},
+		{"outside the image", mut(func(p *Patch) { p.Sites[0].Addr, p.Sites[0].Func, p.Sites[0].FuncSize = "0xfffffff0", "0xfffffff0", 4 }), "not in the image"},
 	}
 	for _, c := range cases {
 		e := patchTestEmitter()
@@ -113,7 +164,27 @@ func TestPatchProfileFileAndStaleTable(t *testing.T) {
 	if p.TitleID != "PPSA21564" || pt.Key != "fast_lighting" || !pt.Default || pt.Env != "NPS5_ASTRO_FAST_LIGHTING" || pt.Sites[0].Op != PatchBranchAlways {
 		t.Errorf("profile %+v", p)
 	}
+	if s := pt.Sites[0]; s.Func == "" || s.FuncSize == 0 || len(s.FuncSHA256) != 64 || p.Builds[0].Version == "" {
+		t.Errorf("the shipped profile lacks the function identity: %+v", s)
+	}
 	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"trailing.json": `{"title_id":"X","builds":[{"version":"1","patches":[]}]} {"x":1}`,
+		"garbage.json":  `{"title_id":"X","builds":[{"version":"1","patches":[]}]} x`,
+		"notitle.json":  `{"title_id":" ","builds":[{"version":"1","patches":[]}]}`,
+		"nobuilds.json": `{"title_id":"X","builds":[]}`,
+	} {
+		f := filepath.Join(dir, name)
+		os.WriteFile(f, []byte(body), 0o644)
+		if _, err := LoadPatchProfile(f); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	ok := filepath.Join(dir, "ok.json")
+	os.WriteFile(ok, []byte(`{"title_id":"X","builds":[{"version":"1","patches":[]}]}`+"\n \n"), 0o644)
+	if _, err := LoadPatchProfile(ok); err != nil {
+		t.Errorf("trailing whitespace: %v", err)
+	}
 	bad := filepath.Join(dir, "bad.json")
 	os.WriteFile(bad, []byte(`{"title_id":"X","builds":[{"version":"1","patches":[],"typo":1}]}`), 0o644)
 	if _, err := LoadPatchProfile(bad); err == nil {
@@ -224,4 +295,114 @@ int main(int argc, char **argv) {
 		total++
 	}
 	t.Logf("%d runtime modes", total)
+}
+
+// nps5_patches.c on its own: a table that is not entirely consistent registers nothing and logs a
+// refusal, and the environment spellings of a setting.
+func TestPatchRuntimeRefusalsAndEnvSpellings(t *testing.T) {
+	if _, err := exec.LookPath("clang"); err != nil {
+		t.Skip("clang not found")
+	}
+	dir := t.TempDir()
+	code := `#include "nps5_patches.h"
+#include <stdlib.h>
+#include <string.h>
+static const uint64_t sites[] = {0x401003ull};
+#define D(k, slot, nsites, sp) {k, "T", "on", "off", "", "NPS5_T_" k, slot, 0, nsites, sp}
+static int refuse(const char *name, int abi, const Nps5PatchDesc *d, int n, uint8_t *fl, int nfl) {
+  nps5_patches_register(abi, "p", d, n, fl, nfl);
+  if (nps5_patches_count() != 0) { printf("%s: registered\n", name); return 1; }
+  return 0;
+}
+int main(int argc, char **argv) {
+  uint8_t fl[40] = {0};
+  if (!strcmp(argv[1], "refuse")) {
+    Nps5PatchDesc ok[2] = {D("a", 0, 1, sites), D("b", 1, 1, sites)};
+    Nps5PatchDesc big[2] = {D("a", 0x80000000u, 1, sites), D("b", 1, 1, sites)};
+    Nps5PatchDesc huge[2] = {D("a", 0xffffffffu, 1, sites), D("b", 1, 1, sites)};
+    Nps5PatchDesc past[2] = {D("a", 0, 1, sites), D("b", 2, 1, sites)};
+    Nps5PatchDesc dup[2] = {D("a", 1, 1, sites), D("b", 1, 1, sites)};
+    Nps5PatchDesc nosites[2] = {D("a", 0, 1, NULL), D("b", 1, 1, sites)};
+    Nps5PatchDesc nokey[2] = {D("a", 0, 1, sites), D("b", 1, 1, sites)};
+    Nps5PatchDesc many[40];
+    for (int i = 0; i < 40; i++) many[i] = ok[0], many[i].slot = i % 32;
+    nokey[1].key = NULL;
+    int bad = 0;
+    bad += refuse("abi", 2, ok, 2, fl, 32);
+    bad += refuse("slot 2^31", 1, big, 2, fl, 32);
+    bad += refuse("slot 2^32-1", 1, huge, 2, fl, 32);
+    bad += refuse("slot == nflags", 1, past, 2, fl, 2);
+    bad += refuse("n > nflags", 1, ok, 2, fl, 1);
+    bad += refuse("duplicate slots", 1, dup, 2, fl, 32);
+    bad += refuse("sites NULL", 1, nosites, 2, fl, 32);
+    bad += refuse("key NULL", 1, nokey, 2, fl, 32);
+    bad += refuse("n == 0", 1, ok, 0, fl, 32);
+    bad += refuse("n < 0", 1, ok, -1, fl, 32);
+    bad += refuse("n > max", 1, many, 40, fl, 40);
+    bad += refuse("no flags", 1, ok, 2, NULL, 32);
+    bad += refuse("no table", 1, NULL, 2, fl, 32);
+    bad += refuse("nflags == 0", 1, ok, 2, fl, 0);
+    bad += refuse("nflags < 0", 1, ok, 2, fl, -1);
+    if (bad) return 1;
+    nps5_patches_register(1, "p", ok, 2, fl, 32); /* a consistent table still registers after refusals */
+    if (nps5_patches_count() != 2) { printf("valid table refused\n"); return 1; }
+    printf("ok\n");
+    return 0;
+  }
+  Nps5PatchDesc d[2] = {D("alpha", 0, 1, sites), D("beta", 1, 1, sites)};
+  d[0].def = 1;
+  nps5_patches_register(1, "p", d, 2, fl, 32);
+  nps5_patches_resolve();
+  printf("a=%d b=%d\n", fl[0], fl[1]);
+  return 0;
+}`
+	src := filepath.Join(dir, "m.c")
+	if err := os.WriteFile(src, []byte(code), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	core := filepath.Join("..", "runtime", "core")
+	bin := filepath.Join(dir, "t")
+	if out, err := exec.Command("clang", "-Wall", "-Werror", "-I"+core, src, filepath.Join(core, "nps5_patches.c"), "-o", bin).CombinedOutput(); err != nil {
+		t.Fatalf("clang: %v\n%s", err, out)
+	}
+	run := func(env []string, arg string) string {
+		cmd := exec.Command(bin, arg)
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", env, err, out)
+		}
+		return string(out)
+	}
+	out := run(nil, "refuse")
+	if n := strings.Count(out, "patch table refused"); n != 15 || !strings.Contains(out, "ok\n") {
+		t.Errorf("want one refusal line for each of 15 bad tables:\n%s", out)
+	}
+	for _, c := range []struct {
+		env  []string
+		want string
+		warn bool
+	}{
+		{nil, "a=1 b=0", false},
+		{[]string{"NPS5_PATCH_ALPHA=0"}, "a=0 b=0", false},
+		{[]string{"NPS5_PATCH_ALPHA=false"}, "a=0 b=0", false},
+		{[]string{"NPS5_PATCH_ALPHA=Off"}, "a=0 b=0", false},
+		{[]string{"NPS5_PATCH_ALPHA=NO"}, "a=0 b=0", false},
+		{[]string{"NPS5_PATCH_BETA=1"}, "a=1 b=1", false},
+		{[]string{"NPS5_PATCH_BETA=true"}, "a=1 b=1", false},
+		{[]string{"NPS5_PATCH_BETA=ON"}, "a=1 b=1", false},
+		{[]string{"NPS5_PATCH_BETA=Yes"}, "a=1 b=1", false},
+		{[]string{"NPS5_T_alpha=off", "NPS5_PATCH_ALPHA=1"}, "a=0 b=0", false}, // own variable wins
+		{[]string{"NPS5_PATCH_ALPHA=maybe"}, "a=1 b=0", true},                  // unrecognised: the default stays
+		{[]string{"NPS5_PATCH_BETA=2"}, "a=1 b=0", true},
+		{[]string{"NPS5_PATCH_BETA= "}, "a=1 b=0", true},
+	} {
+		out := run(c.env, "env")
+		if !strings.Contains(out, c.want+"\n") {
+			t.Errorf("%v: %q, want %q", c.env, out, c.want)
+		}
+		if got := strings.Count(out, "ignored"); (got == 1) != c.warn || got > 1 {
+			t.Errorf("%v: %d warning lines:\n%s", c.env, got, out)
+		}
+	}
 }

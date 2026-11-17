@@ -38,3 +38,15 @@ func TestParsePatchesFlag(t *testing.T) {
 		}
 	}
 }
+
+// -hle-replace-unverified is a plain switch, off by default, and does not swallow the input file.
+func TestParseHLEReplaceUnverified(t *testing.T) {
+	cfg, err := ParseArgs([]string{"-hle-replace", "t.json", "-hle-replace-unverified", "game.elf"})
+	if err != nil || !cfg.HLEReplaceUnverified || cfg.HLEReplace != "t.json" || cfg.ElfPath != "game.elf" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	cfg, err = ParseArgs([]string{"-hle-replace", "t.json", "game.elf"})
+	if err != nil || cfg.HLEReplaceUnverified {
+		t.Fatalf("the opt-in must default to off: %+v %v", cfg, err)
+	}
+}

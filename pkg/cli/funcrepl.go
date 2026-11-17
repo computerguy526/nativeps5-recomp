@@ -12,7 +12,15 @@ import (
 // -hle-replace) on em: docs/m3/function-hle.md. fragment is true for a tier-1 fragment emitter.
 // A requested replacement that cannot be applied is an error: the user asked for it, and a title
 // translated without it is not the one they meant to run.
+//
+// A tier-1 fragment continues a translation that already passed -hle-replace-unverified, so it
+// takes the same table without the opt-in.
 func applyFuncRepl(em *emitter.AsmEmitter, hleMalloc, hleReplace string, fragment bool, logw io.Writer) error {
+	return applyFuncReplMode(em, hleMalloc, hleReplace, fragment, fragment, logw)
+}
+
+// applyFuncReplMode is applyFuncRepl with -hle-replace-unverified given explicitly.
+func applyFuncReplMode(em *emitter.AsmEmitter, hleMalloc, hleReplace string, allowUnverified, fragment bool, logw io.Writer) error {
 	if hleMalloc != "" {
 		rep, err := em.ApplyUE5Binned3(hleMalloc, fragment)
 		if err != nil {
@@ -25,6 +33,7 @@ func applyFuncRepl(em *emitter.AsmEmitter, hleMalloc, hleReplace string, fragmen
 		if err != nil {
 			return fmt.Errorf("-hle-replace: %w", err)
 		}
+		set.AllowUnverified = allowUnverified
 		rep, err := em.ApplyReplacements(set, fragment)
 		if err != nil {
 			return fmt.Errorf("-hle-replace %s: %w", hleReplace, err)

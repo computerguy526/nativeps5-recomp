@@ -115,6 +115,16 @@ func TestApplyReplacementsRefusesWithoutChangingAnything(t *testing.T) {
 		{"bytes outside the image", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[0].Addr = 0x7ffff00 }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "not in the image"},
 		{"no shim", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Shim = "" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "no shim"},
 		{"duplicate address", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2] = s.Funcs[1]; s.Funcs[2].Name = "dup" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "twice"},
+		{"no digest and no vtable check", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[0].SHA256 = "" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "no sha256 and no vtable check"},
+		{"zero size", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[0].Size = 0; s.Funcs[0].SHA256 = "" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "size is zero"},
+		{"overlapping ranges", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Addr = 0x1110 }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "overlap"},
+		{"range inside another", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Addr, s.Funcs[2].Size = 0x1101, 1 }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "overlap"},
+		{"address above 48 bits", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Addr = 1 << 48 }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "48-bit"},
+		{"size wraps", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Size = ^uint64(0) }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "48-bit"},
+		{"shim with a quote", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Shim = "x\"; evil" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "not a C identifier"},
+		{"shim with a digit first", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Shim = "1shim" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "not a C identifier"},
+		{"shim with a space", func(s *ReplacementSet, f map[uint64][]byte) { s.Funcs[2].Shim = "a b" }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "not a C identifier"},
+		{"negative vtable slot", func(s *ReplacementSet, f map[uint64][]byte) { s.VTableChecks[0].Slot = -1 }, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200}, "negative"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -197,17 +207,30 @@ func TestLoadReplacementFile(t *testing.T) {
 	if len(set.Params) != 2 || set.Params[0].Addr != 0x5000 || set.Params[1].Value != 7 {
 		t.Errorf("params %+v", set.Params)
 	}
-	// unverified entries are counted by the report
+	// an entry with neither digest nor vtable check is refused unless the opt-in is given
 	fns := map[uint64][]byte{0x1100: []byte("malloc-body-abcdefghijklmnop")}
 	e := replTestEmitter(fns, []uint64{0x1100}, []uint64{0x1100, 4608})
+	if _, err := e.ApplyReplacements(set, false); err == nil || !strings.Contains(err.Error(), "no sha256 and no vtable check") {
+		t.Fatalf("unverified entry without the opt-in: %v", err)
+	}
+	if len(e.shimMap) != 0 {
+		t.Error("a refused table bound shims")
+	}
+	set.AllowUnverified = true
 	rep, err := e.ApplyReplacements(set, false)
 	if err != nil || rep.Unverified != 1 {
 		t.Errorf("apply: %v unverified=%d", err, rep.Unverified)
 	}
 	for name, body := range map[string]string{
-		"unknown.json": `{"funcs":[{"name":"M","addr":"0x1","shim":"s","bogus":1}]}`,
-		"badaddr.json": `{"funcs":[{"name":"M","addr":"zz","shim":"s"}]}`,
-		"notjson.json": `nope`,
+		"unknown.json":  `{"funcs":[{"name":"M","addr":"0x1","shim":"s","bogus":1}]}`,
+		"badaddr.json":  `{"funcs":[{"name":"M","addr":"zz","shim":"s"}]}`,
+		"notjson.json":  `nope`,
+		"trailing.json": `{"funcs":[{"name":"M","addr":"0x1100","size":28,"shim":"s"}]} {"x":1}`,
+		"negslot.json":  `{"funcs":[{"name":"M","addr":"0x1100","size":28,"sha256":"00","shim":"s"}],"vtable_checks":[{"vtable":"0x5000","slot":-1,"func":"0x1100"}]}`,
+		"badshim.json":  `{"funcs":[{"name":"M","addr":"0x1100","size":28,"shim":"s;x"}]}`,
+		"zerosize.json": `{"funcs":[{"name":"M","addr":"0x1100","shim":"s"}]}`,
+		"overlap.json":  `{"funcs":[{"name":"M","addr":"0x1100","size":32,"shim":"s"},{"name":"N","addr":"0x1110","size":4,"shim":"t"}]}`,
+		"octalish.json": `{"funcs":[{"name":"M","addr":"0o10","size":4,"shim":"s"}]}`,
 	} {
 		if _, err := LoadReplacementFile(write(name, body)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -262,5 +285,29 @@ func TestUE5Binned3ProfilesWellFormed(t *testing.T) {
 	}
 	if _, err := e.ApplyUE5Binned3("ue5-binned3", false); err == nil || !strings.Contains(err.Error(), "no profile matches") {
 		t.Errorf("a binary without a profile must be refused: %v", err)
+	}
+}
+
+// Addresses are "0x" hex or decimal: a leading zero is not octal.
+func TestParseAddrNoOctal(t *testing.T) {
+	for in, want := range map[string]uint64{"0x10": 16, "0X10": 16, "010": 10, "10": 10, " 0x1130 ": 0x1130, "0": 0} {
+		if got, err := parseAddr(in); err != nil || got != want {
+			t.Errorf("parseAddr(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "0x", "0o10", "0b1", "1_0", "-1", "0xg", "1.5"} {
+		if _, err := parseAddr(in); err == nil {
+			t.Errorf("parseAddr(%q) accepted", in)
+		}
+	}
+}
+
+// A vtable check ties a function to the binary like a digest does.
+func TestApplyReplacementsVTableCheckVerifies(t *testing.T) {
+	set, fns := replTestSet()
+	set.Funcs[1].SHA256 = "" // Malloc: named by a vtable check
+	e := replTestEmitter(fns, []uint64{0x1100, 0x1200}, []uint64{0x1000, 0x1100, 0x1200})
+	if rep, err := e.ApplyReplacements(set, false); err != nil || rep.Unverified != 0 {
+		t.Fatalf("%v %+v", err, rep)
 	}
 }

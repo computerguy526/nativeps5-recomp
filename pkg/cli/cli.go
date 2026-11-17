@@ -102,6 +102,8 @@ type Config struct {
 	// JSON table of function replacements (docs/m3/function-hle.md).
 	HLEMalloc  string
 	HLEReplace string
+	// HLEReplaceUnverified admits -hle-replace functions that have neither a sha256 nor a vtable check.
+	HLEReplaceUnverified bool
 	// Patches is a game patch profile: guest patches lowered as run-time settings (pkg/emitter/patchpoints.go).
 	Patches string
 }
@@ -175,6 +177,8 @@ Options:
       -hle-malloc <mode>  Replace the engine allocator by a native one: ue5-binned3 (default: off; the binary must match a known
                           profile, docs/m3/function-hle.md)
       -hle-replace <file> JSON table of guest functions to run as host shims instead of being translated (docs/m3/function-hle.md)
+      -hle-replace-unverified
+                          Accept -hle-replace functions with neither sha256 nor vtable check (default: off, such a table is refused)
       -patches <file>     Game patch profile (profiles/patches/<title id>.json): each patch becomes a run-time setting; the
                           sites test a flag instead of being patched in (the build's instruction bytes are asserted)
       -call-ic            Per-call-site inline caches for indirect/virtual calls (flat model; default: true, -call-ic=false to disable)
@@ -314,6 +318,7 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.StringVar(&cfg.SeedsFrom, "seeds-from", "", "Fold tier-1 misses of earlier runs into the entry points")
 	fs.StringVar(&cfg.HLEMalloc, "hle-malloc", "", "Replace the engine's allocator by a native one: ue5-binned3 (default: off)")
 	fs.StringVar(&cfg.HLEReplace, "hle-replace", "", "JSON table of guest functions to run as host shims (docs/m3/function-hle.md)")
+	fs.BoolVar(&cfg.HLEReplaceUnverified, "hle-replace-unverified", false, "Accept -hle-replace functions that no sha256 or vtable check ties to the binary (default: refuse)")
 	fs.StringVar(&cfg.Patches, "patches", "", "Game patch profile (JSON): guest patches lowered as run-time settings")
 	fs.BoolVar(&cfg.JSON, "json", false, "Emit progress as JSON lines on stdout")
 	fs.BoolVar(&cfg.KeepAsm, "keep-asm", false, "Keep the generated .s files")
@@ -815,7 +820,7 @@ func Execute(args []string) (err error) {
 	em.HLE = hle
 	em.FuncInfoOf = ds.funcInfoFn()
 	em.Workers = cfg.Jobs
-	if err := applyFuncRepl(em, cfg.HLEMalloc, cfg.HLEReplace, false, logw); err != nil {
+	if err := applyFuncReplMode(em, cfg.HLEMalloc, cfg.HLEReplace, cfg.HLEReplaceUnverified, false, logw); err != nil {
 		return err
 	}
 	if err := applyPatches(em, cfg.Patches, logw); err != nil {
