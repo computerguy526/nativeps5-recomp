@@ -749,10 +749,11 @@ public:
                 }
                 return true;
             }, frame);
-        } else if (m_sync_mode == AVPLAYER_AV_SYNC_MODE_DEFAULT) {
-            ok = m_ready_video_frames.pop_due_latest([](const DecodedVideoFrame &f) { return f.info.timestamp; }, now_ms, avsync_tol_ms(), frame, stale);
         } else {
-            ok = m_ready_video_frames.pop_if([](const DecodedVideoFrame &) { return true; }, frame);
+            // Every sync mode: the clock paces the video. The guest of this title sets AV_SYNC_MODE_NONE (no audio stream
+            // is played by the AvPlayer), and the old code then handed out one frame per poll as fast as it decoded: the
+            // clip ran 14% fast against real time (717 ms ahead after 8 s) or, decode-bound, up to 1.9 s behind.
+            ok = m_ready_video_frames.pop_due_latest([](const DecodedVideoFrame &f) { return f.info.timestamp; }, now_ms, avsync_tol_ms(), frame, stale);
         }
 
         for (auto &f : stale) {
@@ -829,7 +830,8 @@ public:
         return true;
     }
 
-    void set_av_sync_mode(AvPlayerAvSyncMode sync_mode) {
+        m_sync_mode = sync_mode;
+        if (avplayer_vtrace()) AVPLAYER_LOG("[avvid] sceAvPlayerSetAvSyncMode %d", (int)sync_mode);
         m_sync_mode = sync_mode;
     }
 
