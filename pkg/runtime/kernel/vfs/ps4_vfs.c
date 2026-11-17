@@ -1123,6 +1123,7 @@ bool ps4_vfs_is_virtual_fd(int fd) {
 static char g_lvl_names[LVL_MAX][LVL_NAME];
 static _Atomic int g_lvl_count;
 static pthread_mutex_t g_lvl_mu = PTHREAD_MUTEX_INITIALIZER;
+static void lp_phase(const char *name, double t);   // load accounting below: a new scene starts a phase
 static struct timespec g_lvl_t0;
 static int g_lvl_off, g_lvl_alias = 1;
 static char g_scene_key[SCENE_KEY_MAX] = "levels/";
@@ -1192,6 +1193,7 @@ int ps4_vfs_note_scene_path(const char *path) {
     double s = (double)(t.tv_sec - g_lvl_t0.tv_sec) + (double)(t.tv_nsec - g_lvl_t0.tv_nsec) * 1e-9;
     fprintf(stderr, "[scene-open] %s t=%.1f\n", nm, s);
     if (g_lvl_alias) fprintf(stderr, "[level-open] %s t=%.1f\n", nm, s);
+    lp_phase(nm, s);
     added = 1;
   }
   pthread_mutex_unlock(&g_lvl_mu);
@@ -1200,7 +1202,160 @@ int ps4_vfs_note_scene_path(const char *path) {
 
 int ps4_vfs_note_level_path(const char *path) { return ps4_vfs_note_scene_path(path); }  // legacy name
 
+// ---------------------------------------------------------------------------------------------
+// Load accounting.
+//   nps5_vfs_bytes_read / nps5_vfs_phase   exported counters a loading card can read by symbol: bytes read through the
+//                                          VFS since start, and the phase (0 = boot, n = the n-th scene opened). Always
+//                                          kept: two relaxed atomic adds per read.
+//   NPS5_VFS_LOADPROFILE=<tsv>             phase, name, start second, bytes read, second of the first picture
+//   NPS5_VFS_READLOG=<file>                per guest path: bytes read, file size, opens, reads, highest end offset, first
+//                                          and last second. Diagnostic: one lock per open/read while it is on.
+// Both files are rewritten every 2 s and at exit. Unset = nothing is opened, no thread, one flag test per call. The
+// files hold guest paths (names of the title's files), never host paths.
+#define LP_MAX 64
+#define RL_MAX 131072
+#define RL_FDS 16384
+_Atomic unsigned long long nps5_vfs_bytes_read;
+_Atomic int nps5_vfs_phase;
+static _Atomic unsigned long long g_lp_bytes[LP_MAX];
+static double g_lp_t0[LP_MAX];              // under g_rl_mu
+static char g_lp_name[LP_MAX][LVL_NAME];    // under g_rl_mu
+static double g_lp_first_pic = -1;          // under g_rl_mu
+typedef struct { char path[400]; uint64_t size, opens, reads, bytes, maxend; double t_first, t_last; } RlEnt;
+static RlEnt *g_rl;                         // under g_rl_mu
+static int g_rl_n;                          // under g_rl_mu
+static int g_rl_on;                         // set once in the constructor
+static char g_rl_file[1024], g_lp_file[1024];
+static _Atomic int g_rl_fd[RL_FDS];         // fd -> entry + 1
+static pthread_mutex_t g_rl_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static double rl_now(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (double)(t.tv_sec - g_lvl_t0.tv_sec) + (double)(t.tv_nsec - g_lvl_t0.tv_nsec) * 1e-9;
+}
+// A scene was opened for the first time: the next phase starts (called with the scene name).
+static void lp_phase(const char *name, double t) {
+  pthread_mutex_lock(&g_rl_mu);
+  const int ph = atomic_load_explicit(&nps5_vfs_phase, memory_order_relaxed) + 1;
+  if (ph < LP_MAX) {
+    snprintf(g_lp_name[ph], LVL_NAME, "%s", name);
+    g_lp_t0[ph] = t;
+    atomic_store_explicit(&nps5_vfs_phase, ph, memory_order_release);
+  }
+  pthread_mutex_unlock(&g_rl_mu);
+}
+// The presenter calls this at the first picture.
+void nps5_vfs_mark_first_picture(void) {
+  pthread_mutex_lock(&g_rl_mu);
+  if (g_lp_first_pic < 0) g_lp_first_pic = rl_now();
+  pthread_mutex_unlock(&g_rl_mu);
+}
+// Writes through a temporary name: a reader never sees half a file.
+static FILE *rl_tmp_open(const char *file, char *tmp, size_t cap) {
+  if (!file[0] || snprintf(tmp, cap, "%s.tmp", file) >= (int)cap) return NULL;
+  return fopen(tmp, "w");
+}
+static void lp_dump(void) {
+  char tmp[1040];
+  pthread_mutex_lock(&g_rl_mu);
+  FILE *o = rl_tmp_open(g_lp_file, tmp, sizeof tmp);
+  if (o) {
+    fprintf(o, "# phase\tname\tstart_s\tbytes_read\tfirst_picture_s\n");
+    const int n = atomic_load_explicit(&nps5_vfs_phase, memory_order_acquire);
+    for (int i = 0; i <= n && i < LP_MAX; i++)
+      fprintf(o, "%d\t%s\t%.1f\t%llu\t%.1f\n", i, i ? g_lp_name[i] : "boot", g_lp_t0[i],
+              (unsigned long long)atomic_load_explicit(&g_lp_bytes[i], memory_order_relaxed), g_lp_first_pic);
+    fclose(o);
+    rename(tmp, g_lp_file);
+  }
+  pthread_mutex_unlock(&g_rl_mu);
+}
+static void rl_dump(void) {
+  if (!g_rl_on) return;
+  char tmp[1040];
+  pthread_mutex_lock(&g_rl_mu);
+  FILE *f = rl_tmp_open(g_rl_file, tmp, sizeof tmp);
+  if (f) {
+    for (int i = 0; i < g_rl_n; i++) {
+      const RlEnt *e = &g_rl[i];
+      fprintf(f, "%llu\t%llu\t%llu\t%llu\t%llu\t%.2f\t%.2f\t%s\n", (unsigned long long)e->bytes, (unsigned long long)e->size,
+              (unsigned long long)e->opens, (unsigned long long)e->reads, (unsigned long long)e->maxend, e->t_first, e->t_last, e->path);
+    }
+    fclose(f);
+    rename(tmp, g_rl_file);
+  }
+  pthread_mutex_unlock(&g_rl_mu);
+}
+static void rl_dump_all(void) { rl_dump(); lp_dump(); }
+static void *rl_thread(void *a) { (void)a; for (;;) { sleep(2); rl_dump_all(); } return NULL; }
+// A name that does not fit is refused (a cut-off name would be another file).
+static int rl_take_name(char *dst, size_t cap, const char *env) {
+  const char *v = getenv(env);
+  if (!v || !*v) return 0;
+  if (strlen(v) + 5 > cap) { fprintf(stderr, "[vfs] %s: name too long, ignored\n", env); return 0; }
+  memcpy(dst, v, strlen(v) + 1);
+  return 1;
+}
+__attribute__((constructor)) static void rl_init(void) {
+  const int want_log = rl_take_name(g_rl_file, sizeof g_rl_file, "NPS5_VFS_READLOG");
+  const int want_profile = rl_take_name(g_lp_file, sizeof g_lp_file, "NPS5_VFS_LOADPROFILE");
+  if (want_log) {
+    g_rl = calloc(RL_MAX, sizeof(RlEnt));
+    if (g_rl) g_rl_on = 1;
+    else g_rl_file[0] = 0;
+  }
+  if (!g_rl_on && !want_profile) return;
+  atexit(rl_dump_all);
+  pthread_t th;
+  if (pthread_create(&th, NULL, rl_thread, NULL) == 0) pthread_detach(th);
+}
+static void rl_open(int fd, const char *guest) {
+  if (!g_rl_on || fd < 0 || fd >= RL_FDS || !guest) return;
+  pthread_mutex_lock(&g_rl_mu);
+  int idx = -1;
+  for (int i = 0; i < g_rl_n; i++) if (!strcmp(g_rl[i].path, guest)) { idx = i; break; }
+  if (idx < 0 && g_rl_n < RL_MAX) {
+    idx = g_rl_n++;
+    snprintf(g_rl[idx].path, sizeof(g_rl[idx].path), "%s", guest);
+    g_rl[idx].t_first = rl_now();
+    struct stat st;
+    if (fstat(fd, &st) == 0) g_rl[idx].size = (uint64_t)st.st_size;
+  }
+  if (idx >= 0) g_rl[idx].opens++;
+  atomic_store_explicit(&g_rl_fd[fd], idx + 1, memory_order_release);
+  pthread_mutex_unlock(&g_rl_mu);
+}
+// n bytes were read from fd at offset off (-1 = not known).
+void ps4_vfs_readlog_note(int fd, long long off, long long n) {
+  if (n <= 0) return;
+  atomic_fetch_add_explicit(&nps5_vfs_bytes_read, (unsigned long long)n, memory_order_relaxed);
+  const int ph = atomic_load_explicit(&nps5_vfs_phase, memory_order_relaxed);
+  if (ph >= 0 && ph < LP_MAX) atomic_fetch_add_explicit(&g_lp_bytes[ph], (unsigned long long)n, memory_order_relaxed);
+  if (!g_rl_on || fd < 0 || fd >= RL_FDS) return;
+  pthread_mutex_lock(&g_rl_mu);
+  const int k = atomic_load_explicit(&g_rl_fd[fd], memory_order_acquire);
+  if (k > 0) {
+    RlEnt *e = &g_rl[k - 1];
+    e->reads++;
+    e->bytes += (uint64_t)n;
+    e->t_last = rl_now();
+    if (off >= 0 && (uint64_t)off + (uint64_t)n > e->maxend) e->maxend = (uint64_t)off + (uint64_t)n;
+  }
+  pthread_mutex_unlock(&g_rl_mu);
+}
+
+static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode);
 int ps4_vfs_open(const char *guest_path, int host_flags, mode_t mode) {
+  const int fd = ps4_vfs_open_impl(guest_path, host_flags, mode);
+  if (g_rl_on && fd >= 0 && !ps4_vfs_is_virtual_fd(fd)) {
+    const int e = errno;
+    rl_open(fd, guest_path);
+    errno = e;
+  }
+  return fd;
+}
+static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode) {
   if (!guest_path) {
     errno = EFAULT;
     return -1;
@@ -1304,14 +1459,17 @@ int ps4_vfs_close(int fd) {
     errno = EBADF;
     return -1;
   }
+  if (g_rl_on && fd >= 0 && fd < RL_FDS) atomic_store_explicit(&g_rl_fd[fd], 0, memory_order_release);
   return close(fd);
 }
 
 static ssize_t vfs_read_inner(int fd, void *buf, size_t count);
 ssize_t ps4_vfs_read(int fd, void *buf, size_t count) {
   nps5_host_write_begin(buf, count);
+  const off_t at = g_rl_on ? lseek(fd, 0, SEEK_CUR) : -1;
   const ssize_t r = vfs_read_inner(fd, buf, count);
   const int e = errno;
+  ps4_vfs_readlog_note(fd, (long long)at, (long long)r);
   nps5_host_write_end(buf, count);
   errno = e;
   return r;
@@ -1396,6 +1554,7 @@ ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
   nps5_host_write_begin(buf, count);
   const ssize_t r = vfs_pread_inner(fd, buf, count, offset);
   const int e = errno;
+  ps4_vfs_readlog_note(fd, (long long)offset, (long long)r);
   nps5_host_write_end(buf, count);
   errno = e;
   return r;

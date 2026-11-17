@@ -93,6 +93,10 @@ int ps4_vfs_scene_key_parse(const char *v, char *key, size_t cap, size_t *klen);
 void ps4_vfs_scene_reset(void);                  // re-read NPS5_SCENE_OPEN_KEY / NPS5_NO_LEVEL_LOG / NPS5_NO_LEVEL_ALIAS, forget logged names
 int ps4_vfs_close(int fd);
 ssize_t ps4_vfs_read(int fd, void *buf, size_t count);
+// Load accounting (ps4_vfs.c): the exported counters nps5_vfs_bytes_read (_Atomic unsigned long long) and
+// nps5_vfs_phase (_Atomic int) are always kept; NPS5_VFS_READLOG / NPS5_VFS_LOADPROFILE write files when set.
+void nps5_vfs_mark_first_picture(void);                        // presenter: the first picture is on screen
+void ps4_vfs_readlog_note(int fd, long long off, long long n); // n bytes were read from fd at off (-1 = not known)
 ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset);
 off_t ps4_vfs_lseek(int fd, off_t offset, int whence);
 int ps4_vfs_fstat(int fd, struct stat *st);

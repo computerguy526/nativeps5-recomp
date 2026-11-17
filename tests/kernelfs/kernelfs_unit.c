@@ -663,7 +663,141 @@ static void test_usleep_trace(const char *tmp) {
   printf("kernelfs: usleep trace braces ok\n");
 }
 
-int main(void) {
+
+// ---- pak scan: no stat() per file, each root walked once; load accounting ----
+#include <stdatomic.h>
+#include <sys/wait.h>
+static void put_file(const char *dir, const char *name, const char *text) {
+  char p[1200]; snprintf(p, sizeof p, "%s/%s", dir, name);
+  FILE *f = fopen(p, "w"); CHECK(f != NULL); if (f) { fputs(text, f); fclose(f); }
+}
+static void test_pak_scan(const char *tmp) {
+  // the decision per directory entry, from readdir's type and the name
+  CHECK(ps4_pak_scan_class(DT_DIR, "data") == PS4_PAK_SCAN_DIR && ps4_pak_scan_class(DT_DIR, "a.pak") == PS4_PAK_SCAN_DIR);
+  CHECK(ps4_pak_scan_class(DT_REG, "a.bin") == PS4_PAK_SCAN_SKIP && ps4_pak_scan_class(DT_REG, "noext") == PS4_PAK_SCAN_SKIP);
+  CHECK(ps4_pak_scan_class(DT_REG, "a.pak") == PS4_PAK_SCAN_STAT && ps4_pak_scan_class(DT_REG, "A.PAK") == PS4_PAK_SCAN_STAT);
+  CHECK(ps4_pak_scan_class(DT_REG, ".pak") == PS4_PAK_SCAN_SKIP && ps4_pak_scan_class(DT_REG, "xpak") == PS4_PAK_SCAN_SKIP);
+  CHECK(ps4_pak_scan_class(DT_LNK, "a.pak") == PS4_PAK_SCAN_STAT);
+  CHECK(ps4_pak_scan_class(DT_LNK, "linkdir") == PS4_PAK_SCAN_STAT);   // may point at a directory
+  CHECK(ps4_pak_scan_class(DT_LNK, "a.bin") == PS4_PAK_SCAN_SKIP);     // a link tree over an image: no stat per file
+  // a file system that does not report types: every entry is looked at, as before
+  CHECK(ps4_pak_scan_class(DT_UNKNOWN, "a.bin") == PS4_PAK_SCAN_STAT && ps4_pak_scan_class(DT_UNKNOWN, "dir") == PS4_PAK_SCAN_STAT &&
+        ps4_pak_scan_class(DT_UNKNOWN, "a.pak") == PS4_PAK_SCAN_STAT);
+  CHECK(ps4_pak_scan_class(DT_FIFO, "a.pak") == PS4_PAK_SCAN_SKIP && ps4_pak_scan_class(DT_SOCK, "x") == PS4_PAK_SCAN_SKIP);
+
+  char root[1100], sub[1150], out[1100], p[1300], q[1300];
+  snprintf(root, sizeof root, "%s/pakscan", tmp); mkdir(root, 0755);
+  snprintf(sub, sizeof sub, "%s/sub", root); mkdir(sub, 0755);
+  snprintf(out, sizeof out, "%s/pakscan_outside", tmp); mkdir(out, 0755);
+  snprintf(p, sizeof p, "%s/sce_sys", root); mkdir(p, 0755); put_file(p, "skipped.pak", "x");
+  for (int i = 0; i < 300; i++) { char n[32]; snprintf(n, sizeof n, "f%03d.bin", i); put_file(i % 2 ? root : sub, n, "data"); }
+  put_file(root, "real.pak", "not a pak: the parser refuses it, the scan still found it");
+  put_file(out, "in.pak", "x"); put_file(out, "other.bin", "x");
+  snprintf(p, sizeof p, "%s/linkdir", root); CHECK(symlink(out, p) == 0);           // a linked directory is walked
+  snprintf(p, sizeof p, "%s/link.d", root); CHECK(symlink(out, p) == 0);            // ... unless its name has a '.'
+  snprintf(q, sizeof q, "%s/other.bin", out);
+  snprintf(p, sizeof p, "%s/l.pak", root); CHECK(symlink(q, p) == 0);               // a linked pak
+  for (int i = 0; i < 50; i++) { snprintf(p, sizeof p, "%s/lf%02d.bin", root, i); CHECK(symlink(q, p) == 0); }
+
+  ps4_pak_destroy();
+  uint64_t d0, s0, k0, d1, s1, k1;
+  ps4_pak_scan_counters(&d0, &s0, &k0);
+  ps4_pak_init(root);
+  ps4_pak_scan_counters(&d1, &s1, &k1);
+  CHECK(d1 - d0 == 3);   // root, sub, linkdir; not sce_sys, not link.d
+  CHECK(k1 - k0 == 3);   // real.pak, l.pak, linkdir/in.pak
+  CHECK(s1 - s0 == 4);   // the three paks and linkdir: none of the 350 other files and links
+  ps4_pak_init(root);    // the guest thread inits again: the image is not walked twice
+  ps4_pak_init(root);
+  ps4_pak_scan_counters(&d0, &s0, &k0);
+  CHECK(d0 == d1 && s0 == s1 && k0 == k1);
+  ps4_pak_init(sub);     // another root is walked
+  ps4_pak_scan_counters(&d1, &s1, &k1);
+  CHECK(d1 - d0 == 1 && s1 == s0 && k1 == k0);
+  ps4_pak_destroy();     // forgotten with the index
+  ps4_pak_init(sub);
+  ps4_pak_scan_counters(&d0, &s0, &k0);
+  CHECK(d0 - d1 == 1);
+  ps4_pak_destroy();
+  printf("kernelfs: pak scan ok\n");
+}
+
+// The counters a loading card reads are kept without any switch; the files are written only when asked for.
+extern _Atomic unsigned long long nps5_vfs_bytes_read;
+extern _Atomic int nps5_vfs_phase;
+static void load_accounting_body(const char *tmp, int expect_files) {
+  char app[1100], p[1300];
+  snprintf(app, sizeof app, "%s/acct", tmp); mkdir(app, 0755);
+  snprintf(p, sizeof p, "%s/levels", app); mkdir(p, 0755);
+  snprintf(p, sizeof p, "%s/levels/acct_scene_%d", app, expect_files); mkdir(p, 0755);
+  put_file(p, "a.bin", "0123456789abcdef0123456789abcdef");   // 32 bytes
+  ps4_vfs_init(app);
+  const unsigned long long b0 = atomic_load(&nps5_vfs_bytes_read);
+  const int ph0 = atomic_load(&nps5_vfs_phase);
+  char g[200]; snprintf(g, sizeof g, "/app0/levels/acct_scene_%d/a.bin", expect_files);
+  char buf[64];
+  int fd = ps4_vfs_open(g, O_RDONLY, 0); CHECK(fd >= 0);
+  CHECK(ps4_vfs_read(fd, buf, 10) == 10);
+  CHECK(ps4_vfs_pread(fd, buf, 8, 20) == 8);
+  CHECK(ps4_vfs_read(fd, buf, 64) == 22);
+  CHECK(ps4_vfs_read(fd, buf, 64) == 0);       // end of file: nothing counted
+  CHECK(ps4_vfs_pread(fd, buf, 4, -1) == -1);  // an error: nothing counted
+  CHECK(ps4_vfs_close(fd) == 0);
+  CHECK(atomic_load(&nps5_vfs_bytes_read) - b0 == 40);
+  CHECK(atomic_load(&nps5_vfs_phase) == ph0 + 1);   // the scene's first open started a phase
+  fd = ps4_vfs_open(g, O_RDONLY, 0); CHECK(fd >= 0);
+  CHECK(ps4_vfs_read(fd, buf, 4) == 4);
+  CHECK(ps4_vfs_close(fd) == 0);
+  CHECK(atomic_load(&nps5_vfs_phase) == ph0 + 1);
+  nps5_vfs_mark_first_picture();
+}
+static void test_load_accounting(const char *tmp, const char *self) {
+  char log[1100], prof[1100], line[900];
+  snprintf(log, sizeof log, "%s/readlog.tsv", tmp);
+  snprintf(prof, sizeof prof, "%s/loadprofile.tsv", tmp);
+  load_accounting_body(tmp, 0);
+  CHECK(access(log, F_OK) != 0 && access(prof, F_OK) != 0);   // nothing is written unless asked for
+  // The switches are read when the process starts: a child of this test with them set.
+  fflush(NULL);
+  pid_t pid = fork();
+  if (pid == 0) {
+    setenv("NPS5_VFS_READLOG", log, 1);
+    setenv("NPS5_VFS_LOADPROFILE", prof, 1);
+    execl(self, self, "--load-accounting", tmp, (char *)NULL);
+    _exit(127);
+  }
+  int st = -1;
+  CHECK(waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+  FILE *f = fopen(log, "r"); CHECK(f != NULL);
+  int rows = 0, good = 0;
+  while (f && fgets(line, sizeof line, f)) {
+    unsigned long long bytes, size, opens, reads, maxend; double t0, t1; char path[400];
+    if (sscanf(line, "%llu\t%llu\t%llu\t%llu\t%llu\t%lf\t%lf\t%399s", &bytes, &size, &opens, &reads, &maxend, &t0, &t1, path) != 8) continue;
+    rows++;
+    if (!strcmp(path, "/app0/levels/acct_scene_1/a.bin") && bytes == 44 && size == 32 && opens == 2 && reads == 4 && maxend == 32 && t1 >= t0) good++;
+    CHECK(strstr(path, tmp) == NULL);   // guest paths only, never where the image is on the host
+  }
+  if (f) fclose(f);
+  CHECK(rows == 1 && good == 1);
+  f = fopen(prof, "r"); CHECK(f != NULL);
+  int boot = 0, scene = 0;
+  while (f && fgets(line, sizeof line, f)) {
+    int ph; char name[100]; double t, pic; unsigned long long bytes;
+    if (sscanf(line, "%d\t%99s\t%lf\t%llu\t%lf", &ph, name, &t, &bytes, &pic) != 5) continue;
+    if (ph == 0 && !strcmp(name, "boot")) boot++;
+    if (!strcmp(name, "acct_scene_1") && bytes == 44 && pic >= 0) scene++;
+  }
+  if (f) fclose(f);
+  CHECK(boot == 1 && scene == 1);
+  printf("kernelfs: load accounting ok\n");
+}
+
+int main(int argc, char **argv) {
+  if (argc == 3 && !strcmp(argv[1], "--load-accounting")) {   // the child of test_load_accounting
+    C = calloc(1, sizeof(GuestContext));
+    load_accounting_body(argv[2], 1);
+    return fails ? 1 : 0;   // the files are written at exit
+  }
   setenv("NPS5_TRACE_CONDWAIT", "50", 1);
   char tmp[] = "/tmp/kernelfs_unit.XXXXXX";
   if (!mkdtemp(tmp)) return 2;
@@ -676,6 +810,8 @@ int main(void) {
   ps4_vfs_init(tmp);
   test_sce_codes(tmp);
   test_pak_fallback();
+  test_pak_scan(tmp);
+  test_load_accounting(tmp, argv[0]);
   test_erofs_table(tmp);
   test_userdata_fail_closed(tmp);
   test_raw_syscall_virtual_fd(tmp);

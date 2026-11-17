@@ -25,6 +25,8 @@ typedef struct {
 
 static pthread_mutex_t g_pak_mutex = PTHREAD_MUTEX_INITIALIZER;
 static PakHashEntry *g_entries = NULL;
+static char *g_scanned_root = NULL;   // root the scan already walked (under g_pak_mutex)
+static uint64_t g_scan_dirs, g_scan_stats, g_scan_paks;   // what the scans did so far (ps4_pak_scan_counters)
 static size_t g_entry_count = 0;
 static size_t g_entry_capacity = 0;
 
@@ -331,20 +333,62 @@ static bool parse_pak_file(const char *pak_path) {
     return true;
 }
 
+// What the scan does with a directory entry, from readdir's type and the name alone. A stat() per file is what made
+// the scan slow on a large image (tens of microseconds each on a FUSE/FSKit volume, hundreds of thousands of files), so
+// it is kept for the entries that need it:
+//   directory          walked, no stat
+//   regular file       *.pak: stat + parse; anything else: skipped, no stat
+//   symbolic link      *.pak, or a name without a '.' (it may point at a directory): stat, which follows the link;
+//                      any other name is taken to be a file that is not a pak and skipped (a link tree over an image
+//                      lists every file as a link). A linked directory whose name has a '.' is therefore not walked.
+//   type not reported  (DT_UNKNOWN: file systems without d_type) stat, as before
+//   anything else      (fifo, socket, device) skipped
+int ps4_pak_scan_class(unsigned char d_type, const char *name) {
+    const size_t n = strlen(name);
+    const int pak = n > 4 && strcasecmp(name + n - 4, ".pak") == 0;
+    switch (d_type) {
+    case DT_DIR: return PS4_PAK_SCAN_DIR;
+    case DT_REG: return pak ? PS4_PAK_SCAN_STAT : PS4_PAK_SCAN_SKIP;
+    case DT_LNK: return pak || strchr(name, '.') == NULL ? PS4_PAK_SCAN_STAT : PS4_PAK_SCAN_SKIP;
+    case DT_UNKNOWN: return PS4_PAK_SCAN_STAT;
+    default: return PS4_PAK_SCAN_SKIP;
+    }
+}
+
+void ps4_pak_scan_counters(uint64_t *dirs, uint64_t *stats, uint64_t *paks) {
+    pthread_mutex_lock(&g_pak_mutex);
+    if (dirs) *dirs = g_scan_dirs;
+    if (stats) *stats = g_scan_stats;
+    if (paks) *paks = g_scan_paks;
+    pthread_mutex_unlock(&g_pak_mutex);
+}
+
 static void scan_dir_for_paks_recursive(const char *dir_path, int depth) {
     if (depth > 4) return;
     DIR *dir = opendir(dir_path);
     if (!dir) return;
+    g_scan_dirs++;
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
 
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir_path, de->d_name);
+        const int cls = ps4_pak_scan_class(de->d_type, de->d_name);
+        if (cls == PS4_PAK_SCAN_SKIP) continue;
 
-        struct stat st;
-        if (stat(path, &st) == 0) {
+        char path[1024];
+        if (snprintf(path, sizeof(path), "%s/%s", dir_path, de->d_name) >= (int)sizeof(path)) continue;   // a cut-off path is another file
+
+        struct stat st = {0};
+        int have = 0;
+        if (cls == PS4_PAK_SCAN_DIR) {
+            st.st_mode = S_IFDIR;
+            have = 1;
+        } else {
+            g_scan_stats++;
+            have = stat(path, &st) == 0;
+        }
+        if (have) {
             if (S_ISDIR(st.st_mode)) {
                 if (strcasecmp(de->d_name, "sce_module") == 0 ||
                     strcasecmp(de->d_name, "sce_sys") == 0 ||
@@ -355,6 +399,7 @@ static void scan_dir_for_paks_recursive(const char *dir_path, int depth) {
             } else if (S_ISREG(st.st_mode)) {
                 size_t nlen = strlen(de->d_name);
                 if (nlen > 4 && strcasecmp(de->d_name + nlen - 4, ".pak") == 0) {
+                    g_scan_paks++;
                     parse_pak_file(path);
                 }
             }
@@ -372,7 +417,14 @@ void ps4_pak_init(const char *app_root) {
 
     if (!app_root || !*app_root) app_root = ".";
 
-    scan_dir_for_paks_recursive(app_root, 0);
+    // An image without .pak files leaves g_entries NULL, so the check above never holds and every init would walk the
+    // whole image again (the guest thread inits after main). The root that was walked is remembered until
+    // ps4_pak_destroy.
+    if (!(g_scanned_root && strcmp(g_scanned_root, app_root) == 0)) {
+        scan_dir_for_paks_recursive(app_root, 0);
+        free(g_scanned_root);
+        g_scanned_root = strdup(app_root);   // NULL (no memory): the next init walks again
+    }
 
     printf("[ps4-pak] Total indexed files across all paks: %zu\n", g_entry_count);
     pthread_mutex_unlock(&g_pak_mutex);
@@ -520,6 +572,8 @@ bool ps4_pak_dir_exists(const char *subpath) {
 
 void ps4_pak_destroy(void) {
     pthread_mutex_lock(&g_pak_mutex);
+    free(g_scanned_root);
+    g_scanned_root = NULL;
     if (g_entries) {
         free(g_entries);
         g_entries = NULL;

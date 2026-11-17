@@ -398,6 +398,7 @@ void shim_readv(GuestContext *ctx) {
   }
 
   ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
+  if (ret > 0) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
@@ -445,6 +446,7 @@ void shim_sceKernelReadv(GuestContext *ctx) {
   }
 
   ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
+  if (ret > 0) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
@@ -500,6 +502,7 @@ void shim_sceKernelPreadv(GuestContext *ctx) {
 
   ssize_t ret;
   PS4_HITCH_TIMED(PS4_HITCH_IO, ret = nps5_kpreadv(fd, host_iov, iovcnt, offset));
+  if (ret > 0) ps4_vfs_readlog_note(fd, (long long)offset, ret);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
