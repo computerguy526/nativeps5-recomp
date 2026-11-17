@@ -28,24 +28,24 @@
         {
           "key": "upscaling",
           "title": "Upscaling",
-          "description": "Renders the 3D scene at 900p or 720p instead of 1080p and lets Apple MetalFX scale it to the game's output size (the game's own upscaler is replaced; menus and text stay sharp). Fewer pixels to shade: shorter frames, a slightly softer picture. Needs a Mac with MetalFX (macOS 13+); the dynamic-resolution lock of the standard build is assumed.",
+          "description": "Renders the 3D scene at 720p or 900p instead of 1080p and lets Apple MetalFX (spatial) scale it to the game's output size; menus and text stay sharp. Fewer pixels to shade: shorter frames. Off is the game's own 1080p picture and upscaler. Needs a Mac with MetalFX (macOS 13+); the dynamic-resolution lock of the standard build is assumed.",
           "env": "NPS5_ASTRO_UPSCALING",
-          "default_option": "off",
+          "default_option": "metalfx720",
           "options": [
             {
               "name": "off",
-              "label": "Off (1080p, game upscaler)"
+              "label": "Off (native 1080p, game upscaler)"
             },
             {
               "name": "metalfx900",
-              "label": "MetalFX 900p",
+              "label": "MetalFX quality (900p)",
               "setenv": {
                 "KYTY_METALFX": "spatial"
               }
             },
             {
               "name": "metalfx720",
-              "label": "MetalFX 720p",
+              "label": "MetalFX performance (720p)",
               "setenv": {
                 "KYTY_METALFX": "spatial"
               }
