@@ -522,10 +522,10 @@ func (c *chunkRender) emitFunction(addr uint64, fn *disasm.Function, addPad func
 			}
 			e.linesBuf = lines
 			if e.patch != nil {
-				if _, ok := e.patch.sites[inst.Address]; ok {
+				if site, ok := e.patch.sites[inst.Address]; ok {
 					// The lowering must have taken the patch point: a fused or special-cased branch that
 					// ignored it would leave a setting that does nothing.
-					if !linesMention(lines, lifter.PatchFlagsSymbol) {
+					if !linesMention(lines, site.symbol()) {
 						return fmt.Errorf("patch point at 0x%x: the lowering of %s does not support one here", inst.Address, inst.Inst.String())
 					}
 					e.patch.markSeen(inst.Address)

@@ -24,6 +24,79 @@
               "note": "lighting stage selection, function 0x73eb850 (guest 0x77eb850): 'test r14b,r14b; je' -> always the non-tiled renderer"
             }
           ]
+        },
+        {
+          "key": "upscaling",
+          "title": "Upscaling",
+          "description": "Renders the 3D scene at 900p or 720p instead of 1080p and lets Apple MetalFX scale it to the game's output size (the game's own upscaler is replaced; menus and text stay sharp). Fewer pixels to shade: shorter frames, a slightly softer picture. Needs a Mac with MetalFX (macOS 13+); the dynamic-resolution lock of the standard build is assumed.",
+          "env": "NPS5_ASTRO_UPSCALING",
+          "default_option": "off",
+          "options": [
+            {
+              "name": "off",
+              "label": "Off (1080p, game upscaler)"
+            },
+            {
+              "name": "metalfx900",
+              "label": "MetalFX 900p",
+              "setenv": {
+                "KYTY_METALFX": "spatial"
+              }
+            },
+            {
+              "name": "metalfx720",
+              "label": "MetalFX 720p",
+              "setenv": {
+                "KYTY_METALFX": "spatial"
+              }
+            }
+          ],
+          "sites": [
+            {
+              "addr": "0x73be6f6",
+              "bytes": "c5fa10051e15f900",
+              "op": "value-f32",
+              "values": [
+                "1920",
+                "1600",
+                "1280"
+              ],
+              "note": "scene parameters, dynamic-resolution level 0 case of function 0x73be670 (guest 0x77be670): 'vmovss xmm0, [rip+0xf9151e]' loads the level width as a float (texture LOD bias)"
+            },
+            {
+              "addr": "0x73be705",
+              "bytes": "48ba8007000038040000",
+              "op": "value",
+              "values": [
+                "0x43800000780",
+                "0x38400000640",
+                "0x2d000000500"
+              ],
+              "note": "same case: 'movabs rdx, 0x43800000780' = the level's {width, height} pair"
+            },
+            {
+              "addr": "0x70d006c",
+              "bytes": "c5f96e05a8fb2701",
+              "op": "value-f32",
+              "values": [
+                "1920",
+                "1600",
+                "1280"
+              ],
+              "note": "scene parameters, dynamic-resolution level 0 case of function 0x70cef60 (guest 0x74cef60): 'vmovd xmm0, [rip+0x127fba8]' loads the level width as a float (texture LOD bias)"
+            },
+            {
+              "addr": "0x70d0074",
+              "bytes": "48b98007000038040000",
+              "op": "value",
+              "values": [
+                "0x43800000780",
+                "0x38400000640",
+                "0x2d000000500"
+              ],
+              "note": "same case: 'movabs rcx, 0x43800000780' = the level's {width, height} pair"
+            }
+          ]
         }
       ]
     }

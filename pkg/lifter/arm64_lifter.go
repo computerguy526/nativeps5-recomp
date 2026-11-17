@@ -243,6 +243,8 @@ type Arm64Lifter struct {
 	cbzReg   string
 	// patchSites: conditional branches a run-time setting can force (arm64_lifter_patchpoint.go).
 	patchSites map[uint64]PatchSite
+	// patchValueSites: constant loads whose constant a run-time setting chooses (arm64_lifter_patchvalue.go).
+	patchValueSites map[uint64]PatchValueSite
 }
 
 // x86 flags live in NZCV: N = SF, Z = ZF, V = OF (PF after an FP compare; PF and AF of integer
@@ -860,6 +862,10 @@ func (l *Arm64Lifter) LiftInstructionToBuf(inst disasm.Instruction, nextPC uint6
 	}
 	l.stackPriv = inst.StackPriv
 	l.roLoad = roLoads && inst.ROLoad
+	valueSite, isValueSite := l.patchValueSites[inst.Address]
+	if isValueSite && l.fuseSkip != 0 && l.fuseSkip == inst.Address {
+		return dst, fmt.Errorf("value patch point at 0x%x: the instruction was folded into the one before", inst.Address)
+	}
 	lines, err := l.liftInstructionInternal(inst, nextPC, fn, dst)
 	if err == nil {
 		lines = l.parityPost(inst, nextPC, lines, start)
@@ -885,6 +891,14 @@ func (l *Arm64Lifter) LiftInstructionToBuf(inst disasm.Instruction, nextPC uint6
 		lines = l.peephole(lines, start)
 		if !l.noTSO && !(fn != nil && l.tsoRelax[fn.EntryAddr]) {
 			lines = l.applyTSO(inst, lines, start)
+		}
+	}
+	if err == nil && isValueSite {
+		// Behind everything else: the slot is host memory (no guest access forms), and the
+		// passes above have seen the ordinary lowering only.
+		var suffix []string
+		if suffix, err = l.patchValueSuffix(inst, valueSite); err == nil {
+			lines = append(lines, suffix...)
 		}
 	}
 	return lines, err

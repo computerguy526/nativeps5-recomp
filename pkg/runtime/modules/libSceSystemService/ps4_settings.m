@@ -9,7 +9,8 @@
 // variables override the stored values: PS4_LANG, PS4_PRO=0|1, PS4_UPSCALE=off|metalfx,
 // MTL_HUD_ENABLED=0|1. Game patches the title was translated with (core/nps5_patches.h, e.g.
 // ASTRO BOT "Lighting: Fast (non-tiled) / Full quality (tiled)") are settings too: "patch.<key>=0|1"
-// in the file, one pop-up each in the dialog, their own environment variable. The dialog is opt-in (NPS5_SETTINGS_DIALOG=1, ps4_settings_policy.h); PS4_NO_DIALOGS=1 still suppresses it.
+// in the file, one pop-up each in the dialog, their own environment variable. Choice settings
+// (e.g. ASTRO BOT "Upscaling: Off / MetalFX 900p / MetalFX 720p") are "patch.<key>=<option name>". The dialog is opt-in (NPS5_SETTINGS_DIALOG=1, ps4_settings_policy.h); PS4_NO_DIALOGS=1 still suppresses it.
 //
 // The language is the console system language. Games typically use it only as the default
 // for a new profile: e.g. The Last of Us Remastered stores its text/subtitle/speech language
@@ -146,6 +147,9 @@ static bool load_settings(HostSettings *s) {
     while (fgets(line, sizeof(line), f)) {
         char key[64];
         int v;
+        char text[64];
+        // A choice setting's value is an option name ("patch.upscaling=metalfx900").
+        if (sscanf(line, "%63[^=]=%63[^\r\n]", key, text) == 2 && nps5_patches_cfg_text(key, text)) continue;
         if (sscanf(line, "%63[^=]=%d", key, &v) != 2) continue;
         if (nps5_patches_cfg_line(key, v)) continue;
         if (!strcmp(key, "lang")) s->lang = v;
@@ -219,12 +223,32 @@ static void show_settings_dialog(HostSettings *s) {
             [views addObject:pp];
             [patchPopups addObject:pp];
         }
+        // Choice settings: "<title>:" and a pop-up of the options in profile order.
+        NSMutableArray<NSPopUpButton *> *choicePopups = [NSMutableArray array];
+        const int nchoice = nps5_choices_count();
+        for (int i = 0; i < nchoice; i++) {
+            const Nps5ChoiceDesc *d = nps5_choices_desc(i);
+            NSString *(^text)(const char *, NSString *) = ^(const char *t, NSString *tail) {
+                return [([NSString stringWithUTF8String:t ? t : ""] ?: @"") stringByAppendingString:tail];
+            };
+            NSTextField *label = [NSTextField labelWithString:text(d->title, @":")];
+            NSPopUpButton *pp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 300, 26) pullsDown:NO];
+            for (uint32_t o = 0; o < d->noptions; o++) [pp addItemWithTitle:text(d->labels[o], o == d->def ? @" (default)" : @"")];
+            [pp selectItemAtIndex:nps5_choices_get(i)];
+            if (d->description && *d->description) {
+                label.toolTip = [NSString stringWithUTF8String:d->description];
+                pp.toolTip = label.toolTip;
+            }
+            [views addObject:label];
+            [views addObject:pp];
+            [choicePopups addObject:pp];
+        }
         [views addObject:remember];
         NSStackView *stack = [NSStackView stackViewWithViews:views];
         stack.orientation = NSUserInterfaceLayoutOrientationVertical;
         stack.alignment = NSLayoutAttributeLeading;
         stack.spacing = 8;
-        stack.frame = NSMakeRect(0, 0, 400, 170 + 56 * npatch);
+        stack.frame = NSMakeRect(0, 0, 400, 170 + 56 * (npatch + nchoice));
         alert.accessoryView = stack;
         [alert addButtonWithTitle:@"OK"];
         [NSApp activateIgnoringOtherApps:YES];
@@ -236,6 +260,7 @@ static void show_settings_dialog(HostSettings *s) {
         s->upscale = up.state == NSControlStateValueOn;
         s->hud = hud.state == NSControlStateValueOn;
         for (int i = 0; i < npatch; i++) nps5_patches_set(i, patchPopups[i].indexOfSelectedItem == 0);
+        for (int i = 0; i < nchoice; i++) nps5_choices_set(i, (int)choicePopups[i].indexOfSelectedItem);
         if (remember.state == NSControlStateValueOn) save_settings(s);
     }
 }

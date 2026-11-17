@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,7 +44,19 @@ import (
 // Site operations: "branch-always" and "branch-never" on a relative conditional branch (the
 // classic "jcc -> jmp" and "jcc -> nop" byte patches). Both keep the function's control-flow
 // graph a subset of the one the analysis saw, so flag liveness and block structure stay valid.
-// An operation that rewrites data flow needs its own lowering and is refused for now.
+// The only data-flow operations are the constant loads of a choice setting (below); anything
+// else is refused.
+//
+// A CHOICE setting (a patch with "options") picks one of several constants instead: its sites are
+// instructions that load a constant into a register ("value": mov r64/r32, imm; "value-f32": a
+// scalar single load from a rip-relative constant) and list one value per option. The lowering is
+// the ordinary one followed by a load of the register from a 64-bit slot of
+// nps5_guest_patch_values (lifter/arm64_lifter_patchvalue.go); the slot starts as the default
+// option's value and the runtime writes the chosen one before the guest starts. One option's
+// value must be the instruction's own constant (that option is the game's behaviour). An option
+// may also name host environment variables it implies ("setenv": applied by the runtime unless
+// the user's environment already has the variable), so that one setting can switch a guest
+// constant and a host feature together (ASTRO BOT "Upscaling": render size + MetalFX).
 //
 // Only the chunks that hold a site are lifted again when a profile is added, changed or
 // removed: the site enters the facts hash of its chunk, nothing else.
@@ -71,25 +84,48 @@ type Patch struct {
 	Default     bool        `json:"default"`       // patched by default
 	Env         string      `json:"env,omitempty"` // environment override (0|1); NPS5_PATCH_<KEY> always works
 	Sites       []PatchSite `json:"sites"`
+	// A choice setting: two to MaxPatchOptions options, value sites only. On, Off and Default
+	// stay empty; DefaultOption names the default (the first option when empty).
+	Options       []PatchOption `json:"options,omitempty"`
+	DefaultOption string        `json:"default_option,omitempty"`
+}
+
+// PatchOption is one option of a choice setting.
+type PatchOption struct {
+	Name   string            `json:"name"`             // value in the settings file and the environment: [a-z0-9_]+
+	Label  string            `json:"label"`            // text in the settings UI and the log
+	Setenv map[string]string `json:"setenv,omitempty"` // host environment the option implies (the user's environment wins)
 }
 
 // PatchSite is one patched instruction.
 type PatchSite struct {
 	Addr  string `json:"addr"`  // link-time address, hex
 	Bytes string `json:"bytes"` // the instruction this build has there, hex
-	Op    string `json:"op"`    // branch-always | branch-never
+	Op    string `json:"op"`    // branch-always | branch-never | value | value-f32
 	Note  string `json:"note,omitempty"`
 	// Identity of the function that contains the site, as in the -hle-replace tables: link-time
 	// address, byte size and hex SHA-256 of the image bytes [func, func+func_size).
 	Func       string `json:"func"`
 	FuncSize   uint64 `json:"func_size"`
 	FuncSHA256 string `json:"func_sha256"`
+	// value / value-f32: the constant per option, in option order. value: an integer (decimal or
+	// 0x hex); value-f32: a decimal float.
+	Values []string `json:"values,omitempty"`
 }
 
 // Patch site operations.
 const (
 	PatchBranchAlways = "branch-always"
 	PatchBranchNever  = "branch-never"
+	PatchValue        = "value"
+	PatchValueF32     = "value-f32"
+)
+
+// MaxPatchOptions is the number of options of one choice setting, MaxPatchValues the number of
+// value slots of one title (NPS5_CHOICE_OPTIONS_MAX / NPS5_PATCH_VALUES_MAX in core/nps5_patches.h).
+const (
+	MaxPatchOptions = 8
+	MaxPatchValues  = 64
 )
 
 // MaxPatches is the number of flag bytes (settings) one title may have; the runtime's table has
@@ -151,8 +187,19 @@ func biasedAddr(s string, bias uint64) (link, guest uint64, err error) {
 // patchSiteBound is a site resolved against the loaded image.
 type patchSiteBound struct {
 	guest  uint64
-	slot   int
+	slot   int // branch site: flag byte; value site: value slot
 	always bool
+	value  bool // a value site
+	kind   lifter.PatchValueKind
+	vals   []uint64 // value site: the slot's content per option
+}
+
+// symbol is the host symbol the lowering of the site must mention.
+func (s patchSiteBound) symbol() string {
+	if s.value {
+		return lifter.PatchValuesSymbol
+	}
+	return lifter.PatchFlagsSymbol
 }
 
 // patchState is what an applied profile leaves on the emitter. It is shared by the worker copies
@@ -162,6 +209,8 @@ type patchState struct {
 	patches []Patch
 	sites   map[uint64]patchSiteBound
 	guests  [][]uint64 // per patch, biased site addresses in profile order
+	defOpt  []int      // per patch: the default option of a choice setting (0 otherwise)
+	nvalues int        // value slots in use
 
 	mu   sync.Mutex
 	seen map[uint64]bool
@@ -209,9 +258,19 @@ func (e *AsmEmitter) bindPatchBuild(b *PatchBuild) (*patchState, error) {
 		if p.Env != "" && !patchEnvRE.MatchString(p.Env) {
 			return nil, fmt.Errorf("patch %s: environment variable %q", p.Key, p.Env)
 		}
-		if p.Title == "" || p.On == "" || p.Off == "" {
+		choice := len(p.Options) != 0
+		defOpt := 0
+		if choice {
+			var err error
+			if defOpt, err = checkPatchOptions(&p); err != nil {
+				return nil, fmt.Errorf("patch %s: %v", p.Key, err)
+			}
+		} else if p.Title == "" || p.On == "" || p.Off == "" {
 			return nil, fmt.Errorf("patch %s: title, on and off texts are required", p.Key)
+		} else if p.DefaultOption != "" {
+			return nil, fmt.Errorf("patch %s: default_option without options", p.Key)
 		}
+		st.defOpt = append(st.defOpt, defOpt)
 		if len(p.Sites) == 0 {
 			return nil, fmt.Errorf("patch %s: no sites", p.Key)
 		}
@@ -236,19 +295,43 @@ func (e *AsmEmitter) bindPatchBuild(b *PatchBuild) (*patchState, error) {
 			if err != nil || inst.Len != len(want) {
 				return nil, fmt.Errorf("patch %s: bytes %x at %s are not exactly one instruction", p.Key, want, s.Addr)
 			}
+			if _, dup := st.sites[guest]; dup {
+				return nil, fmt.Errorf("patch %s: site %s is listed twice", p.Key, s.Addr)
+			}
+			if s.Op == PatchValue || s.Op == PatchValueF32 {
+				if !choice {
+					return nil, fmt.Errorf("patch %s: %s at %s needs a choice setting (options)", p.Key, s.Op, s.Addr)
+				}
+				if st.nvalues >= MaxPatchValues {
+					return nil, fmt.Errorf("patch %s: more than %d value sites", p.Key, MaxPatchValues)
+				}
+				b, err := e.bindValueSite(&p, s, inst, guest)
+				if err != nil {
+					return nil, fmt.Errorf("patch %s: %s at %s: %v", p.Key, s.Op, s.Addr, err)
+				}
+				b.slot = st.nvalues
+				st.nvalues++
+				st.sites[guest] = b
+				guests = append(guests, guest)
+				continue
+			}
 			var always bool
 			switch s.Op {
 			case PatchBranchAlways:
 				always = true
 			case PatchBranchNever:
 			default:
-				return nil, fmt.Errorf("patch %s: operation %q at %s (supported: %s, %s)", p.Key, s.Op, s.Addr, PatchBranchAlways, PatchBranchNever)
+				return nil, fmt.Errorf("patch %s: operation %q at %s (supported: %s, %s, %s, %s)", p.Key, s.Op, s.Addr, PatchBranchAlways, PatchBranchNever,
+					PatchValue, PatchValueF32)
+			}
+			if choice {
+				return nil, fmt.Errorf("patch %s: %s at %s: a choice setting takes value sites only", p.Key, s.Op, s.Addr)
+			}
+			if len(s.Values) != 0 {
+				return nil, fmt.Errorf("patch %s: %s at %s takes no values", p.Key, s.Op, s.Addr)
 			}
 			if !isRelCondBranch(inst) {
 				return nil, fmt.Errorf("patch %s: %s at %s is not a relative conditional branch (%s)", p.Key, s.Op, s.Addr, inst.String())
-			}
-			if _, dup := st.sites[guest]; dup {
-				return nil, fmt.Errorf("patch %s: site %s is listed twice", p.Key, s.Addr)
 			}
 			st.sites[guest] = patchSiteBound{guest: guest, slot: slot, always: always}
 			guests = append(guests, guest)
@@ -288,6 +371,111 @@ func (e *AsmEmitter) checkSiteFunction(s *PatchSite, guest uint64) error {
 		return fmt.Errorf("site %s: the function at %s is not the one this profile was made for (sha256 %x, want %.12s): a different build of the title", s.Addr, s.Func, got[:6], s.FuncSHA256)
 	}
 	return nil
+}
+
+var patchSetenvValRE = regexp.MustCompile(`^[ -~]{0,200}$`)
+
+// checkPatchOptions validates the options of a choice setting and returns its default option.
+func checkPatchOptions(p *Patch) (int, error) {
+	if p.Title == "" {
+		return 0, fmt.Errorf("a title is required")
+	}
+	if p.On != "" || p.Off != "" || p.Default {
+		return 0, fmt.Errorf("a choice setting has options, not on/off/default (use default_option)")
+	}
+	if len(p.Options) < 2 || len(p.Options) > MaxPatchOptions {
+		return 0, fmt.Errorf("%d options, want 2 to %d", len(p.Options), MaxPatchOptions)
+	}
+	def, names := -1, map[string]bool{}
+	for i, o := range p.Options {
+		if !patchKeyRE.MatchString(o.Name) {
+			return 0, fmt.Errorf("option name %q: want [a-z0-9_]{1,40}", o.Name)
+		}
+		if _, err := strconv.Atoi(o.Name); err == nil {
+			return 0, fmt.Errorf("option name %q is a number (numbers select an option by position)", o.Name)
+		}
+		if names[o.Name] {
+			return 0, fmt.Errorf("option %q twice", o.Name)
+		}
+		names[o.Name] = true
+		if o.Label == "" {
+			return 0, fmt.Errorf("option %s: a label is required", o.Name)
+		}
+		for k, v := range o.Setenv {
+			if !patchEnvRE.MatchString(k) || !patchSetenvValRE.MatchString(v) {
+				return 0, fmt.Errorf("option %s: setenv %q=%q", o.Name, k, v)
+			}
+		}
+		if o.Name == p.DefaultOption {
+			def = i
+		}
+	}
+	if p.DefaultOption == "" {
+		def = 0
+	}
+	if def < 0 {
+		return 0, fmt.Errorf("default_option %q is not an option", p.DefaultOption)
+	}
+	return def, nil
+}
+
+// bindValueSite resolves a value site: the instruction shape, one value per option, and one of
+// them equal to the constant the instruction has in this build.
+func (e *AsmEmitter) bindValueSite(p *Patch, s PatchSite, inst x86asm.Inst, guest uint64) (patchSiteBound, error) {
+	b := patchSiteBound{guest: guest, value: true}
+	if len(s.Values) != len(p.Options) {
+		return b, fmt.Errorf("%d values for %d options", len(s.Values), len(p.Options))
+	}
+	var own uint64
+	if s.Op == PatchValueF32 {
+		b.kind = lifter.PatchValueF32
+		if _, _, err := lifter.PatchValueTarget(inst, b.kind); err != nil {
+			return b, err
+		}
+		mem := inst.Args[1].(x86asm.Mem)
+		// rip-relative: Base RIP, or (x86asm's VEX decoder) no base, no index and no SIB scale,
+		// as lifter.computeEffAddr reads it.
+		ripRel := mem.Base == x86asm.RIP || (mem.Base == 0 && mem.Scale == 0)
+		if !ripRel || mem.Index != 0 || mem.Segment != 0 {
+			return b, fmt.Errorf("the constant is not rip-relative (%s)", inst.String())
+		}
+		at := uint64(int64(guest) + int64(inst.Len) + int64(int32(mem.Disp)))
+		c := e.elf.MemoryImage.Bytes(at, 4)
+		if c == nil {
+			return b, fmt.Errorf("the constant at 0x%x is not in the image", at)
+		}
+		own = uint64(c[0]) | uint64(c[1])<<8 | uint64(c[2])<<16 | uint64(c[3])<<24
+		for _, v := range s.Values {
+			f, err := strconv.ParseFloat(strings.TrimSpace(v), 32)
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+				return b, fmt.Errorf("value %q is not a float", v)
+			}
+			b.vals = append(b.vals, uint64(math.Float32bits(float32(f))))
+		}
+	} else {
+		b.kind = lifter.PatchValueImm
+		reg, imm, err := lifter.PatchValueTarget(inst, b.kind)
+		if err != nil {
+			return b, err
+		}
+		own = imm
+		for _, v := range s.Values {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 0, 64)
+			if err != nil {
+				return b, fmt.Errorf("value %q is not an unsigned integer", v)
+			}
+			if strings.HasPrefix(reg, "w") && n > math.MaxUint32 {
+				return b, fmt.Errorf("value %q does not fit the 32-bit destination", v)
+			}
+			b.vals = append(b.vals, n)
+		}
+	}
+	for _, v := range b.vals {
+		if v == own {
+			return b, nil
+		}
+	}
+	return b, fmt.Errorf("no option has the instruction's own constant 0x%x (%s)", own, inst.String())
 }
 
 func isRelCondBranch(inst x86asm.Inst) bool {
@@ -330,10 +518,16 @@ func (e *AsmEmitter) ApplyPatchProfile(p *PatchProfile) (*PatchReport, error) {
 	}
 	e.patch = st
 	ls := make(map[uint64]lifter.PatchSite, len(st.sites))
+	vs := make(map[uint64]lifter.PatchValueSite)
 	for a, s := range st.sites {
-		ls[a] = lifter.PatchSite{Slot: s.slot, Always: s.always}
+		if s.value {
+			vs[a] = lifter.PatchValueSite{Slot: s.slot, Kind: s.kind}
+		} else {
+			ls[a] = lifter.PatchSite{Slot: s.slot, Always: s.always}
+		}
 	}
 	e.lifter.SetPatchSites(ls)
+	e.lifter.SetPatchValueSites(vs)
 	rep := &PatchReport{Profile: st.profile, Sites: len(st.sites)}
 	for _, pt := range st.patches {
 		rep.Keys = append(rep.Keys, pt.Key)
@@ -343,6 +537,9 @@ func (e *AsmEmitter) ApplyPatchProfile(p *PatchProfile) (*PatchReport, error) {
 
 // patchFact is what a site adds to the facts hash of its chunk.
 func (s patchSiteBound) fact() []byte {
+	if s.value {
+		return []byte(fmt.Sprintf("PV%d,%d;", s.slot, s.kind))
+	}
 	return []byte(fmt.Sprintf("PP%d,%t;", s.slot, s.always))
 }
 
@@ -404,6 +601,9 @@ func (s *patchState) tableC() string {
 	}
 	b.WriteString("};\n")
 	for i, g := range s.guests {
+		if len(s.patches[i].Options) != 0 {
+			continue // a choice setting's sites are in its value table
+		}
 		fmt.Fprintf(&b, "static const uint64_t sites_%d[] = {", i)
 		for k, a := range g {
 			if k > 0 {
@@ -413,8 +613,14 @@ func (s *patchState) tableC() string {
 		}
 		b.WriteString("};\n")
 	}
+	nbool, nchoice := 0, 0
 	b.WriteString("static const Nps5PatchDesc descs[] = {\n")
 	for i, p := range s.patches {
+		if len(p.Options) != 0 {
+			nchoice++
+			continue
+		}
+		nbool++
 		def := 0
 		if p.Default {
 			def = 1
@@ -422,10 +628,102 @@ func (s *patchState) tableC() string {
 		fmt.Fprintf(&b, "  {%s, %s, %s, %s, %s, %s, %d, %d, %d, sites_%d},\n", cString(p.Key), cString(p.Title), cString(p.On), cString(p.Off),
 			cString(p.Description), cString(p.Env), i, def, len(s.guests[i]), i)
 	}
+	if nbool == 0 {
+		b.WriteString("  {0}\n")
+	}
 	b.WriteString("};\n")
-	fmt.Fprintf(&b, "__attribute__((constructor)) static void nps5_patches_ctor(void) { nps5_patches_register(1, %s, descs, %d, nps5_guest_patch_flags, %d); }\n",
-		cString(s.profile), len(s.patches), MaxPatches)
+	if nchoice != 0 {
+		s.choicesC(&b)
+	}
+	fmt.Fprintf(&b, "__attribute__((constructor)) static void nps5_patches_ctor(void) {\n")
+	if nbool != 0 {
+		fmt.Fprintf(&b, "  nps5_patches_register(1, %s, descs, %d, nps5_guest_patch_flags, %d);\n", cString(s.profile), nbool, MaxPatches)
+	} else {
+		b.WriteString("  (void)descs;\n")
+	}
+	if nchoice != 0 {
+		fmt.Fprintf(&b, "  nps5_patch_choices_register(1, %s, choices, %d, nps5_guest_patch_values, %d);\n", cString(s.profile), nchoice, MaxPatchValues)
+	}
+	b.WriteString("}\n")
 	return b.String()
+}
+
+// choicesC renders the choice settings: the value slots (initialised to the default options, so
+// the code runs with the defaults whatever the runtime does) and their table. The structs must
+// match Nps5ChoiceValue / Nps5ChoiceDesc in core/nps5_patches.h (abi 1).
+func (s *patchState) choicesC(b *strings.Builder) {
+	b.WriteString("typedef struct { uint32_t slot, f32; uint64_t site; const uint64_t *values; } Nps5ChoiceValue;\n")
+	b.WriteString("typedef struct { const char *key, *title, *description, *env; uint32_t noptions, def, nvalues; const char *const *names, *const *labels, *const *setenv; const Nps5ChoiceValue *values; } Nps5ChoiceDesc;\n")
+	b.WriteString("void nps5_patch_choices_register(int abi, const char *profile, const Nps5ChoiceDesc *descs, int n, uint64_t *values, int nvalues);\n")
+	slots := make([]uint64, s.nvalues)
+	for i, p := range s.patches {
+		if len(p.Options) == 0 {
+			continue
+		}
+		list := func(name string, get func(o PatchOption) string) {
+			fmt.Fprintf(b, "static const char *const %s_%d[] = {", name, i)
+			for k, o := range p.Options {
+				if k > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(cString(get(o)))
+			}
+			b.WriteString("};\n")
+		}
+		list("names", func(o PatchOption) string { return o.Name })
+		list("labels", func(o PatchOption) string { return o.Label })
+		list("setenv", func(o PatchOption) string {
+			var kv []string
+			for k, v := range o.Setenv {
+				kv = append(kv, k+"="+v)
+			}
+			sort.Strings(kv)
+			return strings.Join(kv, "\n")
+		})
+		for k, g := range s.guests[i] {
+			site := s.sites[g]
+			slots[site.slot] = site.vals[s.defOpt[i]]
+			fmt.Fprintf(b, "static const uint64_t vals_%d_%d[] = {", i, k)
+			for n, v := range site.vals {
+				if n > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(b, "0x%xull", v)
+			}
+			b.WriteString("};\n")
+		}
+		fmt.Fprintf(b, "static const Nps5ChoiceValue values_%d[] = {", i)
+		for k, g := range s.guests[i] {
+			site := s.sites[g]
+			f32 := 0
+			if site.kind == lifter.PatchValueF32 {
+				f32 = 1
+			}
+			if k > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "{%d, %d, 0x%xull, vals_%d_%d}", site.slot, f32, g, i, k)
+		}
+		b.WriteString("};\n")
+	}
+	// The translated code reads these slots.
+	fmt.Fprintf(b, "uint64_t nps5_guest_patch_values[%d] = {", MaxPatchValues)
+	for i, v := range slots {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "0x%xull", v)
+	}
+	b.WriteString("};\n")
+	b.WriteString("static const Nps5ChoiceDesc choices[] = {\n")
+	for i, p := range s.patches {
+		if len(p.Options) == 0 {
+			continue
+		}
+		fmt.Fprintf(b, "  {%s, %s, %s, %s, %d, %d, %d, names_%d, labels_%d, setenv_%d, values_%d},\n", cString(p.Key), cString(p.Title), cString(p.Description),
+			cString(p.Env), len(p.Options), s.defOpt[i], len(s.guests[i]), i, i, i, i)
+	}
+	b.WriteString("};\n")
 }
 
 // cString is a C string literal of s (UTF-8 bytes above 0x7e and control characters as octal).
