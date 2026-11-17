@@ -1,0 +1,2 @@
+# Upstream PS4Recomp's list of system-library symbol names (text, gzip), used to resolve NIDs. Not game data.
+pkg/elfloader/known_names.txt.gz

@@ -7,3 +7,11 @@ tools/
 libgcn_recompiler.a
 pkg/thirdparty/assets/*
 !pkg/thirdparty/assets/.gitkeep
+runs/
+/ps4-recomp
+/out/
+/build/
+/home/
+/tests/fex/fexasm
+/tests/fex/work/
+/tests/fex/.baseline.json
