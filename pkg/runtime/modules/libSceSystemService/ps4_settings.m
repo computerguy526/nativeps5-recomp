@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 
 #include "nps5_patches.h"
+#include "nps5_scene_prepare.h"
 #include "ps4_vfs.h"
 
 typedef struct {
@@ -103,9 +104,11 @@ typedef struct {
     int pro;     // PS4 Pro mode
     int upscale; // MetalFX upscaling
     int hud;     // Metal performance HUD
+    int prep;    // shader preparation at launch: 0 = all (every known pipeline before the game), 1 = scene
+                 // (the scene the save continues in first, the rest in the background)
 } HostSettings;
 
-static HostSettings g_settings = {-1, 1, 0, 1};
+static HostSettings g_settings = {-1, 1, 0, 1, 0};
 static bool g_settings_ready = false;
 
 static void settings_dir(char *out, size_t n) {
@@ -150,6 +153,10 @@ static bool load_settings(HostSettings *s) {
         char text[64];
         // A choice setting's value is an option name ("patch.upscaling=metalfx900").
         if (sscanf(line, "%63[^=]=%63[^\r\n]", key, text) == 2 && nps5_patches_cfg_text(key, text)) continue;
+        if (sscanf(line, "%63[^=]=%63[^\r\n]", key, text) == 2 && !strcmp(key, "shader_prepare")) {
+            s->prep = nps5_shader_prepare_parse(text, s->prep);
+            continue;
+        }
         if (sscanf(line, "%63[^=]=%d", key, &v) != 2) continue;
         if (nps5_patches_cfg_line(key, v)) continue;
         if (!strcmp(key, "lang")) s->lang = v;
@@ -169,7 +176,8 @@ static void save_settings(const HostSettings *s) {
     settings_path(p, sizeof(p), "cfg");
     FILE *f = fopen(p, "w");
     if (!f) return;
-    fprintf(f, "lang=%d\npro=%d\nupscale=%d\nhud=%d\n", s->lang, s->pro, s->upscale, s->hud);
+    fprintf(f, "lang=%d\npro=%d\nupscale=%d\nhud=%d\nshader_prepare=%s\n", s->lang, s->pro, s->upscale, s->hud,
+            s->prep ? "scene" : "all");
     nps5_patches_cfg_write(f);
     fclose(f);
 }
@@ -199,10 +207,18 @@ static void show_settings_dialog(HostSettings *s) {
         up.state = s->upscale ? NSControlStateValueOn : NSControlStateValueOff;
         NSButton *hud = [NSButton checkboxWithTitle:@"Счётчик FPS (Metal HUD) / FPS counter" target:nil action:nil];
         hud.state = s->hud ? NSControlStateValueOn : NSControlStateValueOff;
+        NSTextField *prepLabel = [NSTextField labelWithString:@"Shader preparation at launch:"];
+        NSPopUpButton *prep = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 300, 26) pullsDown:NO];
+        [prep addItemWithTitle:@"All shaders before the game (default)"];
+        [prep addItemWithTitle:@"Next scene first, the rest in the background"];
+        [prep selectItemAtIndex:s->prep ? 1 : 0];
+        prepLabel.toolTip = @"All: nothing compiles while you play. Scene: a shorter start; shaders of other scenes are "
+                            @"prepared behind the game.";
+        prep.toolTip = prepLabel.toolTip;
         NSButton *remember = [NSButton checkboxWithTitle:@"Запомнить / Remember" target:nil action:nil];
         remember.state = NSControlStateValueOn;
         // Game patches: "<title>:" and a pop-up with the patched choice first; the profile default is marked.
-        NSMutableArray<NSView *> *views = [NSMutableArray arrayWithArray:@[ langLabel, popup, pro, up, hud ]];
+        NSMutableArray<NSView *> *views = [NSMutableArray arrayWithArray:@[ langLabel, popup, pro, up, hud, prepLabel, prep ]];
         NSMutableArray<NSPopUpButton *> *patchPopups = [NSMutableArray array];
         const int npatch = nps5_patches_count();
         for (int i = 0; i < npatch; i++) {
@@ -248,7 +264,7 @@ static void show_settings_dialog(HostSettings *s) {
         stack.orientation = NSUserInterfaceLayoutOrientationVertical;
         stack.alignment = NSLayoutAttributeLeading;
         stack.spacing = 8;
-        stack.frame = NSMakeRect(0, 0, 400, 170 + 56 * (npatch + nchoice));
+        stack.frame = NSMakeRect(0, 0, 400, 226 + 56 * (npatch + nchoice));
         alert.accessoryView = stack;
         [alert addButtonWithTitle:@"OK"];
         [NSApp activateIgnoringOtherApps:YES];
@@ -259,6 +275,7 @@ static void show_settings_dialog(HostSettings *s) {
         s->pro = pro.state == NSControlStateValueOn;
         s->upscale = up.state == NSControlStateValueOn;
         s->hud = hud.state == NSControlStateValueOn;
+        s->prep = prep.indexOfSelectedItem == 1;
         for (int i = 0; i < npatch; i++) nps5_patches_set(i, patchPopups[i].indexOfSelectedItem == 0);
         for (int i = 0; i < nchoice; i++) nps5_choices_set(i, (int)choicePopups[i].indexOfSelectedItem);
         if (remember.state == NSControlStateValueOn) save_settings(s);
@@ -291,14 +308,18 @@ void ps4_host_settings_init(void) {
     if ((e = getenv("PS4_PRO")) && *e) s.pro = strcmp(e, "0") != 0;
     if ((e = getenv("PS4_UPSCALE")) && *e) s.upscale = strcmp(e, "off") != 0 && strcmp(e, "0") != 0;
     if ((e = getenv("MTL_HUD_ENABLED")) && *e) s.hud = strcmp(e, "0") != 0;
+    // shader_prepare: NPS5_SHADER_PREPARE=all|scene overrides the stored value; the renderer reads
+    // KYTY_SHADER_PREPARE (left alone when already set).
+    s.prep = nps5_shader_prepare_parse(getenv("NPS5_SHADER_PREPARE"), s.prep);
+    setenv("KYTY_SHADER_PREPARE", s.prep ? "scene" : "all", 0);
     // Consumers that read the environment (presentation) see the resolved values.
     if (s.upscale && !getenv("PS4_UPSCALE")) setenv("PS4_UPSCALE", "metalfx", 0);
     if (!s.hud) setenv("MTL_HUD_ENABLED", "0", 1);
     g_settings = s;
     g_settings_ready = true;
     nps5_patches_resolve(); // game patches: environment overrides, flag bytes, one log line each
-    fprintf(stderr, "[ps4-settings] language %d, PS4 Pro mode %s, MetalFX upscaling %s, FPS HUD %s\n", s.lang,
-            s.pro ? "on" : "off", s.upscale ? "on" : "off", s.hud ? "on" : "off");
+    fprintf(stderr, "[ps4-settings] language %d, PS4 Pro mode %s, MetalFX upscaling %s, FPS HUD %s, shader preparation %s\n", s.lang,
+            s.pro ? "on" : "off", s.upscale ? "on" : "off", s.hud ? "on" : "off", s.prep ? "scene" : "all");
 }
 
 int ps4_host_choose_language(void) {

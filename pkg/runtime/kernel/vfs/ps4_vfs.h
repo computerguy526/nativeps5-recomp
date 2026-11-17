@@ -98,6 +98,7 @@ int ps4_vfs_close(int fd);
 ssize_t ps4_vfs_read(int fd, void *buf, size_t count);
 // Load accounting (ps4_vfs.c): the exported counters nps5_vfs_bytes_read (_Atomic unsigned long long) and
 // nps5_vfs_phase (_Atomic int) are always kept; NPS5_VFS_READLOG / NPS5_VFS_LOADPROFILE write files when set.
+const char *nps5_vfs_current_scene(void);                      // last scene directory a file was opened in ("" = none; menus skipped)
 void nps5_vfs_mark_first_picture(void);                        // presenter: the first picture is on screen
 void ps4_vfs_readlog_note(int fd, long long off, long long n); // n bytes were read from fd at off (-1 = not known)
 ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset);
