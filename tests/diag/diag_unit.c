@@ -135,6 +135,13 @@ static int file_has(const char *dir, const char *what) { // any crash.txt below 
 
 int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "fp")) crash_bad_fp();
+  if (argc > 1 && !strcmp(argv[1], "t1")) {   // a tier-1 miss whose detail quotes paths under HOME, then abort
+    const char *h = getenv("HOME");
+    char det[700];
+    snprintf(det, sizeof det, "open %s/x/lifter_manifest.json: no such file (work dir kept: %s/y)", h ? h : "", h ? h : "");
+    nps5_diag_set_tier1_failure("bad_manifest", 0x1234, "eboot.bin", 0x34, "jump", det);
+    abort();
+  }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
   test_redact();
   test_thread_init();
@@ -153,7 +160,13 @@ int main(int argc, char **argv) {
   st = run_self("overflow", d2);
   CHECK(WIFSIGNALED(st));
   CHECK(file_has(d2, "^signal: "));
-  snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s'", d1, d2); system(cmd);
+  char d3[600]; snprintf(d3, sizeof d3, "%s.t1", base); mkdir(d3, 0755);
+  st = run_self("t1", d3);
+  CHECK(WIFSIGNALED(st));
+  CHECK(file_has(d3, "^tier1_detail: open ~/x/lifter_manifest.json: no such file (work dir kept: ~/y)"));
+  CHECK(file_has(d3, "^note: tier-1 miss at guest 0x1234 (eboot.bin+0x34): bad_manifest: open ~/x/"));
+  if (getenv("HOME") && strlen(getenv("HOME")) > 1) CHECK(!file_has(d3, getenv("HOME")));
+  snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s' '%s'", d1, d2, d3); system(cmd);
   printf(fails ? "diag_unit: %d FAILURES\n" : "diag_unit: all passed\n", fails);
   return fails ? 1 : 0;
 }

@@ -1437,7 +1437,7 @@ void nps5_diag_set_tier1_failure(const char *kind, uint64_t rip, const char *mod
   strlcpy(g_t1_kind, kind ? kind : "", sizeof g_t1_kind);
   strlcpy(g_t1_module, module && *module ? module : "(no module)", sizeof g_t1_module);
   strlcpy(g_t1_reason, reason ? reason : "", sizeof g_t1_reason);
-  strlcpy(g_t1_detail, detail ? detail : "", sizeof g_t1_detail);
+  nps5_diag_redact_path(detail ? detail : "", g_t1_detail, sizeof g_t1_detail);   // free text with paths (manifest, work dir)
   g_t1_rip = rip;
   g_t1_off = off;
   atomic_store(&g_t1_set, 1);
@@ -1448,8 +1448,10 @@ void nps5_diag_set_tier1_failure(const char *kind, uint64_t rip, const char *mod
 void nps5_diag_set_note(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(g_note, sizeof g_note, fmt, ap);
+  char raw[sizeof g_note];
+  vsnprintf(raw, sizeof raw, fmt, ap);
   va_end(ap);
+  nps5_diag_redact_path(raw, g_note, sizeof g_note);   // notes quote paths too: home -> ~ like the rest of the bundle
 }
 
 const char *nps5_diag_bundle_dir(void) { return g_bundle_dir; }
