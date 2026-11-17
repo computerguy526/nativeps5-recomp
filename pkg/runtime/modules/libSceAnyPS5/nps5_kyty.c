@@ -69,6 +69,7 @@ static int (*p_add_event)(int64_t equeue, uint32_t kind, int64_t ident, void *ud
 static int (*p_delete_event)(int64_t equeue, uint32_t kind, int64_t ident);
 static void (*p_deliver_event)(uint32_t kind, int64_t ident, uint64_t data);
 static void (*p_publish_pad)(int port, const KytyGpuPadState *state);
+static void (*p_publish_pad_motion)(int port, const float *motion); // 6 floats: accel m/s^2 xyz, gyro rad/s xyz (SDL axes); null on an older libnps5_gpu
 static int (*p_start_pad_script)(void);
 static void (*p_request_exit)(int code);
 
@@ -357,6 +358,13 @@ static void cb_publish_pad(void *user, int port, const KytyGpuPadState *state) {
   (void)user;
   if (p_publish_pad && state) p_publish_pad(port, state);
 }
+static void cb_publish_pad_motion(void *user, int port, const KytyGpuPadMotion *motion) {
+  (void)user;
+  if (!p_publish_pad_motion || !motion) return;
+  const float six[6] = {motion->acceleration[0], motion->acceleration[1], motion->acceleration[2],
+                        motion->angular_velocity[0], motion->angular_velocity[1], motion->angular_velocity[2]};
+  p_publish_pad_motion(port, six);
+}
 static void cb_request_exit(void *user, int code) {
   (void)user;
   KLOG("the library asked to exit (code %d)", code);
@@ -414,7 +422,7 @@ static KytyGpuHostCallbacks g_host = {
     .publish_pad = cb_publish_pad,
     .request_exit = cb_request_exit,
     .fetch_pad_output = NULL,
-    .publish_pad_motion = NULL,
+    .publish_pad_motion = cb_publish_pad_motion, // the library checks it for null; a no-op when libnps5_gpu predates it
     .host_info = cb_host_info,
     .protect_guest = cb_protect_guest,
     .run_on_main_thread = cb_run_on_main,
@@ -654,6 +662,7 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   p_delete_event = (int (*)(int64_t, uint32_t, int64_t))sym(gpu_image, "Nps5KytyHostDeleteGpuEvent");
   p_deliver_event = (void (*)(uint32_t, int64_t, uint64_t))sym(gpu_image, "Nps5KytyHostDeliverEvent");
   p_publish_pad = (void (*)(int, const KytyGpuPadState *))sym(gpu_image, "Nps5KytyHostPublishPad");
+  p_publish_pad_motion = (void (*)(int, const float *))sym(gpu_image, "Nps5KytyHostPublishPadMotion");
   p_start_pad_script = (int (*)(void))sym(gpu_image, "Nps5KytyHostStartPadScript");
   p_request_exit = (void (*)(int))sym(gpu_image, "Nps5KytyHostRequestExit");
   if (!p_add_event || !p_deliver_event)
