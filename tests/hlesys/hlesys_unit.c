@@ -61,6 +61,7 @@ SHIM(sceAmprAprCommandBufferReadFile); SHIM(sceAmprMeasureCommandSizeReadFile);
 SHIM(sceAmprMeasureCommandSizeWriteKernelEventQueue_04_00);
 SHIM(sceKernelAprResolveFilepathsToIdsAndFileSizes); SHIM(sceKernelAprResolveFilepathsToIds);
 SHIM(sceKernelAprSubmitCommandBufferAndGetResult); SHIM(sceKernelAprWaitCommandBuffer);
+SHIM(sceKernelAprSubmitCommandBuffer); SHIM(sceKernelAprSubmitCommandBufferAndGetId);
 SHIM(sceKernelAprGetFileSize); SHIM(sceKernelAddAmprEvent);
 SHIM(sceKernelIsTrinityMode); SHIM(sceKernelSetPrtAperture); SHIM(pthread_attr_setsolosched_np);
 SHIM(scePadSetVibrationMode);
@@ -839,6 +840,18 @@ static void test_framerate_cfg(void) {
   CHECK(nps5_framerate_cfg(NULL, "2a0", &al) == 0x2a0ull && al == 1);           // alias with an address
   CHECK(nps5_framerate_cfg(NULL, "0", &al) == 0 && al == 0 && nps5_framerate_cfg(NULL, "x", &al) == 0);
   CHECK(nps5_framerate_cfg("zz", "1", &al) == 0x93d4040ull);                    // unparsable generic falls to the alias
+  // the fps clamp: 1 <= lo <= hi <= 240 whatever the environment says (the rate is divided into)
+  double lo = 0, hi = 0;
+  CHECK(nps5_framerate_clamp(NULL, NULL, &lo, &hi) == 1 && lo == 20.0 && hi == 60.0);
+  CHECK(nps5_framerate_clamp("30", "120", &lo, &hi) == 1 && lo == 30.0 && hi == 120.0);
+  CHECK(nps5_framerate_clamp("1", "240", &lo, &hi) == 1 && lo == 1.0 && hi == 240.0);
+  CHECK(nps5_framerate_clamp(NULL, "30", &lo, &hi) == 1 && lo == 20.0 && hi == 30.0);
+  static const char *bad[][2] = {{"0", NULL}, {"-5", NULL}, {"abc", NULL}, {"", NULL}, {"nan", NULL}, {"inf", "inf"}, {"61", NULL},
+                                 {NULL, "0"}, {NULL, "241"}, {NULL, "19"}, {"60", "30"}, {"30x", "60"}, {"0.5", "60"}, {"1e400", NULL}};
+  for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+    lo = hi = -1;
+    CHECK(nps5_framerate_clamp(bad[i][0], bad[i][1], &lo, &hi) == 0 && lo == 20.0 && hi == 60.0);
+  }
 }
 static void test_level_open(void) {
   test_framerate_cfg();
@@ -871,6 +884,117 @@ static void test_level_open(void) {
   CHECK(ps4_vfs_note_level_path("/app0/levels/lv7/x") == 1);
 }
 
+// ---- Apr hardening: record sizes, submit id race, resolve bounds, wait scheduling
+static void cb_raw(uint64_t cb, uint64_t base, uint32_t offset, uint32_t size, uint16_t recording) {
+  uint8_t *p = H(cb);
+  memset(p, 0, 0x18);
+  memcpy(p + 2, &recording, 2); memcpy(p + 4, &offset, 4); memcpy(p + 12, &size, 4); memcpy(p + 16, &base, 8);
+}
+static int submit_raw(uint64_t cb, uint32_t *id) {
+  uint64_t idp = galloc(4);
+  reset_regs(); C->rdi = cb; C->rdx = idp; CALL(shim_sceKernelAprSubmitCommandBufferAndGetId);
+  if (id) *id = *(uint32_t *)H(idp);
+  return RAX32;
+}
+static void wait_id(uint32_t id) { reset_regs(); C->rdi = id; CALL(shim_sceKernelAprWaitCommandBuffer); CHECK(RAX32 == 0); }
+static void test_apr_hardening(void) {
+  alarm(60); // a regression that blocks the worker must fail the run, not hang it
+  uint64_t cb = galloc(0x18), mem = galloc(256), sentinel = galloc(8), stack = galloc(256);
+  C->rsp = stack + 64;
+  // a record shorter than its opcode reads is refused whole: nothing runs, nothing reaches the guest
+  struct { uint32_t op, min; } ops[] = {{2, 24}, {3, 24}, {4, 38}, {5, 38}, {7, 16}, {8, 20}, {9, 24}, {13, 40}, {14, 40}, {15, 40}};
+  for (unsigned i = 0; i < sizeof ops / sizeof *ops; i++) {
+    memset(H(mem), 0x41, 256);
+    *(uint64_t *)H(sentinel) = 0;
+    uint32_t sz = ops[i].min - 4;
+    memcpy(H(mem), &ops[i].op, 4); memcpy(H(mem) + 4, &sz, 4);
+    *(uint64_t *)H(mem + 8) = sentinel; // where a handler reading past the record would store
+    *(uint64_t *)H(mem + 16) = 0x1122334455667788ull;
+    cb_raw(cb, mem, sz, 256, 0);
+    CHECK(submit_raw(cb, NULL) == -1);
+    usleep(2000);
+    CHECK(*(uint64_t *)H(sentinel) == 0);
+  }
+  uint32_t fixed[] = {1, 6, 29}; // fixed-size records cut off by the end of the buffer
+  for (unsigned i = 0; i < 3; i++) {
+    memset(H(mem), 0, 256); memcpy(H(mem), &fixed[i], 4);
+    cb_raw(cb, mem, fixed[i] == 29 ? 8 : 20, 256, 0);
+    reset_regs(); C->rdi = cb; CALL(shim_sceKernelAprSubmitCommandBuffer); CHECK(RAX32 == -1);
+  }
+  { // a full-size WRITEADDR still runs
+    memset(H(mem), 0, 256);
+    uint32_t op = 2, sz = 32; memcpy(H(mem), &op, 4); memcpy(H(mem) + 4, &sz, 4);
+    *(uint64_t *)H(mem + 8) = sentinel; *(uint64_t *)H(mem + 16) = 0x1122334455667788ull;
+    cb_raw(cb, mem, 32, 256, 0);
+    uint32_t id; CHECK(submit_raw(cb, &id) == 0); wait_id(id);
+    CHECK(*(uint64_t *)H(sentinel) == 0x1122334455667788ull);
+  }
+  { // NOPs before, between and after records are skipped (a buffer may end in padding); the record still runs
+    memset(H(mem), 0, 256);
+    *(uint64_t *)H(sentinel) = 0;
+    uint32_t nop3 = 0x5452000fu | 2u << 8, nop1 = 0x5452000fu, op = 2, sz = 32;
+    memcpy(H(mem), &nop3, 4);                                 // 12 bytes
+    memcpy(H(mem) + 12, &op, 4); memcpy(H(mem) + 16, &sz, 4); // WRITEADDR at 12
+    *(uint64_t *)H(mem + 20) = sentinel; *(uint64_t *)H(mem + 28) = 0xa1a2a3a4a5a6a7a8ull;
+    memcpy(H(mem) + 44, &nop1, 4);                            // trailing 4-byte NOP
+    cb_raw(cb, mem, 48, 256, 0);
+    uint32_t id; CHECK(submit_raw(cb, &id) == 0); wait_id(id);
+    CHECK(*(uint64_t *)H(sentinel) == 0xa1a2a3a4a5a6a7a8ull);
+    // only a NOP
+    memcpy(H(mem), &nop1, 4);
+    cb_raw(cb, mem, 4, 256, 0);
+    CHECK(submit_raw(cb, &id) == 0); wait_id(id);
+    // a NOP that says it is longer than what is left ends the buffer: nothing behind it is read
+    *(uint64_t *)H(sentinel) = 0;
+    uint32_t nop16 = 0x5452000fu | 15u << 8;
+    memset(H(mem), 0, 256);
+    memcpy(H(mem), &nop16, 4);
+    memcpy(H(mem) + 64, &op, 4); memcpy(H(mem) + 68, &sz, 4); // would be the next record if the NOP were believed
+    *(uint64_t *)H(mem + 72) = sentinel; *(uint64_t *)H(mem + 80) = 1;
+    cb_raw(cb, mem, 8, 256, 0);
+    CHECK(submit_raw(cb, &id) == 0); wait_id(id);
+    CHECK(*(uint64_t *)H(sentinel) == 0);
+  }
+  // zero-byte jobs in a tight loop: the id the caller reads back belongs to its own job (the job is freed by the worker)
+  cb_raw(cb, 0, 0, 0, 0);
+  uint32_t last = 0;
+  for (int k = 0; k < 20000; k++) {
+    uint32_t id = 0;
+    CHECK(submit_raw(cb, &id) == 0);
+    CHECK(id == last + 1 || last == 0);
+    last = id;
+  }
+  wait_id(last);
+  // a wait with REC_HAS_WAIT clear must not block the FIFO worker
+  uint64_t word = galloc(8);
+  *(uint64_t *)H(word) = 0;
+  memset(H(mem), 0, 256);
+  uint32_t op = 4, sz = 48; memcpy(H(mem), &op, 4); memcpy(H(mem) + 4, &sz, 4);
+  *(uint64_t *)H(mem + 8) = word; *(uint64_t *)H(mem + 16) = 1; *(uint64_t *)H(mem + 24) = ~0ull; // wait until *word == 1
+  cb_raw(cb, mem, 48, 256, 0);
+  uint32_t wid, zid;
+  CHECK(submit_raw(cb, &wid) == 0);
+  cb_raw(cb, 0, 0, 0, 0);
+  CHECK(submit_raw(cb, &zid) == 0);
+  wait_id(zid); // would hang behind the wait if it ran on the worker
+  __atomic_store_n((uint64_t *)H(word), 1, __ATOMIC_RELEASE);
+  wait_id(wid);
+  // resolve: oversized counts and arrays outside guest memory are refused
+  uint64_t paths = galloc(16), ids = galloc(16), szs = galloc(16), errp = galloc(4), res = galloc(16);
+  *(uint64_t *)H(paths) = gstr("/apprt2/pre_a.bin"); *(uint64_t *)H(paths + 8) = *(uint64_t *)H(paths);
+  uint32_t bad_n[] = {(1u << 20) + 1, 0x10000000u, 0xffffffffu};
+  for (unsigned i = 0; i < 3; i++) {
+    reset_regs(); C->rdi = paths; C->rsi = bad_n[i]; C->rdx = ids; C->rcx = errp; CALL(shim_sceKernelAprResolveFilepathsToIds); CHECK(RAX32 == -1);
+    reset_regs(); C->rdi = paths; C->rsi = bad_n[i]; C->rdx = ids; C->rcx = szs; C->r8 = errp; CALL(shim_sceKernelAprResolveFilepathsToIdsAndFileSizes); CHECK(RAX32 == -1);
+    reset_regs(); C->rdi = paths; C->rsi = bad_n[i]; C->rdx = ids; C->rcx = res; CALL(shim_sceKernelAprResolveFilepathsToIdsForEach); CHECK(RAX32 == -1);
+  }
+  reset_regs(); C->rdi = paths; C->rsi = 2; C->rdx = ARENA - 4; C->rcx = errp; CALL(shim_sceKernelAprResolveFilepathsToIds); CHECK(RAX32 == -1);
+  reset_regs(); C->rdi = ARENA - 8; C->rsi = 2; C->rdx = ids; C->rcx = errp; CALL(shim_sceKernelAprResolveFilepathsToIds); CHECK(RAX32 == -1);
+  reset_regs(); C->rdi = paths; C->rsi = 2; C->rdx = ids; C->rcx = errp; CALL(shim_sceKernelAprResolveFilepathsToIds); CHECK(RAX32 == 0);
+  alarm(0);
+  printf("apr: hardening ok\n");
+}
+
 int main(void) {
   char tmp[] = "/tmp/hlesys_unit.XXXXXX";
   if (!mkdtemp(tmp)) return 2;
@@ -901,6 +1025,7 @@ int main(void) {
   test_savedata_modes();
   test_apr(tmp);
   test_apr_more(tmp);
+  test_apr_hardening();
   test_astro_stubs();
   test_misc();
   test_level_open();

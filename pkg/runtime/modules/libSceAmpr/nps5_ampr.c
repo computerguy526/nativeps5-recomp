@@ -446,19 +446,72 @@ static void do_read(ReadCur *rc, int op, uint32_t fid, uint64_t dst, uint64_t si
   rc->valid = 1; rc->fid = fid; rc->next_dst = dst + size; rc->next_off = off + size;
 }
 
+// Bytes a handler reads from a record of this opcode (the largest field offset + width it touches).
+static uint32_t rec_min_bytes(uint32_t op) {
+  switch (op) {
+  case REC_READFILE: case REC_EQUEUE: return REC_BYTES;
+  case 29: return 12;
+  case OP_GATHER: case OP_SCATTER: case OP_GATHERSCATTER: return 40;
+  case OP_WRITEADDR: case OP_WRITECTR: return 24;
+  case OP_WAITADDR: case OP_WAITCTR: return 38;
+  case OP_ADDR_TIME: return 16;
+  case OP_ADDR_CTR: return 20;
+  case OP_ADDR_CTRPAIR: return 24;
+  default: return 8; // header only (RESETGS, markers, maps, unknown)
+  }
+}
+
+// Reads the record header at pos. Returns 1 = record (op, size set), 2 = a NOP to skip (size set), 0 = end of the
+// buffer (also a NOP or a header that runs past it: nothing of it is read), -1 = malformed: size outside the buffer
+// or smaller than its opcode's handler reads. op and size are always written.
+static int rec_next(const uint8_t *rec, uint32_t bytes, uint32_t pos, uint32_t *op_out, uint32_t *sz_out) {
+  *op_out = 0;
+  *sz_out = 0;
+  if (pos > bytes || bytes - pos < 4) return 0;
+  uint32_t first;
+  memcpy(&first, rec + pos, 4);
+  if ((first & NOP_MASK) == NOP_TAG) {
+    const uint32_t nop = (((first >> 8) & 0xf) + 1) * 4;
+    if (nop > bytes - pos) return 0;
+    *op_out = ~0u;
+    *sz_out = nop;
+    return 2;
+  }
+  uint32_t op = first & 0xff, sz;
+  if (op == REC_READFILE || op == REC_EQUEUE) sz = REC_BYTES;
+  else if (op == 29) sz = 12;
+  else { if (bytes - pos < 8) return 0; memcpy(&sz, rec + pos + 4, 4); }
+  *op_out = op; *sz_out = sz;
+  if (sz < 4 || sz < rec_min_bytes(op) || sz > bytes - pos) return -1;
+  return 1;
+}
+
+// Validates a whole record buffer before anything runs. Returns 0 if malformed; *has_wait tells whether
+// it holds a wait opcode (such a buffer must not run on the shared FIFO worker).
+static int apr_scan(const uint8_t *rec, uint32_t bytes, int *has_wait) {
+  uint32_t pos = 0, op, sz;
+  *has_wait = 0;
+  for (;;) {
+    int k = rec_next(rec, bytes, pos, &op, &sz);
+    if (k < 0) return 0;
+    if (k == 0) return 1;
+    if (k == 2) { pos += sz; continue; }
+    if (op == OP_WAITADDR || op == OP_WAITCTR) *has_wait = 1;
+    pos += sz;
+  }
+}
+
 static void apr_execute(const uint8_t *rec, uint32_t bytes) {
   ReadCur rc = {0};
   uint32_t pos = 0;
-  while (pos + 4 <= bytes) {
+  for (;;) {
+    uint32_t op, sz;
+    int k = rec_next(rec, bytes, pos, &op, &sz);
+    if (k < 0) { NPS5_LOG(NPS5_S_HLE, NPS5_L_ERROR, "apr: malformed record op %u size %u", op, sz); break; }
+    if (k == 0) break;
+    if (k == 2) { pos += sz; continue; }
     uint32_t first;
     memcpy(&first, rec + pos, 4);
-    if ((first & NOP_MASK) == NOP_TAG) { pos += (((first >> 8) & 0xf) + 1) * 4; continue; }
-    uint32_t op = first & 0xff;
-    uint32_t sz;
-    if (op == REC_READFILE || op == REC_EQUEUE) sz = REC_BYTES;
-    else if (op == 29) sz = 12;
-    else { if (pos + 8 > bytes) break; memcpy(&sz, rec + pos + 4, 4); }
-    if (sz < 4 || sz > bytes - pos) { NPS5_LOG(NPS5_S_HLE, NPS5_L_ERROR, "apr: malformed record op %u size %u", op, sz); break; }
     uint32_t w[6] = {0};
     memcpy(w, rec + pos, sz < 24 ? sz : 24);
     const uint8_t *r = rec + pos;
@@ -565,18 +618,29 @@ static void *apr_async_job(void *arg) {
   return NULL;
 }
 
-// Returns 0 or a negative-errno style code mapped by the caller.
+// Returns 0 or an errno value mapped by the caller.
 static int apr_submit(GuestContext *ctx, uint64_t cb_g, uint32_t *id_out) {
   AmprCmdBuf *cb = CB(ctx, cb_g);
   if (!cb) return EINVAL;
-  if (cb->offset > cb->size || (cb->offset && (!cb->base || !RECOMP_MEM_OK(ctx) || cb->base >= ctx->mem_size ||
-                                               cb->offset > ctx->mem_size - cb->base)))
+  // the command buffer lives in guest memory: read each field once and use only the copies
+  const uint64_t base = *(volatile uint64_t *)&cb->base;
+  const uint32_t offset = *(volatile uint32_t *)&cb->offset, size = *(volatile uint32_t *)&cb->size;
+  if (offset > size || (offset && (!base || !RECOMP_MEM_OK(ctx) || base >= ctx->mem_size || offset > ctx->mem_size - base)))
     return EFAULT;
   AprJob *j = (AprJob *)calloc(1, sizeof(*j));
-  j->bytes = cb->offset;
-  j->async = (cb->recording & REC_HAS_WAIT) != 0;
-  j->rec = (uint8_t *)malloc(j->bytes ? j->bytes : 1);
-  if (j->bytes) memcpy(j->rec, NPS5_G2H(ctx, cb->base), j->bytes);
+  if (!j) return ENOMEM;
+  j->bytes = offset;
+  j->rec = (uint8_t *)malloc(offset ? offset : 1);
+  if (!j->rec) { free(j); return ENOMEM; }
+  if (offset) memcpy(j->rec, NPS5_G2H(ctx, base), offset);
+  int has_wait = 0;
+  if (!apr_scan(j->rec, offset, &has_wait)) {
+    NPS5_LOG(NPS5_S_HLE, NPS5_L_ERROR, "apr: command buffer with a malformed record refused");
+    free(j->rec); free(j);
+    return EINVAL;
+  }
+  // a buffer that waits on a counter/address may depend on a later submission: own thread
+  j->async = has_wait;
   pthread_mutex_lock(&g_q_lock);
   if (!g_worker_started) {
     g_xlat.mem_base = ctx->mem_base;
@@ -584,30 +648,36 @@ static int apr_submit(GuestContext *ctx, uint64_t cb_g, uint32_t *id_out) {
     pthread_attr_t at;
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-    pthread_create(&g_worker, &at, apr_worker, NULL);
+    int prc = pthread_create(&g_worker, &at, apr_worker, NULL);
     pthread_attr_destroy(&at);
+    if (prc) { pthread_mutex_unlock(&g_q_lock); free(j->rec); free(j); return EAGAIN; }
     g_worker_started = 1;
   }
-  j->id = ++g_issued;
   if (g_out_n == g_out_cap) {
-    g_out_cap = g_out_cap ? g_out_cap * 2 : 64;
-    g_out_ids = (uint32_t *)realloc(g_out_ids, g_out_cap * sizeof(uint32_t));
+    uint32_t ncap = g_out_cap ? g_out_cap * 2 : 64;
+    uint32_t *ni = (uint32_t *)realloc(g_out_ids, ncap * sizeof(uint32_t));
+    if (!ni) { pthread_mutex_unlock(&g_q_lock); free(j->rec); free(j); return ENOMEM; }
+    g_out_ids = ni;
+    g_out_cap = ncap;
   }
-  g_out_ids[g_out_n++] = j->id;
+  const uint32_t id = g_issued + 1;
+  j->id = id;
+  g_out_ids[g_out_n++] = id;
   if (j->async) {
-    // a buffer that waits on a counter/address may depend on a later submission: own thread
     pthread_t t; pthread_attr_t at;
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-    pthread_create(&t, &at, apr_async_job, j);
+    int prc = pthread_create(&t, &at, apr_async_job, j);
     pthread_attr_destroy(&at);
+    if (prc) { out_remove(id); pthread_mutex_unlock(&g_q_lock); free(j->rec); free(j); return EAGAIN; }
   } else {
     if (g_q_tail) g_q_tail->next = j; else g_q_head = j;
     g_q_tail = j;
     pthread_cond_signal(&g_q_cv);
   }
+  g_issued = id;
   pthread_mutex_unlock(&g_q_lock);
-  if (id_out) *id_out = j->id;
+  if (id_out) *id_out = id; // j may already be finished and freed: never touch it after the unlock
   return 0;
 }
 
@@ -651,6 +721,12 @@ void shim_sceKernelAprWaitCommandBuffer(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
+// Most names one resolve call takes, and whether [a, a+len) lies inside guest memory.
+#define APR_MAX_RESOLVE (1u << 20)
+static int garr_ok(const GuestContext *ctx, uint64_t a, uint64_t len) {
+  return RECOMP_MEM_OK(ctx) && a != 0 && a < ctx->mem_size && len <= ctx->mem_size - a;
+}
+
 static void resolve_common(GuestContext *ctx, int sizes) {
   uint64_t *paths = (uint64_t *)NPS5_G2H(ctx, ctx->rdi);
   uint32_t n = (uint32_t)ctx->rsi;
@@ -658,6 +734,11 @@ static void resolve_common(GuestContext *ctx, int sizes) {
   uint64_t *szs = sizes ? (uint64_t *)NPS5_G2H(ctx, ctx->rcx) : NULL;
   uint32_t *errp = (uint32_t *)NPS5_G2H(ctx, sizes ? ctx->r8 : ctx->rcx);
   if (!paths || !ids || (sizes && !szs)) { apr_fail(ctx, EINVAL); return; }
+  if (n > APR_MAX_RESOLVE || !garr_ok(ctx, ctx->rdi, (uint64_t)n * 8) || !garr_ok(ctx, ctx->rdx, (uint64_t)n * 4) ||
+      (sizes && !garr_ok(ctx, ctx->rcx, (uint64_t)n * 8))) {
+    apr_fail(ctx, EINVAL);
+    return;
+  }
   for (uint32_t i = 0; i < n; i++) {
     const char *p = (const char *)NPS5_G2H(ctx, paths[i]);
     uint64_t sz = 0;
@@ -1119,6 +1200,11 @@ static int resolve_many(GuestContext *ctx, const char *prefix, uint64_t paths_g,
   uint32_t *errp = foreach_mode ? NULL : (out_g ? (uint32_t *)NPS5_G2H(ctx, out_g) : NULL);
   int32_t *res = foreach_mode ? (int32_t *)NPS5_G2H(ctx, out_g) : NULL;
   if (!paths || !ids || (foreach_mode && !res)) { apr_fail(ctx, EINVAL); return -1; }
+  if (n > APR_MAX_RESOLVE || !garr_ok(ctx, paths_g, (uint64_t)n * 8) || !garr_ok(ctx, ids_g, (uint64_t)n * 4) ||
+      (szs && !garr_ok(ctx, sizes_g, (uint64_t)n * 8)) || (res && !garr_ok(ctx, out_g, (uint64_t)n * 4))) {
+    apr_fail(ctx, EINVAL);
+    return -1;
+  }
   int failures = 0;
   size_t plen = prefix ? strlen(prefix) : 0;
   for (uint32_t i = 0; i < n; i++) {
