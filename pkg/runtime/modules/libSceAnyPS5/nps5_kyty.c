@@ -39,6 +39,7 @@
 
 #include "kytyGpuApi.h"
 #include "nps5_diag.h"
+#include "nps5_log.h"
 #include "nps5_hostcall.h"
 #include "nps5_kyty.h"
 #include "nps5_kyty_watch.h"
@@ -125,11 +126,13 @@ static void *alias_of(uint64_t guest, uint64_t size) {
   return NULL; // a writer is stuck behind this very thread: no emulation this time
 }
 
-#define KLOG(...) do { fprintf(stderr, "[kyty-seam] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+// [kyty-seam] lines follow the shared convention (nps5_log.h): I lines unchanged, NPS5_LOG=kyty-seam:W silences them.
+#define KLOG(...) NPS5_SLOG("kyty-seam", 'I', __VA_ARGS__)
+#define KLOGW(...) NPS5_SLOG("kyty-seam", 'W', __VA_ARGS__)
 #define KTRACE(...) do { if (g_trace) KLOG(__VA_ARGS__); } while (0)
 
 __attribute__((noreturn)) static void fatal(const char *what) {
-  fprintf(stderr, "[kyty-seam] FATAL: %s\n", what);
+  NPS5_SLOG("kyty-seam", 'E', "FATAL: %s", what);
   abort();
 }
 
@@ -599,8 +602,13 @@ static void *stats_thread(void *arg) {
   uint64_t pg = 0, po = 0, pr = 0;
   for (;;) {
     sleep(every);
-    print_stats("interval", &prev, pg, po, pr, (double)every);
-    if (g_trim_on)
+    static nps5_log_rl rl_interval, rl_trim;   // periodic lines: NPS5_LOG_RATE=FIRST,EVERY thins them (unset: all, as before)
+    unsigned long long hid_;
+    if (nps5_log_rl_pass_in(nps5_log_config(), &rl_interval, &hid_)) {
+      if (hid_) KLOG("(x%llu repeated; %llu not shown)", hid_ + 1, hid_);
+      print_stats("interval", &prev, pg, po, pr, (double)every);
+    }
+    if (g_trim_on && nps5_log_rl_pass_in(nps5_log_config(), &rl_trim, &hid_))
       KLOG("alias trim: %llu passes (%llu skipped: no quiet instant), %.1f ms in total, %llu accesses retried", (unsigned long long)atomic_load(&g_trim_passes),
            (unsigned long long)atomic_load(&g_trim_skipped), (double)atomic_load(&g_trim_ns) / 1e6, (unsigned long long)atomic_load(&g_trim_retries));
     nps5_kyty_watch_stats(&prev);

@@ -128,6 +128,15 @@ static int parse_level(const char *s) {
   for (int i = 0; i < 5; i++)
     if (strcasecmp(s, k_level[i]) == 0) return i;
   if (strcasecmp(s, "warning") == 0) return NPS5_L_WARN;
+  if (s[0] && !s[1]) {  // one letter, the shared log convention (nps5_log.h): T D I W E
+    switch (s[0] | 0x20) {
+      case 't': return NPS5_L_TRACE;
+      case 'd': return NPS5_L_DEBUG;
+      case 'i': return NPS5_L_INFO;
+      case 'w': return NPS5_L_WARN;
+      case 'e': return NPS5_L_ERROR;
+    }
+  }
   if (strcasecmp(s, "off") == 0 || strcasecmp(s, "none") == 0) return NPS5_L_ERROR + 1;
   return -1;
 }
