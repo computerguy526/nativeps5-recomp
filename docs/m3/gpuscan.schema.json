@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gpuscan-report-v1",
+  "title": "gpuscan report",
+  "type": "object",
+  "required": ["schema", "schemaVersion", "name", "summary", "blockers", "features", "shaders"],
+  "properties": {
+    "schema": {"const": "gpuscan-report"},
+    "schemaVersion": {"const": 1},
+    "tool": {"type": "string"},
+    "generated": {"type": "string", "format": "date-time"},
+    "name": {"type": "string"},
+    "inputs": {"type": "object"},
+    "device": {"type": "object", "properties": {"source": {"type": "string"}, "name": {"type": "string"}, "driver": {"type": "string"}, "apiVersion": {"type": "string"}, "features": {"type": "object", "additionalProperties": {"type": "boolean"}}, "limits": {"type": "object", "additionalProperties": {"type": "number"}}, "extensions": {"type": "array", "items": {"type": "string"}}, "computeCapableQueues": {"type": "integer"}}},
+    "summary": {"type": "object", "required": ["shaders", "shadersByStage", "featuresUsed", "unsupportedFeatures", "blockers", "peaks", "deviceKnown"]},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "blockersAfterKnown": {"type": "array", "items": {"type": "string"}},
+    "predictedBlockers": {"type": "array", "items": {"type": "string"}},
+    "known": {"type": "array", "items": {"type": "string"}},
+    "features": {"type": "array", "items": {"$ref": "#/$defs/feature"}},
+    "pipelines": {"type": "object"},
+    "shaders": {"type": "array", "items": {"$ref": "#/$defs/shader"}},
+    "title": {"type": "object"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "required": ["id", "category", "title", "severity", "supported", "evidence", "neededBy"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9_.A-Z-]+$"},
+        "category": {"type": "string"},
+        "title": {"type": "string"},
+        "severity": {"enum": ["blocker", "major", "minor", "info"]},
+        "supported": {"enum": ["yes", "no", "partial", "unknown"]},
+        "evidence": {"type": "string"},
+        "workaround": {"type": "string"},
+        "rank": {"type": "integer", "minimum": 1},
+        "known": {"type": "boolean"},
+        "predicted": {"type": "boolean"},
+        "neededBy": {"type": "object", "required": ["shaders", "pipelines"], "properties": {"shaders": {"type": "integer"}, "shaderIds": {"type": "array", "items": {"type": "string"}}, "pipelines": {"type": "integer"}, "hints": {"type": "array", "items": {"type": "string"}}}},
+        "alsoNeededByThoseShaders": {"type": "object", "additionalProperties": {"type": "integer"}}
+      }
+    },
+    "shader": {
+      "type": "object",
+      "required": ["id", "stage", "words", "capabilities", "features"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "stage": {"type": "string"},
+        "executionModels": {"type": "array", "items": {"type": "string"}},
+        "words": {"type": "integer"},
+        "spirvVersion": {"type": "string"},
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "extensions": {"type": "array", "items": {"type": "string"}},
+        "executionModes": {"type": "array", "items": {"type": "string"}},
+        "features": {"type": "array", "items": {"type": "string"}},
+        "sharedMemoryBytes": {"type": "integer"},
+        "pushConstantBytes": {"type": "integer"},
+        "descriptors": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "maxDescriptorSet": {"type": "integer"},
+        "unboundedDescriptorArray": {"type": "boolean"},
+        "storageImageFormats": {"type": "array", "items": {"type": "string"}},
+        "localSize": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3},
+        "origin": {"type": "string"}
+      }
+    }
+  }
+}
