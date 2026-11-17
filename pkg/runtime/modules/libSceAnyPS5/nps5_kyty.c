@@ -116,6 +116,9 @@ static void *alias_of(uint64_t guest, uint64_t size) {
         break;
       }
     }
+    // The entry reads above must be complete before the sequence is read again (arm64 may reorder plain loads
+    // past an acquire load): a torn entry never passes.
+    atomic_thread_fence(memory_order_acquire);
     if (atomic_load_explicit(&g_snap_seq, memory_order_acquire) == s1) return found;
   }
   return NULL; // a writer is stuck behind this very thread: no emulation this time
@@ -191,6 +194,9 @@ static void ranges_cut(uint64_t lo, uint64_t hi, KRange *keep, size_t *nkeep, si
     if (r.hi <= lo || r.lo >= hi) { i++; continue; }
     memmove(g_ranges + i, g_ranges + i + 1, (g_nranges - i - 1) * sizeof *g_ranges);
     g_nranges--;
+    // The range leaves the lock-free snapshot before its alias is unmapped: a fault handler that looks it up from
+    // now on does not find it (one that already holds the pointer is not waited for).
+    snap_publish();
     alias_free(r.alias, r.hi - r.lo);
     if (r.lo < lo && *nkeep < maxkeep) keep[(*nkeep)++] = (KRange){r.lo, lo, r.flags, NULL};
     if (hi < r.hi && *nkeep < maxkeep) keep[(*nkeep)++] = (KRange){hi, r.hi, r.flags, NULL};
@@ -458,6 +464,9 @@ static bool in_alias(uint64_t host) { // signal handler: no lock
       const uint64_t a = (uint64_t)(uintptr_t)r.alias;
       found = a && host >= a && host - a < r.hi - r.lo;
     }
+    // The entry reads above must be complete before the sequence is read again (arm64 may reorder plain loads
+    // past an acquire load): a torn entry never passes.
+    atomic_thread_fence(memory_order_acquire);
     if (atomic_load_explicit(&g_snap_seq, memory_order_acquire) == s1) return found;
   }
   return false;
@@ -615,7 +624,9 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   g_want_alias = !(al && strcmp(al, "0") == 0);
 
   const char *path = getenv("NPS5_KYTY_GPU_LIB");
-  const char *tries[] = {path, "@rpath/kyty_gpu.dylib", "kyty_gpu.dylib", "libkyty_gpu.dylib"};
+  // An explicit path, or the copy next to the binary: never a bare name (that would search the working directory
+  // and DYLD paths for a library to load).
+  const char *tries[] = {path, "@rpath/kyty_gpu.dylib", "@executable_path/kyty_gpu.dylib", "@executable_path/libkyty_gpu.dylib"};
   for (size_t i = path && *path ? 0 : 1; i < sizeof tries / sizeof *tries && !g_lib; i++) {
     g_lib = dlopen(tries[i], RTLD_NOW | RTLD_LOCAL);
     if (!g_lib && i == 0) { fprintf(stderr, "[kyty-seam] FATAL: NPS5_KYTY_GPU_LIB=%s: %s\n", path, dlerror()); abort(); }
@@ -624,9 +635,11 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   KytyGpuGetApiFn get = (KytyGpuGetApiFn)dlsym(g_lib, "KytyGpuGetApi");
   if (!get) fatal("kyty_gpu has no KytyGpuGetApi");
   g_api = get(KYTY_GPU_ABI_VERSION);
-  if (!g_api) fatal("kyty_gpu refused ABI 1.6 (KytyGpuGetApi returned null)");
+  if (!g_api) fatal("kyty_gpu refused this host's ABI (KytyGpuGetApi returned null)");
   if ((g_api->abi_version >> 16) != KYTY_GPU_ABI_VERSION_MAJOR || g_api->struct_size < sizeof(KytyGpuApi) || (g_api->abi_version & 0xffff) < 6)
     fatal("kyty_gpu is not an ABI 1.6 library (hosted memory): rebuild it with this kytyGpuApi.h");
+  // The watch table is built for one host page size.
+  if (getpagesize() != (1 << NPS5_KW_HOST_SHIFT)) fatal("host page size is not the one the watch table was built for");
   if (!g_api->init || !g_api->register_memory || !g_api->unregister_memory) fatal("kyty_gpu lacks init/register_memory/unregister_memory");
 
   const Nps5Arena *a = &g_nps5_arena;

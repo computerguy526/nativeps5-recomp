@@ -296,6 +296,9 @@ bool nps5_a64_emulate_access(void *ucontext, uint64_t fault_addr, Nps5A64Redirec
   uint8_t *p = (uint8_t *)redirect(user, &acc);
   if (!p) return false;
 
+  // A release store (STLR/STLUR) is ordered after everything this thread did before it: the plain store below
+  // needs the barrier in front as well as the one after it.
+  if (d.ordered && d.is_store) __sync_synchronize();
   switch (d.kind) {
   case K_ZVA: memset(p, 0, 64); break;
   case K_VMULTI: { // element e of each register in turn; interleaved over selem registers

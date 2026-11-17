@@ -10,7 +10,7 @@ Status: the host side is complete and tested against a stub library. No real `ky
 
 `NPS5_GPU=kyty` (exactly that value; anything else, or unset, is the AnyPS5 renderer as before) makes `nps5_anyps5_startup`:
 
-1. `dlopen` the library: `NPS5_KYTY_GPU_LIB=<path>`, else `@rpath/kyty_gpu.dylib`, `kyty_gpu.dylib`, `libkyty_gpu.dylib` (DYLD_LIBRARY_PATH).
+1. `dlopen` the library: `NPS5_KYTY_GPU_LIB=<path>`, else `@rpath/kyty_gpu.dylib`, then `kyty_gpu.dylib` / `libkyty_gpu.dylib` next to the binary (`@executable_path`); never a bare name.
 2. `KytyGpuGetApi(1.6)`, check ABI 1.6 and sizes, `init(host callbacks)`.
 3. Rebind the 84 graphics exports (66 libSceAgc, 7 libSceAgcDriver, 11 libSceVideoOut: AstroHybrid's export table, `pkg/thunkgen/kyty_nids.tsv`) to the
    library: `nid_entry(nid)`, else `dlsym(lib, nid)`. Everything else (libkernel, pad, user service, libc, the ~1320 other AnyPS5 exports) stays AnyPS5.
