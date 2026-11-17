@@ -1048,8 +1048,13 @@ static void crash_report(int sig, siginfo_t *si, void *uctx) {
     memcpy(path + bl, "/pcmap.bin", 11);
     int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd >= 0) {
+      // Hundreds of MiB for a large title: more than the 2 s the handler allows itself before anything that can
+      // block (seen: SIGALRM in the middle of this dump, so no stderr report and no summary). Plain write() calls
+      // cannot deadlock, so the dump gets its own bound; the short one is armed again for what follows.
+      alarm(60);
       write_pcmap_bin(fd);
       close(fd);
+      alarm(5);
     }
   }
 }
