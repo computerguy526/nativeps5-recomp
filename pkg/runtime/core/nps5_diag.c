@@ -1161,12 +1161,10 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
     errno = saved_errno;
   }
   g_nps5_in_crash_handler = 1; // from here on no host access hook runs on this thread (nps5_mem.h)
-  // A real crash from here on: bound the time to death before anything that can block (dladdr and the report take
-  // dyld/stdio locks that the crashed thread may hold).
-  signal(SIGALRM, SIG_DFL);
-  alarm(2);
   int exp = 0;
   if (!atomic_compare_exchange_strong(&g_crashed, &exp, 1)) {
+    // Nothing in this block arms the alarm: the process alarm belongs to the reporting thread (a second thread arming
+    // its own 2 s here cut the reporting thread's longer bound short: SIGALRM in the middle of the pc map dump).
     if (atomic_load(&g_crash_owner) != (uintptr_t)pthread_self()) {
       // ANOTHER thread crashed while the first crash is still being reported (typical: the reporting thread is in
       // exit(), library teardown destroys a mutex, a thread that still runs throws from it and std::terminate
@@ -1189,6 +1187,10 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
     _exit(128 + sig);
   }
   atomic_store(&g_crash_owner, (uintptr_t)pthread_self());
+  // A real crash from here on, and this thread reports it: bound the time to death before anything that can block
+  // (dladdr and the report take dyld/stdio locks that the crashed thread may hold).
+  signal(SIGALRM, SIG_DFL);
+  alarm(2);
   atomic_fetch_add(&g_faults, 1);
   crash_report(sig, si, uctx);
   // Symbolise with dladdr in a second pass; it is not async-signal-safe, so the report above is

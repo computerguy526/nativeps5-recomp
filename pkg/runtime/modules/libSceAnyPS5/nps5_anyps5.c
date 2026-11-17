@@ -393,8 +393,8 @@ static struct {
 extern int nps5_avplayer_playing_count(void) __attribute__((weak_import));
 extern _Atomic int nps5_vfs_phase __attribute__((weak_import));
 extern _Atomic unsigned long long nps5_vfs_bytes_read __attribute__((weak_import));
-// Loading = the VFS read more than 6 MB within the last second, or a new levels/<name> phase appeared in the last 3 s;
-// stays on 2 s after the last such sign (loading card up / first content frames still settling).
+// Loading = a new levels/<name> phase appeared in the last 5 s, or the VFS read more than 6 MB within a second; the
+// latter stays on for 2 s after the last such second (loading card up / first content frames still settling).
 static int nps5_framerate_frozen(uint64_t now) {
   if (!g_fr.no_freeze_av && nps5_avplayer_playing_count && nps5_avplayer_playing_count() > 0) return 1;
   if (g_fr.no_freeze_load) return 0;
@@ -420,14 +420,12 @@ static void nps5_framerate_init(void) {
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN/MAX not within 1 <= min <= max <= 240: using 20..60\n");
   nps5_fr_defaults(&g_fr.l, g_fr.lo, g_fr.hi);
   // NPS5_FRAMERATE_LEGACY=1 old behaviour; _NO_FREEZE_AV / _NO_FREEZE_LOAD=1 keep one freeze off; _EMA (0.02), _HYST_PCT (5),
-  // _HYST_MS (1000), _WARM (60 frames) tune the smoothing.
+  // _HYST_MS (1000), _WARM (60 frames without a rewrite after a freeze) tune the smoothing (nps5_fr_tune checks the ranges).
   if (getenv("NPS5_FRAMERATE_LEGACY") && atoi(getenv("NPS5_FRAMERATE_LEGACY")) > 0) g_fr.l.legacy = 1;
   g_fr.no_freeze_av = getenv("NPS5_FRAMERATE_NO_FREEZE_AV") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_AV")) > 0;
   g_fr.no_freeze_load = getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD")) > 0;
-  if (getenv("NPS5_FRAMERATE_EMA") && atof(getenv("NPS5_FRAMERATE_EMA")) > 0) g_fr.l.ema_alpha = atof(getenv("NPS5_FRAMERATE_EMA"));
-  if (getenv("NPS5_FRAMERATE_HYST_PCT")) g_fr.l.hyst_frac = atof(getenv("NPS5_FRAMERATE_HYST_PCT")) / 100.0;
-  if (getenv("NPS5_FRAMERATE_HYST_MS")) g_fr.l.hyst_ns = (uint64_t)(atof(getenv("NPS5_FRAMERATE_HYST_MS")) * 1e6);
-  if (getenv("NPS5_FRAMERATE_WARM")) g_fr.l.warm_frames = (uint32_t)atoi(getenv("NPS5_FRAMERATE_WARM"));
+  if (nps5_fr_tune(&g_fr.l, getenv("NPS5_FRAMERATE_EMA"), getenv("NPS5_FRAMERATE_HYST_PCT"), getenv("NPS5_FRAMERATE_HYST_MS"), getenv("NPS5_FRAMERATE_WARM")))
+    fprintf(stderr, "[framerate] NPS5_FRAMERATE_EMA (0 < v <= 1) / _HYST_PCT (0..50) / _HYST_MS (0..60000) / _WARM (0..36000): a value outside its range is ignored, the default stays\n");
 }
 
 static void nps5_framerate_tick(GuestContext *ctx) {

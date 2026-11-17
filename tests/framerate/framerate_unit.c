@@ -38,6 +38,23 @@ int main(void) {
   // legacy: rewrites readily, no freeze
   init(&f); f.legacy = 1; rw = 0; for (int i = 0; i < 20; i++) { rw += run(&f, 15, 1000.0 / 24.5, 1); rw += run(&f, 15, 1000.0 / 60, 1); }
   CHECK(rw > 5, "legacy did not rewrite (%d)", rw);
+  // tuning texts: valid values are taken, anything else keeps the default (never a negative band, a wrapped time or
+  // frame count, or an EMA weight outside (0, 1])
+  init(&f);
+  CHECK(nps5_fr_tune(&f, NULL, NULL, NULL, NULL) == 0 && f.ema_alpha == 0.02 && f.hyst_frac == 0.05 && f.hyst_ns == 1000000000ull && f.warm_frames == 60, "defaults changed");
+  CHECK(nps5_fr_tune(&f, "0.1", "10", "250", "30") == 0 && f.ema_alpha == 0.1 && fabs(f.hyst_frac - 0.10) < 1e-12 && f.hyst_ns == 250000000ull && f.warm_frames == 30, "valid tuning not taken");
+  CHECK(nps5_fr_tune(&f, "1", "0", "0", "0") == 0 && f.ema_alpha == 1.0 && f.hyst_frac == 0.0 && f.hyst_ns == 0 && f.warm_frames == 0, "range ends not taken");
+  static const char *bad[] = {"-1", "nan", "inf", "-inf", "abc", "", "1e400", "5x", "-0.5", "1e9"};
+  for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+    init(&f);
+    CHECK(nps5_fr_tune(&f, bad[i], bad[i], bad[i], bad[i]) == 4, "bad text '%s' not counted", bad[i]);
+    CHECK(f.ema_alpha == 0.02 && f.hyst_frac == 0.05 && f.hyst_ns == 1000000000ull && f.warm_frames == 60, "bad text '%s' changed the tuning", bad[i]);
+  }
+  init(&f); CHECK(nps5_fr_tune(&f, "0", "51", "60001", "36001") == 4 && f.ema_alpha == 0.02 && f.warm_frames == 60, "out-of-range values taken");
+  // with the tuning that garbage used to produce the block must still follow a sustained slowdown
+  init(&f); nps5_fr_tune(&f, "7", "-5", "-1000", "-1"); run(&f, 100, 1000.0 / 60, 0);
+  rw = run(&f, 600, 33.3, 0);
+  CHECK(rw >= 1 && rw <= 40 && f.cur < 40, "garbage tuning: cur %.1f after a sustained 30 fps, %d rewrites", f.cur, rw);
   printf(fails ? "framerate_unit: %d FAILED\n" : "framerate_unit: all passed\n", fails);
   return fails != 0;
 }

@@ -675,18 +675,19 @@ static int dircache_scan(const char *dir, const struct stat *st, dircache_entry_
   DIR *d = opendir(dir);
   if (!d) return -1;
   uint32_t cap_names = 256, n = 0;
+  int bad = 0;                         // too big / out of memory: nothing is kept, the caller scans the old way
   char **names = malloc(cap_names * sizeof(char *));
   struct dirent *de;
   while (names && (de = readdir(d)) != NULL) {
-    if (n >= DIRCACHE_MAX_ENTRIES) { n = UINT32_MAX; break; }
-    if (n == cap_names) { cap_names *= 2; char **nn = realloc(names, cap_names * sizeof(char *)); if (!nn) { n = UINT32_MAX; break; } names = nn; }
+    if (n >= DIRCACHE_MAX_ENTRIES) { bad = 1; break; }
+    if (n == cap_names) { cap_names *= 2; char **nn = realloc(names, cap_names * sizeof(char *)); if (!nn) { bad = 1; break; } names = nn; }
     names[n] = strdup(de->d_name);
-    if (!names[n]) { n = UINT32_MAX; break; }
+    if (!names[n]) { bad = 1; break; }
     n++;
   }
   closedir(d);
   if (!names) return -1;
-  if (n == UINT32_MAX) { return -1; }  // too big / out of memory: leak-free enough, caller falls back
+  if (bad) { for (uint32_t i = 0; i < n; i++) free(names[i]); free(names); return -1; }
   uint32_t cap = 16; while (cap < n * 2u) cap <<= 1;
   int32_t *table = malloc(cap * sizeof(int32_t));
   if (!table) { for (uint32_t i = 0; i < n; i++) free(names[i]); free(names); return -1; }

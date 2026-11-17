@@ -11,6 +11,7 @@
 #pragma once
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 typedef struct {
   int legacy;
@@ -27,6 +28,26 @@ typedef struct {
 static inline void nps5_fr_defaults(Nps5Fr *f, double lo, double hi) {
   f->legacy = 0; f->lo = lo; f->hi = hi; f->ema_alpha = 0.02; f->hyst_frac = 0.05; f->hyst_ns = 1000000000ull; f->warm_frames = 60;
   f->last_ns = f->off_since_ns = 0; f->ema = f->cur = hi; f->frames = f->warm = f->rewrites = f->frozen_frames = 0; f->was_frozen = 0;
+}
+
+// Tuning from the environment texts (NULL = not set, the default stays): NPS5_FRAMERATE_EMA (0 < v <= 1), _HYST_PCT
+// (0..50), _HYST_MS (0..60000), _WARM (0..36000 frames). A text that is not a number in its range is ignored: the
+// default stays (a negative band would rewrite every second, a negative time or frame count converts to a huge
+// unsigned value and the block would never follow again, an EMA weight above 1 oscillates). Returns how many were ignored.
+static inline int nps5_fr_tune_one(const char *text, double lo, double hi, int lo_open, double *out) {
+  if (!text) return 0;
+  char *end = NULL;
+  const double v = strtod(text, &end);
+  if (end == text || *end != 0 || !(v >= lo && v <= hi) || (lo_open && v == lo)) return 1;
+  *out = v;
+  return 0;
+}
+static inline int nps5_fr_tune(Nps5Fr *f, const char *ema, const char *hyst_pct, const char *hyst_ms, const char *warm) {
+  double a = f->ema_alpha, pct = f->hyst_frac * 100.0, ms = (double)f->hyst_ns / 1e6, w = (double)f->warm_frames;
+  const int bad = nps5_fr_tune_one(ema, 0.0, 1.0, 1, &a) + nps5_fr_tune_one(hyst_pct, 0.0, 50.0, 0, &pct) +
+                  nps5_fr_tune_one(hyst_ms, 0.0, 60000.0, 0, &ms) + nps5_fr_tune_one(warm, 0.0, 36000.0, 0, &w);
+  f->ema_alpha = a; f->hyst_frac = pct / 100.0; f->hyst_ns = (uint64_t)(ms * 1e6); f->warm_frames = (uint32_t)w;
+  return bad;
 }
 
 // Returns 1 when the block must be rewritten to *want.

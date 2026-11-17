@@ -143,6 +143,24 @@ static void legacy_two(int sig, siginfo_t *si, void *u) { // stands for the stde
   if (f) fclose(f);
   exit(7);
 }
+static void __attribute__((noreturn)) crash_null(void);
+static void *second_fault_thread(void *a) { // a second thread that takes a memory fault
+  (void)a;
+  while (!atomic_load(&g_second_go)) usleep(1000);
+  atomic_store(&g_second_in, 1);
+  crash_null();
+}
+// The reporting thread is inside a long, separately bounded step (the pc map dump arms its own 60 s) when a second
+// thread fails: the second thread must not arm the process alarm again (its 2 s cut the dump short: SIGALRM, no summary).
+static void legacy_twoslow(int sig, siginfo_t *si, void *u) {
+  (void)sig; (void)si; (void)u;
+  alarm(30); // stands for the pc map dump's own bound
+  atomic_store(&g_second_go, 1);
+  while (!atomic_load(&g_second_in)) usleep(1000);
+  usleep(2600 * 1000); // longer than the 2 s a second thread used to arm
+  nps5_diag_crash_finalize();
+  exit(7);
+}
 static void legacy_rec(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; abort(); } // same thread again
 static void legacy_recfin(int sig, siginfo_t *si, void *u) { (void)sig; (void)si; (void)u; nps5_diag_crash_finalize(); abort(); } // abort in teardown
 static void chain_before_diag(void (*fn)(int, siginfo_t *, void *)) {
@@ -202,6 +220,7 @@ int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "deepmain")) { deep_arm(); raise(SIGUSR1); _exit(6); }
   if (argc > 1 && !strcmp(argv[1], "deepthread")) { deep_arm(); pthread_t t; pthread_create(&t, NULL, deep_thread, NULL); pthread_join(t, NULL); _exit(6); }
   if (argc > 1 && !strcmp(argv[1], "two")) { pthread_t t; pthread_create(&t, NULL, second_thread, NULL); chain_before_diag(legacy_two); crash_null(); }
+  if (argc > 1 && !strcmp(argv[1], "twoslow")) { pthread_t t; pthread_create(&t, NULL, second_fault_thread, NULL); chain_before_diag(legacy_twoslow); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "rec")) { chain_before_diag(legacy_rec); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "recfin")) { chain_before_diag(legacy_recfin); crash_null(); }
   if (argc > 1 && !strcmp(argv[1], "overflow")) { pthread_t t; pthread_create(&t, NULL, overflow_thread, NULL); pthread_join(t, NULL); _exit(5); }
@@ -241,6 +260,13 @@ int main(int argc, char **argv) {
     CHECK(system(cmd) == 0);
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", d4); system(cmd);
   }
+  // the same while the reporting thread is in a step with its own longer time bound: the second thread leaves the alarm alone
+  snprintf(d4, sizeof d4, "%s.twoslow", base); mkdir(d4, 0755);
+  st = run_self("twoslow", d4);
+  CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 7);
+  snprintf(cmd, sizeof cmd, "grep -q '^crashed: 1' '%s'/*/summary.txt", d4);
+  CHECK(system(cmd) == 0);
+  snprintf(cmd, sizeof cmd, "rm -rf '%s'", d4); system(cmd);
   const char *deep[2] = {"deepmain", "deepthread"};
   for (int i = 0; i < 2; i++) {
     char d6[600]; snprintf(d6, sizeof d6, "%s.%s", base, deep[i]); mkdir(d6, 0755);
