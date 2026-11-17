@@ -35,6 +35,7 @@ struct Nps5AvSyncStats {
     Nps5AvRunStat deliver_interval_ms;  // time between two delivered frames
     Nps5AvRunStat poll_interval_ms;     // time between two guest GetVideoData calls
     Nps5AvRunStat lateness_ms;          // clock at delivery minus frame timestamp (negative = early)
+    Nps5AvRunStat convert_ms;           // yuv->NV12 copy into the guest buffer per frame
     Nps5AvRunStat decode_lead_ms;       // frame timestamp minus clock when decode finished (negative = decoded late)
     double min_reuse_age_ms = 1e300;    // shortest time between the guest fetching a buffer and the decoder refilling it
     uint64_t reuse_under_50ms = 0;

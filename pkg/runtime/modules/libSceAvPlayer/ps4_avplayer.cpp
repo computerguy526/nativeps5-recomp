@@ -160,7 +160,7 @@ static uint64_t nv12_frame_bytes(uint32_t width, uint32_t height) {
 }
 
 // Returns false (nothing delivered) when the frame does not fit the destination buffer.
-static bool copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) {
+static bool copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src, bool planar_chroma = false) {
     const uint32_t dst_pitch = video_pitch((uint32_t)src->width);
     const uint32_t dst_height = align_up((uint32_t)src->height, 16);
     const uint32_t width = (uint32_t)src->width;
@@ -184,7 +184,14 @@ static bool copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) 
     }
     for (uint32_t y = 0; y < chroma_rows; ++y) {
         uint8_t *row = chroma_dst + (size_t)y * dst_pitch;
-        std::memcpy(row, src->data[1] + (size_t)y * src->linesize[1], chroma_bytes);
+        if (planar_chroma) {
+            // yuv420p: interleave U and V (one pass, instead of a 4K swscale conversion per frame)
+            const uint8_t *u = src->data[1] + (size_t)y * src->linesize[1];
+            const uint8_t *v = src->data[2] + (size_t)y * src->linesize[2];
+            for (uint32_t x = 0; x < chroma_bytes / 2; ++x) { row[2 * x] = u[x]; row[2 * x + 1] = v[x]; }
+        } else {
+            std::memcpy(row, src->data[1] + (size_t)y * src->linesize[1], chroma_bytes);
+        }
         for (uint32_t x = chroma_bytes; x + 1 < dst_pitch; x += 2) {
             row[x] = row[chroma_bytes - 2];
             row[x + 1] = row[chroma_bytes - 1];
@@ -547,6 +554,17 @@ public:
             }
             m_video_codec_ctx = avcodec_alloc_context3(decoder);
             avcodec_parameters_to_context(m_video_codec_ctx, stream->codecpar);
+            // The intro clip is 3840x2160 H.264 at 60 fps: one decode thread needed 19 ms (p50) .. 28 ms (p90) per frame,
+            // so the picture ran behind the clock (up to 1.9 s late) and the game's load made it worse. Frame threading
+            // costs a few frames of output delay, which the PTS delivery absorbs. NPS5_AVPLAYER_DEC_THREADS=<n> (1 = old).
+            if (!avsync_legacy()) {
+                const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS");
+                int n = t && t[0] ? atoi(t) : 4;
+                if (n > 1 && n <= 16) {
+                    m_video_codec_ctx->thread_count = n;
+                    m_video_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+                }
+            }
             if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0) {
                 AVPLAYER_LOG("Failed to open video codec");
                 return false;
@@ -698,13 +716,13 @@ public:
         std::lock_guard<std::mutex> lk(m_stats_mutex);
         if (!avplayer_vtrace() || m_vstats.polls == 0) return;
         const Nps5AvSyncStats &s = m_vstats;
-        AVPLAYER_LOG("[avvid] SUMMARY mode=%s polls=%llu delivered=%llu dropped=%llu empty_polls=%llu held_early=%llu | deliver_interval_ms mean %.2f sd %.2f min %.1f max %.1f | poll_interval_ms mean %.2f sd %.2f max %.1f | lateness_ms mean %.2f sd %.2f min %.1f max %.1f | decode_lead_ms mean %.1f min %.1f | min_reuse_age_ms %.1f reuse<50ms %llu",
+        AVPLAYER_LOG("[avvid] SUMMARY mode=%s polls=%llu delivered=%llu dropped=%llu empty_polls=%llu held_early=%llu | deliver_interval_ms mean %.2f sd %.2f min %.1f max %.1f | poll_interval_ms mean %.2f sd %.2f max %.1f | lateness_ms mean %.2f sd %.2f min %.1f max %.1f | decode_lead_ms mean %.1f min %.1f | convert_ms mean %.2f max %.1f | min_reuse_age_ms %.1f reuse<50ms %llu",
                      avsync_legacy() ? "legacy" : "pts", (unsigned long long)s.polls, (unsigned long long)s.delivered, (unsigned long long)s.dropped,
                      (unsigned long long)s.empty_polls, (unsigned long long)s.held_early,
                      s.deliver_interval_ms.mean, s.deliver_interval_ms.stddev(), s.deliver_interval_ms.mn, s.deliver_interval_ms.mx,
                      s.poll_interval_ms.mean, s.poll_interval_ms.stddev(), s.poll_interval_ms.mx,
                      s.lateness_ms.mean, s.lateness_ms.stddev(), s.lateness_ms.mn, s.lateness_ms.mx,
-                     s.decode_lead_ms.mean, s.decode_lead_ms.mn, s.min_reuse_age_ms < 1e299 ? s.min_reuse_age_ms : -1.0,
+                     s.decode_lead_ms.mean, s.decode_lead_ms.mn, s.convert_ms.mean, s.convert_ms.mx, s.min_reuse_age_ms < 1e299 ? s.min_reuse_age_ms : -1.0,
                      (unsigned long long)s.reuse_under_50ms);
         m_vstats = Nps5AvSyncStats{};
         m_last_poll_ns = m_last_deliver_ns = 0;
@@ -1009,7 +1027,11 @@ private:
                 uint32_t height = align_up((uint32_t)raw_frame->height, 16);
 
                 bool copied = false;
-                if (raw_frame->format != AV_PIX_FMT_NV12) {
+                const uint64_t conv_t0 = avplayer_vtrace() ? mono_ns() : 0;
+                if (!avsync_legacy() && (raw_frame->format == AV_PIX_FMT_YUV420P || raw_frame->format == AV_PIX_FMT_YUVJ420P) &&
+                    raw_frame->data[2] && !raw_frame->crop_left && !raw_frame->crop_top) {
+                    copied = copy_nv12_data(buf.host_ptr, buf.size, raw_frame, true);
+                } else if (raw_frame->format != AV_PIX_FMT_NV12) {
                     if (!m_sws_ctx) {
                         m_sws_ctx = sws_getContext(raw_frame->width, raw_frame->height, (AVPixelFormat)raw_frame->format,
                                                    raw_frame->width, raw_frame->height, AV_PIX_FMT_NV12,
@@ -1026,6 +1048,7 @@ private:
                 } else {
                     copied = copy_nv12_data(buf.host_ptr, buf.size, raw_frame);
                 }
+                if (conv_t0) { std::lock_guard<std::mutex> lk(m_stats_mutex); m_vstats.convert_ms.add((double)(mono_ns() - conv_t0) / 1e6); }
                 if (!copied) {
                     AVPLAYER_LOG("Dropping video frame %dx%d: it does not fit the frame buffer", raw_frame->width, raw_frame->height);
                     m_free_video_buffers.push(std::move(buf));
