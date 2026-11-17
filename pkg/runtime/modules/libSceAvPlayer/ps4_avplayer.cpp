@@ -118,15 +118,25 @@ static bool avplayer_verbose() {
     return on;
 }
 
-static void copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) {
+// Largest NV12 frame buffer a stream may need; bigger (or empty) dimensions fail the open.
+static const uint64_t kMaxVideoFrameBytes = 256ull << 20;
+static uint64_t nv12_frame_bytes(uint32_t width, uint32_t height) {
+    const uint64_t pitch = video_pitch(width);
+    const uint64_t aligned_height = align_up(height, 16);
+    return pitch * aligned_height * 3 / 2;
+}
+
+// Returns false (nothing delivered) when the frame does not fit the destination buffer.
+static bool copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) {
     const uint32_t dst_pitch = video_pitch((uint32_t)src->width);
     const uint32_t dst_height = align_up((uint32_t)src->height, 16);
     const uint32_t width = (uint32_t)src->width;
     const uint32_t chroma_rows = ((uint32_t)src->height + 1) / 2;
     const uint32_t chroma_bytes = (width + 1) & ~1u;
 
-    if (width == 0 || src->height <= 0 || ((uint64_t)dst_pitch * dst_height * 3) / 2 > max_size) {
-        return;
+    if (width == 0 || src->height <= 0 || (uint32_t)src->height > 0x7fff0000u || width > 0x7fff0000u ||
+        nv12_frame_bytes(width, (uint32_t)src->height) > max_size) {
+        return false;
     }
 
     uint8_t *luma_dst = dst;
@@ -154,6 +164,7 @@ static void copy_nv12_data(uint8_t *dst, uint64_t max_size, const AVFrame *src) 
     for (uint32_t y = chroma_rows; y < dst_height / 2; ++y) {
         std::memcpy(chroma_dst + (size_t)y * dst_pitch, chroma_dst + (size_t)(chroma_rows - 1) * dst_pitch, dst_pitch);
     }
+    return true;
 }
 
 static AvPlayerStreamType codec_type_to_stream_type(AVMediaType codec_type) {
@@ -492,7 +503,13 @@ public:
 
             uint32_t pitch = video_pitch((uint32_t)m_video_codec_ctx->width);
             uint32_t height = align_up((uint32_t)m_video_codec_ctx->height, 16);
-            uint32_t frame_size = (pitch * height * 3) / 2;
+            const uint32_t vw = (uint32_t)std::max(m_video_codec_ctx->width, 0), vh = (uint32_t)std::max(m_video_codec_ctx->height, 0);
+            const uint64_t frame_size64 = (vw && vh && vw <= 0x7fff0000u && vh <= 0x7fff0000u) ? nv12_frame_bytes(vw, vh) : 0;
+            if (frame_size64 == 0 || frame_size64 > kMaxVideoFrameBytes) {
+                AVPLAYER_LOG("Unusable video dimensions %dx%d", m_video_codec_ctx->width, m_video_codec_ctx->height);
+                return false;
+            }
+            const uint32_t frame_size = (uint32_t)frame_size64;
             m_logged_video_frames = 0;
             if (avplayer_verbose()) {
                 AVPLAYER_LOG("video stream: codec %s %dx%d pix_fmt %d -> stream info %ux%u, frame buffers %u x %u bytes (pitch %u, height %u, NV12), ps5 %d",
@@ -861,6 +878,7 @@ private:
                 uint32_t pitch = video_pitch((uint32_t)raw_frame->width);
                 uint32_t height = align_up((uint32_t)raw_frame->height, 16);
 
+                bool copied = false;
                 if (raw_frame->format != AV_PIX_FMT_NV12) {
                     if (!m_sws_ctx) {
                         m_sws_ctx = sws_getContext(raw_frame->width, raw_frame->height, (AVPixelFormat)raw_frame->format,
@@ -873,10 +891,16 @@ private:
                     av_frame_get_buffer(nv12_frame, 0);
                     sws_scale(m_sws_ctx, raw_frame->data, raw_frame->linesize, 0, raw_frame->height,
                               nv12_frame->data, nv12_frame->linesize);
-                    copy_nv12_data(buf.host_ptr, buf.size, nv12_frame);
+                    copied = copy_nv12_data(buf.host_ptr, buf.size, nv12_frame);
                     av_frame_unref(nv12_frame);
                 } else {
-                    copy_nv12_data(buf.host_ptr, buf.size, raw_frame);
+                    copied = copy_nv12_data(buf.host_ptr, buf.size, raw_frame);
+                }
+                if (!copied) {
+                    AVPLAYER_LOG("Dropping video frame %dx%d: it does not fit the frame buffer", raw_frame->width, raw_frame->height);
+                    m_free_video_buffers.push(std::move(buf));
+                    av_frame_unref(raw_frame);
+                    continue;
                 }
 
                 AVStream *st = m_fmt_ctx->streams[m_video_stream_idx];

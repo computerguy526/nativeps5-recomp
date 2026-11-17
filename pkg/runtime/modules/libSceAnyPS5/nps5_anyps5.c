@@ -377,7 +377,7 @@ void nps5_anyps5_leave(GuestContext *ctx, const char *name) {
 // AGC flip packet (one per game frame) measures the wall-clock frame time, smooths it, and rewrites the three fields
 // consistently, so game time follows real time. The block layout is verified before use; if the expected values are not
 // there the feature switches itself off with a log line. Clamp 20..60 fps. NPS5_FRAMERATE_MIN / _MAX override the clamp.
-// Not covered: cloth (ClothSimulation dt) keeps seeing the real dt; see work/ppsa21564/BLOCKERS.md.
+// Not covered: cloth (ClothSimulation dt) keeps seeing the real dt.
 static struct {
   int state; // 0 = not read yet, 1 = active, -1 = off
   uint64_t addr, last_ns, last_log_ns;
@@ -391,14 +391,15 @@ static void nps5_framerate_init(void) {
   g_fr.addr = nps5_framerate_cfg(getenv("NPS5_FRAMERATE_BLOCK"), getenv("NPS5_ASTRO_REALTIME"), &alias);
   if (alias) fprintf(stderr, "[framerate] NPS5_ASTRO_REALTIME is deprecated: use NPS5_FRAMERATE_BLOCK=<guest addr hex> (profile key framerate_block); using 0x%llx\n", (unsigned long long)g_fr.addr);
   g_fr.state = g_fr.addr ? 1 : -1;
-  g_fr.lo = getenv("NPS5_FRAMERATE_MIN") ? atof(getenv("NPS5_FRAMERATE_MIN")) : 20.0;
-  g_fr.hi = getenv("NPS5_FRAMERATE_MAX") ? atof(getenv("NPS5_FRAMERATE_MAX")) : 60.0;
+  if (!nps5_framerate_clamp(getenv("NPS5_FRAMERATE_MIN"), getenv("NPS5_FRAMERATE_MAX"), &g_fr.lo, &g_fr.hi))
+    fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN/MAX not within 1 <= min <= max <= 240: using 20..60\n");
 }
 
 static void nps5_framerate_tick(GuestContext *ctx) {
   if (g_fr.state < 0) return;
   if (g_fr.state == 0) { nps5_framerate_init(); if (g_fr.state < 0) return; }
-  uint8_t *b = (uint8_t *)NPS5_G2H(ctx, g_fr.addr);
+  const int blk_ok = RECOMP_MEM_OK(ctx) && g_fr.addr != 0 && g_fr.addr < ctx->mem_size && ctx->mem_size - g_fr.addr >= 24;
+  uint8_t *b = blk_ok ? (uint8_t *)NPS5_G2H(ctx, g_fr.addr) : NULL;
   const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
   if (!b) { g_fr.state = -1; fprintf(stderr, "[framerate] block 0x%llx not mappable: feature off\n", (unsigned long long)g_fr.addr); return; }
   if (g_fr.frames == 0) {

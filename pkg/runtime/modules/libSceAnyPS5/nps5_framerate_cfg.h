@@ -17,3 +17,17 @@ static inline uint64_t nps5_framerate_cfg(const char *block, const char *astro, 
   }
   return 0;
 }
+// The fps clamp from NPS5_FRAMERATE_MIN / _MAX (text, may be NULL). The result always satisfies
+// 1 <= *lo <= *hi <= 240 (the rate is divided into and converted to integers). Returns 0 and the default 20..60
+// when a value is not a number or the pair is outside that.
+static inline int nps5_framerate_clamp(const char *min, const char *max, double *lo, double *hi) {
+  double l = 20.0, h = 60.0;
+  int ok = 1;
+  char *end;
+  if (min) { l = strtod(min, &end); ok = ok && end != min && *end == 0; }
+  if (max) { h = strtod(max, &end); ok = ok && end != max && *end == 0; }
+  if (!(ok && l >= 1.0 && l <= 240.0 && h >= 1.0 && h <= 240.0 && l <= h)) { *lo = 20.0; *hi = 60.0; return 0; }
+  *lo = l;
+  *hi = h;
+  return 1;
+}
