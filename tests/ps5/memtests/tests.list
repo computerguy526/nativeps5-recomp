@@ -1,0 +1,5 @@
+# program        source          extra build flags      kind
+# kind: results = prints RESULT lines (mt.h); cases = one run per case listed in cases.list
+mt_syscalls      mt_syscalls.c   -                      results
+mt_faults        mt_faults.c     -pthread               cases
+mt_hle           mt_hle.c        -pthread               cases

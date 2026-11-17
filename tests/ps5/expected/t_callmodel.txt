@@ -1,0 +1,14 @@
+retimm=0x0000000000005555
+pushret=0x00000000000000a4
+getpc_delta_x1000=5000
+swapret_sum=1007000
+deep_100000=0xe6fca501e5f6c191
+deep_acc=0x737e52805f4850c0
+deep_again=0x4afa188c534db0a1
+longjmp_depths=0xd77f4b691123ba45
+longjmp_x2000=0xd77f4b69113ddf35
+qsort_nested=0xd58786ce34be4d37
+cmp_calls_nonzero=1
+tail_steps=0x5e88bda9f37a6bbd
+threads=0xf0f40d661b1e8a30
+t_callmodel: done

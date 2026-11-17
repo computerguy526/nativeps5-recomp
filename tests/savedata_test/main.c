@@ -109,6 +109,30 @@ int main(void) {
     assert(strcmp(read_str, test_str) == 0);
     printf("[+] Verified read data: '%s'\n", read_str);
 
+    // Transferring mount (ASTRO BOT 01.007 first mount): creates and opens read/write by default, NOT_FOUND with the fallback off.
+    ret = sceSaveDataInitialize3(NULL);
+    assert(ret == 0);
+    {
+        const char dn[] = "astro_transfer";
+        memcpy(ctx.mem_base + 0x70000, dn, sizeof dn);
+        SdTransferringMount *tm = (SdTransferringMount *)(ctx.mem_base + 0x71000);
+        memset(tm, 0, sizeof *tm);
+        tm->userId = 0x10000000;
+        tm->dirName = 0x70000;
+        SdMountResult mr;
+        memset(&mr, 0, sizeof mr);
+        setenv("APS5_SAVEDATA_TRANSFER_FALLBACK", "0", 1);
+        ret = sceSaveDataTransferringMount(&ctx, tm, &mr);
+        assert(ret != 0);
+        printf("[+] transferring mount with the fallback off: 0x%x (read-only open of a missing save)\n", (unsigned)ret);
+        unsetenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
+        memset(&mr, 0, sizeof mr);
+        ret = sceSaveDataTransferringMount(&ctx, tm, &mr);
+        assert(ret == 0);
+        assert(mr.mountPoint.data[0] != 0);
+        printf("[+] transferring mount creates and mounts '%s'\n", mr.mountPoint.data);
+    }
+
     ret = sceSaveDataTerminate();
     assert(ret == 0);
 

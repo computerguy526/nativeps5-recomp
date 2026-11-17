@@ -1,0 +1,22 @@
+mono=0xdab2fcac59800205
+phases_2=0x42735e49844a9445
+phases_8=0xe7906ac737ace4ba
+rr_2=0x4ac6db205f0c8065
+rr_3=0xdcee145f5f558637
+rr_8=0x740f86f4f74e2754
+random_2=0x7fa93a0edcbbbea5
+random_8=0x24767501bb32c2d3
+vslot_bursts=0xf390feb08c63c936
+rec_20000=0x84d3227f28e79b31
+rec_100000=0x821896747e6ea7f1
+rec_100000_again=0x821896747e6ea7f1
+pingpong_50000=0x00000000258f8485
+longjmp_cached=0x90f40eba983ae175
+rec_after_longjmp=0x28767350da743e95
+thread=0xf72626975e106fed
+thread=0x21d46250d4962715
+thread=0x4ed1e6f241299dcd
+thread=0x48e0ae7b224e4f5d
+threads_xor=0xd0c30c4ee9e19a68
+threads_bad=0
+t_callic: done

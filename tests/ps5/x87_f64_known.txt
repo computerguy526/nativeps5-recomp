@@ -1,0 +1,6 @@
+# Known deviations of the x87=f64 model (tools/m1_run.sh --x87 f64). Format: "<test>: <extended regex of output lines to ignore>".
+# Lines matching are removed from both the expected file and the output before comparing. tests/ps5/expected/*.txt is
+# the x86 hardware result (Rosetta 2 reproduces it: tools/ref_rosetta.sh), so the default x87=f80 model matches it as is.
+# t_x87: the double stack rounds every intermediate to 53 bits and the extended-precision store of a double loses nothing
+#        but the 64-bit mantissa never exists: (1e16+1)-1e16 is 0 instead of 1, FSTP m80 of 1/3 has the double's mantissa.
+t_x87: ^(ext_add_sub|ext_mant_third)=

@@ -1,0 +1,12 @@
+sum_ints_3=0x0000000000004412
+sum_ints_12=0xfb7d4b004baa43ee
+sum_dbls_11=0x407eafc400000000
+mixed=0xf3b75a2df85d0aa5
+snprintf_len1=81
+-42|   42|42   |00042|beef|BEEF|10|z|hello|       tru|-1|1099511627776|4000000000
+snprintf_len2=63
+3.141593|2.67|   -1.5000|1.234568e+04|0.0001|1e+20|100|0|100.0%
+snprintf_trunc=18
+overflo
+sprintf_len=9
+x-7-q-8.2

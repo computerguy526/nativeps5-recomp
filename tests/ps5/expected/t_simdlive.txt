@@ -1,0 +1,14 @@
+inverse_fnv=0xcd7dc95f000feee3
+inverse_ret=0x4101854800000000
+many_live=0xc0d424d4343c3c3d
+transform_fnv=0xae93886affd25c67
+vec256_fnv=0xa388a8e1b1345ddb
+scalar_lanes_fnv=0xff2315fc7012b88e
+vsum3=0x4010000000000000
+vsum11=0x4091f39ac0000000
+qsort_fnv=0xf564aab3d0d4c262
+qsort_before=0x4095173000000000
+bsearch=0xc012800000000000
+fold=0x40f450c720de0aab
+setjmp=0x408a475e6bbcd18a
+float_mix=0x000000003ed00000

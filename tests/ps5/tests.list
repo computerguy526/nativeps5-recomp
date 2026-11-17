@@ -1,0 +1,25 @@
+# name  source  extra-flags (PS5 build only)   -- one test per line; broken_* are the §8.2 set
+m1_main          m1_main.cpp          -pthread
+t_arith          t_arith.c            -
+t_simd           t_simd.c             -mavx2 -mfma -mf16c -mbmi -mbmi2 -mlzcnt -mmovbe
+t_x87            t_x87.c              -
+t_string         t_string.c           -
+t_switch         t_switch.c           -
+t_vdispatch      t_vdispatch.cpp      -
+t_tls            t_tls.c              -pthread
+t_recurse        t_recurse.c          -
+t_varargs        t_varargs.c          -
+t_abi            t_abi.c              -
+broken_import    broken_import.c      -Wl,--unresolved-symbols=ignore-all
+broken_unsupported broken_unsupported.c -
+broken_null      broken_null.c        -
+broken_exception broken_exception.cpp -
+t_eh             t_eh.cpp             -pthread
+broken_longjmp   broken_longjmp.c     -
+t_syscall         t_syscall.c          -
+t_callmodel      t_callmodel.c        -pthread
+t_callic         t_callic.c           -pthread
+t_simdlive       t_simdlive.c         -mavx2 -mfma
+t_simdlive_sse   t_simdlive.c         -mno-avx
+t_liftmisc      t_liftmisc.c         -
+t_tsoelide       t_tsoelide.c         -pthread

@@ -1,0 +1,9 @@
+virtual_fnv=0x4c8fc7545a7bc6a5
+rtti=2312
+vbase_get=67
+vbase_cast=67
+fnptr_table=0xf2ba113daae59d80
+memfn_ptr=138
+callback=0x00000000000000b1
+qsort_fnv=0xc46217049ebf7f88
+volatile_fp=0x000000000000002a

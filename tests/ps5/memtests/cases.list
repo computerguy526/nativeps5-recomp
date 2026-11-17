@@ -1,0 +1,31 @@
+# program   case             expectation
+# ok                       must exit 0 and print "CASE <case> OK" or "SURVIVED" per the program
+# crash:<text>             must die with a crash report whose fault_class contains <text>
+# crash:any                must die (any classification)
+# results                  must print RESULT lines (tests/memtests/mt.h); each becomes a row
+# optional trailing fields: id=<expectation for identity mode>   known=<reason the current runtime deviates>
+mt_faults none             ok
+mt_faults null_read        crash:null guard
+mt_faults null_write       crash:null guard
+mt_faults null_near_end    crash:null guard
+mt_faults null_field       crash:null guard
+mt_faults null_call        crash:any
+mt_faults after_munmap     crash:unmapped guest address
+mt_faults hole_in_mapping  crash:unmapped guest address
+mt_faults mprotect_write   crash:any
+mt_faults mprotect_none_read crash:any
+mt_faults write_code       crash:guest image
+mt_faults write_code_fn    crash:guest image
+mt_faults beyond_area      crash:beyond   id=crash:above the guest arena
+mt_faults wild_40bit       crash:any
+mt_faults wild_host_like   crash:any
+mt_faults stack_overflow   crash:stack guard
+mt_faults thread_overflow  crash:stack guard
+mt_faults stack_deep_ok    ok
+mt_faults thread_deep_ok   ok
+mt_faults big_alloc        ok
+mt_syscalls -              results
+mt_hle     qsort           results
+mt_hle     strings         results
+mt_hle     format          results
+mt_hle     alloc           results

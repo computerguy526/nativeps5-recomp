@@ -1,0 +1,2 @@
+hello from payload-sdk toolchain via sceKernelWrite
+fib=463

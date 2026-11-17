@@ -1,0 +1,4 @@
+rep_copy_fill_fnv=0x57dc10b2a3a5b403
+cmps_scas_fnv=0xf97725c50ceb30bb
+lods_sum=0x0000000000009567
+libc_str_fnv=0x33aecf9591600b8a

@@ -1,0 +1,15 @@
+t_eh: start
+deep_caught=99
+deep_dtors=15
+rethrow_caught=99
+rethrow_dtors=1010
+thread_caught=100
+inner_rc=1
+s1=1
+s2=1
+loop_total=150
+sig_rc=8
+sig_stage=1
+catch_longjmp_rc=3
+catch_longjmp_stage=10
+t_eh: done

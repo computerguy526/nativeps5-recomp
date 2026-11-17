@@ -1,0 +1,5 @@
+# Known Rosetta 2 deviations from the x86-64 SDM.  Format: "<test>: <extended regex of output lines to ignore>".
+# Lines matching are removed from both the expected file and the Rosetta output before comparing.
+# t_simd: VPSLLVQ/VPSRLVQ appear to use only the low 32 bits of each 64-bit count (counts >= 64 must give 0;
+#         Rosetta returns a shifted value when bits 32..63 of the count are non-zero).  The model follows the SDM.
+t_simd: ^(sllvq_y|srlvq_x)  fnv=|^MISMATCH (sllvq_y|srlvq_x) |^ (hw|md)=|^model_mismatches=|^total=

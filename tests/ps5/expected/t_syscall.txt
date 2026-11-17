@@ -1,0 +1,7 @@
+mmap_ok=1
+fill_hash=0x0273c90c1d7abb25
+munmap=0
+raw write
+write_n=10
+write_badfd=-9
+done

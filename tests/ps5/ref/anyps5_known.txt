@@ -1,0 +1,6 @@
+# Known AnyPS5-HLE deviations of the ELF-level Rosetta reference (not Rosetta, not the lifter).
+# Format as rosetta_known.txt: "<test>: <regex of lines to ignore>".  Consumed by tools/ref_rosetta.sh --elf and tools/ref_compare.sh.
+# AnyPS5's libc.prx printf rounds %f/%e/%g decimal ties half-up (0.5 -> "1", 8.25 -> "8.3"); correct IEEE/FreeBSD libc
+# (and the macOS host libc used for expected/) gives round-half-even ("0", "8.2").
+t_varargs: ^3\.141593\|2\.67\|
+t_varargs: ^x-7-q-8\.

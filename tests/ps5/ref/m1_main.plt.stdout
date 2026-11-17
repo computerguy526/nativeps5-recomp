@@ -1,0 +1,22 @@
+m1_main: start
+thread0_sum=0x0000000003ef107f
+thread1_sum=0x0000000003dafc6c
+shared_sum=0x0000000007ca0ceb
+mutex: consistent
+thread0_ret=0x0000000003ef4a25
+  ctor top
+  ctor mid
+  ctor leaf
+  dtor leaf
+  dtor mid
+  dtor top
+caught_code=42
+  ctor std
+  dtor std
+caught_what=boom
+rethrow_inner=17
+rethrow_outer=17
+longjmp_rc=7
+longjmp_stage=1
+checksum=0xa8a4b84d9b4eaa59
+m1_main: done

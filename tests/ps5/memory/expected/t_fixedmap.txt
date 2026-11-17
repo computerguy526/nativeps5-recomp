@@ -1,0 +1,21 @@
+main    0x0000000000400000
+map 2G  0x0000000200000000
+  sum   0xa09b0fbfa30ea7c7
+map 30G 0x0000003000200000
+  sum   0xa09b0fbfa30dc607
+map 70G 0x0000007000000000
+  sum   0xa09b0fbfa30de447
+map top 0x000000fbffe00000
+  sum   0xa09b0fbfa30f0997
+abs 30G 0x00c0ffee00c0ffee
+keep 2G 0x0000000000001111
+dyn     0x0000000200200000
+excl    0xffffffffffffffff
+replace 0x0000000200004000
+unalign 0xffffffffffffffff
+image   0xffffffffffffffff
+flex rc 0x0000000000000000
+flex    0x0000002400000000
+unmap rc0x0000000000000000
+remap   0x0000000000000000
+FIXEDMAP OK
