@@ -453,6 +453,70 @@ static void test_gate_attacks(const char *tmp) {
   unsetenv("NPS5_USERDATA_DIR"); unsetenv("NPS5_TITLE_ID");
 }
 
+// Unmounted absolute host paths are never written (EACCES); allow-listed devices and the mounted roots still are.
+static void test_raw_write(const char *tmp) {
+  char dump[700], ud[700], f[1000];
+  snprintf(dump, sizeof dump, "%s/rdump", tmp); mkdir(dump, 0755);
+  snprintf(f, sizeof f, "%s/eboot.bin", dump); { FILE *fp = fopen(f, "w"); fputs("GAMEBYTES", fp); fclose(fp); }
+  snprintf(ud, sizeof ud, "%s/ud_raw", tmp);
+  setenv("NPS5_USERDATA_DIR", ud, 1); setenv("NPS5_TITLE_ID", "TESTRAW00", 1);
+  ps4_vfs_init(dump);
+  // raw (unmounted) host paths are never written; devices on the allow-list and the mounted roots still are
+  {
+    char raw[900], rawf[1000], mine[1000];
+    snprintf(raw, sizeof raw, "%s/rawdir", tmp); mkdir(raw, 0755);
+    snprintf(rawf, sizeof rawf, "%s/rawdir/victim", tmp);
+    { FILE *fp = fopen(rawf, "w"); fputs("HOSTBYTES", fp); fclose(fp); }
+    unsetenv("NPS5_VFS_RAW_WRITE");
+    int rfd = ps4_vfs_open(rawf, O_WRONLY | O_TRUNC, 0); CHECK(rfd < 0 && errno == EACCES); if (rfd >= 0) close(rfd);
+    rfd = ps4_vfs_open(rawf, O_RDWR, 0); CHECK(rfd < 0 && errno == EACCES); if (rfd >= 0) close(rfd);
+    snprintf(f, sizeof f, "%s/rawdir/created", tmp);
+    rfd = ps4_vfs_open(f, O_WRONLY | O_CREAT, 0644); CHECK(rfd < 0 && errno == EACCES); if (rfd >= 0) close(rfd);
+    CHECK(access(f, F_OK) != 0);
+    { FILE *fp = ps4_vfs_fopen(f, "w"); CHECK(fp == NULL && errno == EACCES); if (fp) fclose(fp); }
+    CHECK(file_is(rawf, "HOSTBYTES"));
+    CHECK(ps4_vfs_unlink(rawf) == -1 && errno == EACCES);
+    CHECK(ps4_vfs_mkdir(f, 0755) == -1 && errno == EACCES);
+    CHECK(ps4_vfs_rmdir(raw) == -1 && errno == EACCES);
+    CHECK(ps4_vfs_truncate(rawf, 0) == -1 && errno == EACCES);
+    CHECK(ps4_vfs_rename(rawf, "/data/taken") == -1 && errno == EACCES);
+    CHECK(ps4_vfs_rename("/data/nothing", rawf) == -1);
+    CHECK(ps4_vfs_symlink("/etc", "/data/to_etc") == -1 && errno == EACCES);   // no link out of the mounts
+    CHECK(file_is(rawf, "HOSTBYTES"));
+    // a link planted inside the mount that points at a raw directory does not carry a write out
+    snprintf(mine, sizeof mine, "%s/data/outlink", ud);
+    CHECK(symlink(raw, mine) == 0);
+    rfd = ps4_vfs_open("/data/outlink/victim", O_WRONLY | O_TRUNC, 0); CHECK(rfd < 0 && errno == EACCES); if (rfd >= 0) close(rfd);
+    CHECK(ps4_vfs_unlink("/data/outlink/victim") == -1 && errno == EACCES);
+    CHECK(file_is(rawf, "HOSTBYTES"));
+    unlink(mine);
+    // ".." cannot climb out of a mount
+    rfd = ps4_vfs_open("/data/../../rawdir/victim", O_WRONLY | O_TRUNC, 0); CHECK(rfd < 0 || file_is(rawf, "HOSTBYTES")); if (rfd >= 0) close(rfd);
+    CHECK(file_is(rawf, "HOSTBYTES"));
+    // the allow-list
+    rfd = ps4_vfs_open("/dev/null", O_WRONLY, 0); CHECK(rfd >= 0); if (rfd >= 0) close(rfd);
+    // mounted roots keep working
+    rfd = ps4_vfs_open("/data/w.bin", O_WRONLY | O_CREAT, 0644); CHECK(rfd >= 0); if (rfd >= 0) close(rfd);
+    CHECK(ps4_vfs_mkdir("/temp0/d", 0755) == 0);
+    CHECK(ps4_vfs_rmdir("/temp0/d") == 0);
+    CHECK(ps4_vfs_rename("/data/w.bin", "/data/w2.bin") == 0);
+    CHECK(ps4_vfs_unlink("/data/w2.bin") == 0);
+    // the escape hatch restores the old behaviour
+    setenv("NPS5_VFS_RAW_WRITE", "1", 1);
+    rfd = ps4_vfs_open(rawf, O_WRONLY | O_TRUNC, 0); CHECK(rfd >= 0); if (rfd >= 0) close(rfd);
+    CHECK(ps4_vfs_unlink(rawf) == 0);
+    unsetenv("NPS5_VFS_RAW_WRITE");
+    rfd = ps4_vfs_open(rawf, O_WRONLY | O_CREAT, 0644); CHECK(rfd < 0 && errno == EACCES); if (rfd >= 0) close(rfd);
+  }
+  // pread rejects offsets whose end is not representable
+  { char b[4]; int rfd = ps4_vfs_open("/dev/null", O_RDONLY, 0); CHECK(rfd >= 0);
+    CHECK(ps4_vfs_pread(rfd, b, 4, INT64_MAX - 2) == 0); // past the end: nothing, no overflow
+    CHECK(ps4_vfs_pread(rfd, b, 4, -1) == -1 && errno == EINVAL);
+    if (rfd >= 0) close(rfd); }
+  printf("kernelfs: raw host writes refused ok\n");
+  unsetenv("NPS5_USERDATA_DIR"); unsetenv("NPS5_TITLE_ID");
+}
+
 // Raw syscall(SYS_read/SYS_close) with a pak virtual fd number must go through the VFS table: a host fd that happens
 // to carry that number is never read or closed (review #4).
 static void test_raw_syscall_virtual_fd(const char *tmp) {
@@ -616,6 +680,7 @@ int main(void) {
   test_userdata_fail_closed(tmp);
   test_raw_syscall_virtual_fd(tmp);
   alarm(60); test_gate_attacks(tmp); alarm(0); // a hang (the unfixed gate) is a failure, not a stall
+  test_raw_write(tmp);
   test_locale_gate(tmp);
   test_overlay_many(tmp);
   test_temp_per_process(tmp);

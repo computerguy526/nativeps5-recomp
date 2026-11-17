@@ -411,7 +411,10 @@ static int vfs_overlay_walk(const char *host_dir, const char *rel, int depth) {
       fprintf(stderr, "[ps4-vfs] WARNING: overlay path too long, not mounted: %s/%s\n", host_dir, e->d_name);
       continue;
     }
-    if (stat(host, &st) != 0) continue;
+    // Directories are walked only when they are real directories (a symlinked directory could loop or leave the
+    // overlay tree); a symlink to a regular file is mounted like the file.
+    if (lstat(host, &st) != 0) continue;
+    if (S_ISLNK(st.st_mode) && (stat(host, &st) != 0 || S_ISDIR(st.st_mode))) continue;
     if (S_ISDIR(st.st_mode)) {
       if (depth < 12) n += vfs_overlay_walk(host, grel, depth + 1);
     } else if (S_ISREG(st.st_mode)) {
@@ -445,9 +448,10 @@ static void vfs_mount_overlay(void) {
   if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return;
   g_overlay_dropped = 0;
   int n = vfs_overlay_walk(dir, "", 0);
-  fprintf(stderr, "[ps4-vfs] overlay %s: %d file(s) mounted over /app0\n", dir, n);
+  fprintf(stderr, "[ps4-vfs] overlay: %d file(s) mounted over /app0\n", n);
+  PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "overlay directory: %s\n", dir);
   if (g_overlay_dropped)
-    fprintf(stderr, "[ps4-vfs] ERROR: overlay %s: %d file(s) NOT mounted and invisible to the title (see warnings above)\n", dir, g_overlay_dropped);
+    fprintf(stderr, "[ps4-vfs] ERROR: overlay: %d file(s) NOT mounted and invisible to the title (see warnings above)\n", g_overlay_dropped);
 }
 
 void ps4_vfs_init(const char *app_root) {
@@ -740,9 +744,10 @@ static void vfs_join_root(char *raw_host, size_t sz, const char *root, const cha
   else snprintf(raw_host, sz, "%s", root);
 }
 
-static int vfs_resolve_ex(const char *guest_path, char *host_path, size_t host_path_sz, int *kind, int *mount_ro) {
+static int vfs_resolve_ex(const char *guest_path, char *host_path, size_t host_path_sz, int *kind, int *mount_ro, char *mount_root, size_t mount_root_sz) {
   if (kind) *kind = VFS_VIA_MOUNT;
   if (mount_ro) *mount_ro = 0;
+  if (mount_root && mount_root_sz) mount_root[0] = '\0';
   if (!guest_path || !host_path || host_path_sz == 0) {
     return -EINVAL;
   }
@@ -777,6 +782,7 @@ static int vfs_resolve_ex(const char *guest_path, char *host_path, size_t host_p
         (guest_path[plen] == '/' || guest_path[plen] == '\0')) {
       vfs_join_root(raw_host, sizeof(raw_host), g_mounts[i].host_path, guest_path + plen);
       if (mount_ro) *mount_ro = g_mounts[i].ro;
+      if (mount_root && mount_root_sz) snprintf(mount_root, mount_root_sz, "%s", g_mounts[i].host_path);
       break;
     }
   }
@@ -809,7 +815,7 @@ static int vfs_resolve_ex(const char *guest_path, char *host_path, size_t host_p
 }
 
 int ps4_vfs_resolve(const char *guest_path, char *host_path, size_t host_path_sz) {
-  return vfs_resolve_ex(guest_path, host_path, host_path_sz, NULL, NULL);
+  return vfs_resolve_ex(guest_path, host_path, host_path_sz, NULL, NULL, NULL, 0);
 }
 
 static const char *get_app0_subpath(const char *guest_path) {
@@ -907,6 +913,53 @@ static bool vfs_host_hits_root(const char *host, bool include_ancestors) {
 }
 static bool vfs_host_in_app_root(const char *host) { return vfs_host_hits_root(host, false); }
 
+// An absolute guest path that is neither below /app0, /hostapp nor a mount resolves to the host path itself (read
+// only use by the title's own tools and tests). Writing through it is refused (EACCES) except for the device files
+// below; NPS5_VFS_RAW_WRITE=1 restores the unrestricted behaviour.
+static bool vfs_raw_write_env(void) {
+  static _Atomic int logged;
+  const char *e = getenv("NPS5_VFS_RAW_WRITE");
+  bool on = e && *e == '1';
+  if (on && !atomic_exchange(&logged, 1)) fprintf(stderr, "[ps4-vfs] NPS5_VFS_RAW_WRITE=1: writes to unmounted host paths are NOT refused\n");
+  return on;
+}
+
+static bool vfs_raw_write_allowed(const char *guest_path) {
+  if (vfs_raw_write_env()) return true;
+  return !strcmp(guest_path, "/dev/null");
+}
+
+// Logs the first few refusals only; always returns -EACCES.
+static int vfs_raw_write_refuse(const char *what, const char *guest_path) {
+  static _Atomic int n;
+  int k = atomic_fetch_add(&n, 1);
+  if (k < 8) fprintf(stderr, "[ps4-vfs] refused %s of unmounted host path (EACCES): %.200s%s\n", what, guest_path, k == 7 ? " (further refusals not logged)" : "");
+  return -EACCES;
+}
+
+// True when the deepest existing ancestor of host, canonicalized, lies inside the (canonicalized) mount directory:
+// a symlink created or found inside a writable mount cannot lead a write outside it. A mount directory that cannot
+// be canonicalized is not judged here (the lexical clamp in the resolver still applies).
+static bool vfs_host_inside_mount(const char *host, const char *mount_dir) {
+  if (vfs_raw_write_env()) return true;
+  char root[PATH_MAX_VFS];
+  if (!realpath(mount_dir, root)) return true;
+  char norm[1100], probe[1100], rp[PATH_MAX_VFS];
+  vfs_lex_normalize(host, norm, sizeof(norm));
+  snprintf(probe, sizeof(probe), "%s", norm);
+  for (;;) {
+    if (realpath(probe, rp)) {
+      char full[2200];
+      snprintf(full, sizeof(full), "%s%s", rp, norm + strlen(probe));
+      size_t rl = strlen(root);
+      return strncmp(full, root, rl) == 0 && (full[rl] == '/' || full[rl] == '\0' || rl == 1);
+    }
+    char *slash = strrchr(probe, '/');
+    if (!slash || slash == probe) return false;
+    *slash = '\0';
+  }
+}
+
 // THE write gate. Every path-taking call that creates, changes or removes anything resolves through here (the
 // ps4_vfs_* mutators below; shims must not call ps4_vfs_resolve for a mutation). Returns 0, or a negative errno:
 // -EROFS for the read-only application image (case-insensitive, relative paths, and any path that resolves into
@@ -916,10 +969,13 @@ int ps4_vfs_resolve_for_write(const char *guest_path, char *host_path, size_t ho
   if (!guest_path) return -EFAULT;
   if (ps4_vfs_is_readonly(guest_path)) return -EROFS;
   int kind = 0, ro = 0;
-  int r = vfs_resolve_ex(guest_path, host_path, host_path_sz, &kind, &ro);
+  char mroot[1100];
+  int r = vfs_resolve_ex(guest_path, host_path, host_path_sz, &kind, &ro, mroot, sizeof(mroot));
   if (r < 0) return r;
   if (ro) return -EROFS;
   if (vfs_host_hits_root(host_path, true)) return -EROFS;
+  if (kind == VFS_VIA_RAW && !vfs_raw_write_allowed(guest_path)) return vfs_raw_write_refuse("write", guest_path);
+  if (kind == VFS_VIA_MOUNT && mroot[0] && !vfs_host_inside_mount(host_path, mroot)) return vfs_raw_write_refuse("write (symlink out of mount)", guest_path);
   return 0;
 }
 
@@ -986,7 +1042,7 @@ int ps4_vfs_symlink(const char *target, const char *linkpath) {
   if (!target) { errno = EFAULT; return -1; }
   if (ps4_vfs_is_readonly(target)) { errno = EROFS; return -1; }
   int kind = 0;
-  if (vfs_resolve_ex(target, ht, sizeof(ht), &kind, NULL) < 0) snprintf(ht, sizeof(ht), "%s", target);
+  if (vfs_resolve_ex(target, ht, sizeof(ht), &kind, NULL, NULL, 0) < 0) snprintf(ht, sizeof(ht), "%s", target);
   // A relative host target is relative to the link's directory.
   char abs_t[2300];
   if (ht[0] != '/') snprintf(abs_t, sizeof(abs_t), "%s/../%s", hl, ht);
@@ -994,6 +1050,8 @@ int ps4_vfs_symlink(const char *target, const char *linkpath) {
   // Refuse a target that is the application directory, inside it, or one of its ancestors (a link through which the
   // gate would otherwise be walked around), for every kind of path.
   if (vfs_host_hits_root(abs_t, true)) { errno = EROFS; return -1; }
+  // The link text must not lead out of the writable mounts (a later write through the link would escape the gate).
+  if (target[0] == '/' && kind == VFS_VIA_RAW && !vfs_raw_write_allowed(target)) { errno = -vfs_raw_write_refuse("symlink", target); return -1; }
   return symlink(ht, hl);
 }
 int ps4_vfs_fchmod(int fd, mode_t mode) { VFS_FD(fd); return fchmod(fd, mode); }
@@ -1111,7 +1169,10 @@ int ps4_vfs_note_scene_path(const char *path) {
   size_t n = (size_t)(e - p);
   if (*e != '/' || n == 0 || n >= LVL_NAME) return 0;  // a file directly under the key is not a scene directory
   char nm[LVL_NAME];
-  for (size_t i = 0; i < n; i++) { char c = p[i]; nm[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)p[i];
+    nm[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (c < 0x20 || c >= 0x7f) ? '?' : (char)c;  // printable ASCII only
+  }
   nm[n] = 0;
   int cnt = atomic_load_explicit(&g_lvl_count, memory_order_acquire);
   for (int i = 0; i < cnt; i++) if (!strcmp(g_lvl_names[i], nm)) return 0;
@@ -1120,6 +1181,10 @@ int ps4_vfs_note_scene_path(const char *path) {
   cnt = atomic_load_explicit(&g_lvl_count, memory_order_relaxed);
   int found = 0;
   for (int i = 0; i < cnt; i++) if (!strcmp(g_lvl_names[i], nm)) { found = 1; break; }
+  if (!found && cnt >= LVL_MAX) {
+    static int warned;
+    if (!warned) { warned = 1; fprintf(stderr, "[level-open] name table full (%d): further levels are not logged\n", LVL_MAX); }
+  }
   if (!found && cnt < LVL_MAX) {
     memcpy(g_lvl_names[cnt], nm, n + 1);
     atomic_store_explicit(&g_lvl_count, cnt + 1, memory_order_release);
@@ -1337,6 +1402,13 @@ ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
 }
 
 static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
+  // offset + count must be representable: no signed overflow below, whatever the guest passes
+  if (offset < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  // a count that would carry past the largest offset is cut there (a "read to the end" with a huge count still works)
+  if ((uint64_t)count > (uint64_t)INT64_MAX - (uint64_t)offset) count = (size_t)((uint64_t)INT64_MAX - (uint64_t)offset);
   unsigned refault = 0;
   if (ps4_vfs_is_virtual_fd(fd)) {
     int slot = fd - PS4_VFS_VIRTUAL_FD_BASE;
@@ -1416,19 +1488,20 @@ off_t ps4_vfs_lseek(int fd, off_t offset, int whence) {
     }
     VirtualPakFile *vf = &g_vfiles[slot];
     off_t new_off = vf->cur_offset;
+    bool ovf = false;
     if (whence == SEEK_SET) {
       new_off = offset;
     } else if (whence == SEEK_CUR) {
-      new_off += offset;
+      ovf = __builtin_add_overflow(new_off, offset, &new_off);
     } else if (whence == SEEK_END) {
-      new_off = (off_t)vf->file_size + offset;
+      ovf = vf->file_size > (uint64_t)INT64_MAX || __builtin_add_overflow((off_t)vf->file_size, offset, &new_off);
     } else {
       pthread_mutex_unlock(&g_vfile_mutex);
       errno = EINVAL;
       return -1;
     }
 
-    if (new_off < 0) {
+    if (ovf || new_off < 0) {
       pthread_mutex_unlock(&g_vfile_mutex);
       errno = EINVAL;
       return -1;
