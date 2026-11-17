@@ -830,9 +830,9 @@ public:
         return true;
     }
 
+    void set_av_sync_mode(AvPlayerAvSyncMode sync_mode) {
         m_sync_mode = sync_mode;
         if (avplayer_vtrace()) AVPLAYER_LOG("[avvid] sceAvPlayerSetAvSyncMode %d", (int)sync_mode);
-        m_sync_mode = sync_mode;
     }
 
 private:
