@@ -159,7 +159,10 @@ func (e *AsmEmitter) chunkDigests(addrs []uint64, fns []*disasm.Function) (guest
 		u(g, addr)
 		if shim, ok := e.shimMap[addr]; ok {
 			g.Write([]byte("S" + shim))
-			continue
+			if _, wrapped := e.wrapMap[addr]; !wrapped {
+				continue
+			}
+			g.Write([]byte("W")) // Replacement.Wrap: the body is emitted too
 		}
 		fn := fns[i]
 		if fn == nil {

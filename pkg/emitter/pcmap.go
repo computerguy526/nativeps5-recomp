@@ -98,14 +98,18 @@ func (c *chunkRender) endFunc(addr uint64, name string) {
 	if e.PCMapStrict {
 		check = ".error"
 	}
-	fmt.Fprintf(&c.buf, "Le%x:\n.if (Le%x-_fn_0x%x)!=%d\n%s \"pcmap: size mismatch in _fn_0x%x\"\n.endif\n", addr, addr, addr, c.sz.off, check, addr)
+	sym := fmt.Sprintf("_fn_0x%x", addr)
+	if c.entrySym != "" {
+		sym = c.entrySym // the kept body of a wrapped function (Replacement.Wrap)
+	}
+	fmt.Fprintf(&c.buf, "Le%x:\n.if (Le%x-%s)!=%d\n%s \"pcmap: size mismatch in %s\"\n.endif\n", addr, addr, sym, c.sz.off, check, sym)
 
 	nm := pcmapName(name)
 	nlen := 0
 	if nm != "" {
 		nlen = len(nm) + 1
 	}
-	fmt.Fprintf(&c.pcm, "\t.quad _fn_0x%x,0x%x\n\t.long %d,%d,%d,%d\n", addr, addr, c.sz.off, nlen, len(stream), len(c.ents))
+	fmt.Fprintf(&c.pcm, "\t.quad %s,0x%x\n\t.long %d,%d,%d,%d\n", sym, addr, c.sz.off, nlen, len(stream), len(c.ents))
 	if nlen > 0 {
 		fmt.Fprintf(&c.pcm, "\t.asciz \"%s\"\n", nm)
 	}

@@ -168,6 +168,7 @@ type chunkRender struct {
 	insts    int
 	funcs    int
 	baseName string
+	entrySym string // set while the kept body of a wrapped function is emitted (Replacement.Wrap)
 }
 
 // put writes one lifter line, dropping its comments in lean mode, and accounts for its size.
@@ -254,7 +255,9 @@ func (e *AsmEmitter) renderChunk(path string, chunkIdx int, chunkAddrs []uint64)
 	fns := make([]*disasm.Function, len(chunkAddrs))
 	for i, addr := range chunkAddrs {
 		if _, shimmed := e.shimMap[addr]; shimmed {
-			continue
+			if _, wrapped := e.wrapMap[addr]; !wrapped {
+				continue
+			}
 		}
 		fn, err := e.loadFunction(addr)
 		if err != nil {
@@ -308,15 +311,21 @@ func (e *AsmEmitter) renderChunk(path string, chunkIdx int, chunkAddrs []uint64)
 				}
 			}
 			e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Chunk: c.baseName})
-			continue
+			if _, wrapped := e.wrapMap[addr]; !wrapped || fns[i] == nil {
+				continue
+			}
+			// Replacement.Wrap: the guest body stays, under its own symbol, for the shim to call.
+			c.entrySym = WrapSymbol(addr)
 		}
 		fn := fns[i]
 		if fn == nil {
 			continue
 		}
-		if err := c.emitFunction(addr, fn, func(guest uint64, label string) {
+		err := c.emitFunction(addr, fn, func(guest uint64, label string) {
 			pads = append(pads, padEntry{guest, label})
-		}); err != nil {
+		})
+		c.entrySym = ""
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -364,9 +373,12 @@ func (e *AsmEmitter) renderChunk(path string, chunkIdx int, chunkAddrs []uint64)
 // emitFunction would have recorded) and the cache row (what only the lowering knows).
 func (e *AsmEmitter) noteCachedFacts(c *chunkRender, out *chunkOut, addrs []uint64, fns []*disasm.Function, row *tcache.Row) {
 	for i, addr := range addrs {
+		_, wrapped := e.wrapMap[addr]
 		if _, shimmed := e.shimMap[addr]; shimmed {
 			e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Chunk: c.baseName})
-			continue
+			if !wrapped {
+				continue
+			}
 		}
 		fn := fns[i]
 		if fn == nil {
@@ -382,7 +394,9 @@ func (e *AsmEmitter) noteCachedFacts(c *chunkRender, out *chunkOut, addrs []uint
 			n += len(fn.Blocks[ba].Insts)
 		}
 		e.Facts.GuestInsts += n
-		e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Insts: n, Chunk: c.baseName})
+		if !wrapped {
+			e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Insts: n, Chunk: c.baseName})
+		}
 	}
 	e.Facts.UD2Stubs = row.UD2
 	e.Facts.PCEntries = row.PCEntries
@@ -441,7 +455,12 @@ func (e *AsmEmitter) deliverChunk(out *chunkOut) error {
 
 func (c *chunkRender) emitFunction(addr uint64, fn *disasm.Function, addPad func(guest uint64, label string)) error {
 	e := c.e
-	fmt.Fprintf(&c.buf, ".globl _fn_0x%x\n_fn_0x%x:\n", addr, addr)
+	sym := fmt.Sprintf("_fn_0x%x", addr)
+	wrapped := c.entrySym != ""
+	if wrapped {
+		sym = c.entrySym // the kept body of a wrapped function (Replacement.Wrap); _fn_0x<addr> is its shim stub
+	}
+	fmt.Fprintf(&c.buf, ".globl %s\n%s:\n", sym, sym)
 	c.sz = asmSizer{}
 	c.ents = c.ents[:0]
 	nInsts := 0
@@ -452,7 +471,8 @@ func (c *chunkRender) emitFunction(addr uint64, fn *disasm.Function, addPad func
 		for _, line := range lifter.FlatCallEntry() {
 			c.put(line)
 		}
-		fmt.Fprintf(&c.buf, ".globl _fnj_0x%x\n_fnj_0x%x:\n", addr, addr)
+		j := lifter.FlatJumpEntrySymbol(sym)
+		fmt.Fprintf(&c.buf, ".globl %s\n%s:\n", j, j)
 	} else {
 		// Host frame = [x30, entry guest rsp]: the second word records the guest stack
 		// position of this activation's return address (x26 on entry), which lets the runtime
@@ -601,7 +621,9 @@ func (c *chunkRender) emitFunction(addr uint64, fn *disasm.Function, addPad func
 	}
 
 	e.Facts.GuestInsts += nInsts
-	e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Insts: nInsts, Chunk: c.baseName})
+	if !wrapped { // the guest entry of a wrapped function is its shim stub (recorded by renderChunk)
+		e.Facts.Funcs = append(e.Facts.Funcs, diag.AddrMapFunc{Guest: addr, Symbol: fmt.Sprintf("_fn_0x%x", addr), Insts: nInsts, Chunk: c.baseName})
+	}
 	if e.PCMap {
 		c.endFunc(addr, fn.Name)
 	}

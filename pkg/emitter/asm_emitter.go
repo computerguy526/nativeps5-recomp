@@ -134,6 +134,8 @@ type AsmEmitter struct {
 	// replParams / replReports: function-level replacements (funcrepl.go).
 	replParams  map[string]uint64
 	replReports []*ReplReport
+	// wrapMap: guest entry -> shim of the replacements that keep the guest body (Replacement.Wrap).
+	wrapMap map[uint64]string
 }
 
 // AsmChunk is the rendered assembly of one chunk.

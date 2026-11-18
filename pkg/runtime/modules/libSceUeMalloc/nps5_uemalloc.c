@@ -23,6 +23,17 @@
 #include <sys/mman.h>
 
 __attribute__((weak)) const Nps5ReplParam nps5_repl_params[] = {{NULL, 0}};
+__attribute__((weak)) const Nps5ReplWrap nps5_repl_wraps[] = {{NULL, 0, NULL}};
+
+void *nps5_repl_wrap_body(const char *shim, uint64_t *guest) {
+  for (const Nps5ReplWrap *w = nps5_repl_wraps; w->shim; w++) {
+    if (!strcmp(w->shim, shim)) {
+      if (guest) *guest = w->guest;
+      return (void *)w->body;
+    }
+  }
+  return NULL;
+}
 
 bool nps5_repl_param(const char *key, uint64_t *out) {
   for (const Nps5ReplParam *p = nps5_repl_params; p->key; p++) {

@@ -1,0 +1,24 @@
+{
+  "name": "physsub/PPSA21564-01.007",
+  "funcs": [
+    {
+      "name": "PhysicsWorldImplHavok::Step",
+      "addr": "0xa7bec0",
+      "size": 7411,
+      "sha256": "370b69081c53ea18def4f551e118bb7eaa0b91e1c31968a6839d711633c0dd8e",
+      "shim": "nps5_physsub_world_step",
+      "wrap": true
+    },
+    {
+      "name": "ApCloth::Step",
+      "addr": "0x10bd260",
+      "size": 9326,
+      "sha256": "2326f834cfda62fc746d3f0e5eddd00e95631f1aa510f986dfed23f9b8d846c6",
+      "shim": "nps5_physsub_cloth_step",
+      "wrap": true
+    }
+  ],
+  "params": [
+    {"key": "physsub.cloth.skip_flag", "value": "0x195"}
+  ]
+}

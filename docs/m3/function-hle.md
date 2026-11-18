@@ -127,3 +127,19 @@ zero words before it), run the checks of `MALLOC.md`, add a `ReplacementSet` (di
 * `GetDescriptiveName`-style slots stay guest code, so `GMalloc->GetDescriptiveName()` still says "MallocBinned3".
 * UE LLM/memory-tag tracking and stats that would read the allocator's counters see nothing: the stats-related slots (20-23) are stubs or print a constant string in this build, and the counters lived in the replaced object.
 * Only the exact binary of the profile is supported; the digests are the contract.
+
+## 7. Wrapping instead of replacing (`"wrap": true`)
+
+A table entry with `"wrap": true` binds the shim exactly like a replacement (the stub `_fn_0x<addr>` and its jump entry
+`_fnj_0x<addr>` call the shim, so direct calls, tail jumps and vtable calls all reach it), but the guest body is
+translated as well, under `_fn_0x<addr>_orig` / `_fnj_0x<addr>_orig` (`WrapSymbol`; its pc-map record names that symbol,
+the addrmap keeps the stub as the function). `funcrepl_params.c` lists the kept bodies in `nps5_repl_wraps`
+(`{shim, guest, body}`, weak empty default in `nps5_uemalloc.c`); `nps5_repl_wrap_body(shim, &guest)` returns the body,
+which the shim enters with `recomp_call_entry` after pushing a null return slot (as `nps5_libc_call_guest` does). The
+shim may run the original any number of times, change arguments or skip it. Restriction: the body must not call its own
+entry (that reaches the shim again) and a shim that re-calls it must restore the argument registers itself.
+
+First user: `[physsub]` (`pkg/runtime/modules/libSceAnyPS5/nps5_physsub.c`, switches in `nps5_physsub_logic.h`):
+physics steps split into steps <= 1/hz s when a title runs at real-time speed below its fixed frame rate. Tests:
+`tools/physsub_unit.sh` (logic), `tools/physsub_test.sh` (synthetic program: direct call, function pointer and tail call
+reach the shim; counts and dt sums with the switch off, on, and on with substepped cloth), `pkg/emitter/funcwrap_test.go`.
