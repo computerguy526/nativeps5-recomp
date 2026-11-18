@@ -466,9 +466,9 @@ func (l *Arm64Lifter) liftVphminposuw(inst disasm.Instruction, nextPC uint64, li
 	lines = append(lines,
 		"    mrs x16, nzcv",
 		"    str x16, [sp, #-16]!",
-		// Find min unsigned 16-bit word
+		// Find min unsigned 16-bit word (written to the destination only after the index search:
+		// the destination may be the source)
 		fmt.Sprintf("    uminv h20, %s.8h", sLow),
-		fmt.Sprintf("    mov   %s.h[0], v20.h[0]", dLowV),
 		// Search for index
 		"    umov  w17, v20.h[0]",
 		"    mov   v20.h[1], wzr",
@@ -485,6 +485,7 @@ func (l *Arm64Lifter) liftVphminposuw(inst disasm.Instruction, nextPC uint64, li
 		)
 	}
 	lines = append(lines,
+		fmt.Sprintf("    mov   %s.h[0], v20.h[0]", dLowV),
 		fmt.Sprintf("    mov   %s.h[1], v20.h[1]", dLowV),
 		fmt.Sprintf("    mov   %s.s[1], wzr", dLowV),
 		fmt.Sprintf("    mov   %s.d[1], xzr", dLowV),

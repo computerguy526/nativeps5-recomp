@@ -2831,8 +2831,11 @@ func (l *Arm64Lifter) liftVpermil(inst disasm.Instruction, nextPC uint64, isDoub
 			lines = append(lines, fmt.Sprintf("    mov %s.16b, v18.16b", dLowV))
 
 			if isYmm {
-				lines = append(lines, fmt.Sprintf("    mov v19.d[0], %s.d[%d]", sHigh, sel0))
-				lines = append(lines, fmt.Sprintf("    mov v19.d[1], %s.d[%d]", sHigh, sel1))
+				// imm8 bits 2 and 3 select within the upper 128-bit lane.
+				sel2 := (imm8 >> 2) & 1
+				sel3 := (imm8 >> 3) & 1
+				lines = append(lines, fmt.Sprintf("    mov v19.d[0], %s.d[%d]", sHigh, sel2))
+				lines = append(lines, fmt.Sprintf("    mov v19.d[1], %s.d[%d]", sHigh, sel3))
 				lines = append(lines, fmt.Sprintf("    mov %s.16b, v19.16b", dHighV))
 			} else {
 				lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
