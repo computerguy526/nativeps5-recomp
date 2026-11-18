@@ -23,6 +23,9 @@
 uint8_t g_nps5_level[NPS5_S_COUNT];
 void nps5_log(int s, int l, const char *fmt, ...) { (void)s; (void)l; (void)fmt; }
 void nps5_log_compat(int s, int l, const char *tag, const char *fmt, ...) { (void)s; (void)l; (void)tag; (void)fmt; }
+// AudioOut2 links the haptics port (nps5_haptics.c); its HD sink calls the Kyty seam (nps5_kyty.c, not linked here):
+// no pad audio device, so the haptics take the rumble path.
+uint64_t nps5_kyty_queue_pad_audio(uint32_t freq, const float *lr, uint32_t frames) { (void)freq; (void)lr; (void)frames; return 0; }
 
 #include <sys/stat.h>
 void nps5_fill_guest_stat(void *g, const struct stat *st) { memset(g, 0, 0x78); *(int64_t *)((char *)g + 72) = st->st_size; }
