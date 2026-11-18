@@ -1,0 +1,130 @@
+# Basic checks, no secrets, no game data, no GPU. Every command is also runnable locally (CONTRIBUTING.md, "CI").
+# This is a fork: formatting is checked only on the lines a change touches.
+# Not run here: tools/ajm_unit.sh (links the minimp3 and libatrac9 submodules, 3rdparty/ is not checked out) and the
+# slow pkg/lifter, pkg/runtime and pkg/emitter suites, of which a named subset runs.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Actions are pinned to a full commit SHA (the comment names the release); Dependabot (github-actions) raises them.
+env:
+  GOFLAGS: -mod=vendor
+
+jobs:
+  go:
+    name: gofmt, vet, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod, cache: false }
+      - name: Commits of the change (pull request) or of the push
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: .github/nps5-ci/range.sh >> "$GITHUB_ENV"
+      - name: gofmt (Go files the change touches; 10 existing files are not formatted and are left alone)
+        run: |
+          if [ -z "$BASE" ]; then echo "no base commit (first push, new branch or manual run): nothing to compare, skipped"; exit 0; fi
+          files=$(git diff --name-only --diff-filter=AM "$BASE" "$TIP" -- '*.go' ':!vendor' ':!3rdparty')
+          [ -z "$files" ] || { bad=$(printf "%s\n" "$files" | xargs gofmt -l); [ -z "$bad" ] || { echo "gofmt -w these files:"; echo "$bad"; exit 1; }; }
+      - run: go vet ./...
+      - name: go test (all packages except the three slow ones, which run a named subset)
+        run: |
+          # shellcheck disable=SC2046
+          go test $(go list ./... | grep -vE '/pkg/(lifter|runtime|emitter)$')
+          go test ./pkg/runtime -run 'TestHostAccessHooks|TestFontGlyphAPI' -count=1
+          go test ./pkg/lifter -run 'PatchValue' -count=1
+          go test ./pkg/emitter -run 'Patch|Shipped|AstroStubs' -count=1
+
+  unit:
+    name: C unit tests (macOS)
+    runs-on: macos-15-intel
+    continue-on-error: true  # hosted macOS runners queue-starve; a miss must not fail the PR (see docs/ci.md)
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: "tools/*_unit.sh (standalone host tests, no game, no GPU, no submodules)"
+        run: |
+          if [ "$(uname -m)" != arm64 ]; then
+            echo "::notice::skipped: these host tests build the arm64 runtime (mrs, arm thread state); the hosted macOS arm64 pool is capacity-starved, so run them locally (scripts/ci/run-local.sh) on Apple silicon"
+            exit 0
+          fi
+          failed=0
+          for t in clock framerate haptics avsync avloop kernelfs diag hlesys hostcall lean libc online perf_sampler uemalloc yield audio_capture; do
+            echo "::group::$t"
+            bash "tools/${t}_unit.sh" || { echo "::error::${t}_unit failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit $failed
+
+  clang-format:
+    name: clang-format (changed lines only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: { python-version: '3.12' }
+      - run: for i in 1 2 3; do pip install clang-format==22.1.3 && break; [ $i = 3 ] && exit 1; sleep $((i*10)); done
+      - name: Commits of the change (pull request) or of the push
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: .github/nps5-ci/range.sh >> "$GITHUB_ENV"
+      - name: git clang-format against the base
+        run: |
+          if [ -z "$BASE" ]; then echo "no base commit (first push, new branch or manual run): nothing to compare, skipped"; exit 0; fi
+          out=$(git clang-format --diff --extensions c,cc,cpp,h,hpp,m,mm "$BASE" "$TIP" -- . ':!3rdparty' ':!vendor' ':!pkg/runtime/core/softfloat' || true)
+          case "$out" in *"no modified files"*|*"did not modify any files"*|"") echo "clang-format: ok" ;;
+            *) echo "$out"; echo "::error::run: git clang-format $BASE   (formats only the lines you changed)"; exit 1 ;; esac
+
+  privacy:
+    name: privacy and identity gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Commits of the change (pull request) or of the push
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: .github/nps5-ci/range.sh >> "$GITHUB_ENV"
+      - name: Game data, secrets, personal paths, commit e-mails and added lines (copy of the entry repository's gate, .github/nps5-ci)
+        run: .github/nps5-ci/privacy.sh
+
+  workflows:
+    name: workflow syntax (actionlint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: actionlint 1.7.7 (release tarball, sha256 checked)
+        run: |
+          curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "$RUNNER_TEMP/actionlint.tgz" https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"

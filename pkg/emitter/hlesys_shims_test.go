@@ -104,8 +104,9 @@ func TestHlesysTitleImportsBound(t *testing.T) {
 func TestAstroStubsDefinedAndBound(t *testing.T) {
 	defs := map[string]bool{}
 	re := regexp.MustCompile(`(?m)(?:void\s+shim_(\w+)\s*\(GuestContext|^(?:FIXED|J_CTOR|J_THIS|J_CONST)\((\w+))`)
-	// The sce::Json names of the list are implemented in libSceJson2/ps4_json2.c (astro-boot).
-	for _, f := range []string{"../runtime/modules/libSceAstroStubs/nps5_astro_stubs.c", "../runtime/modules/libSceJson2/ps4_json2.c"} {
+	// The sce::Json names of the list are implemented in libSceJson2/ps4_json2.c (astro-boot);
+	// the sceFont glyph API (sceFontGenerateCharGlyph and friends) moved to libSceFont/ps4_font.c.
+	for _, f := range []string{"../runtime/modules/libSceAstroStubs/nps5_astro_stubs.c", "../runtime/modules/libSceJson2/ps4_json2.c", "../runtime/modules/libSceFont/ps4_font.c"} {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -116,7 +117,7 @@ func TestAstroStubsDefinedAndBound(t *testing.T) {
 	}
 	for _, n := range astroStubShims {
 		if !defs[n] {
-			t.Errorf("%s has no definition in nps5_astro_stubs.c", n)
+			t.Errorf("%s has no definition in nps5_astro_stubs.c, ps4_json2.c or ps4_font.c", n)
 		}
 		if _, ok := LookupShim(n); !ok {
 			t.Errorf("%s is not bound", n)

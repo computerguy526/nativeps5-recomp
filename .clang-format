@@ -1,0 +1,20 @@
+# Matches the code as it is (4 spaces, 120 columns, attached braces, `T *p`). CI checks only the lines a change touches
+# (git-clang-format against the base), so existing code is never reformatted; do not run clang-format over whole files.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Right
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: true
+SpacesBeforeTrailingComments: 1
+AlignTrailingComments: false
+AlignConsecutiveAssignments: None
+IndentCaseLabels: true
+SortIncludes: Never
+ReflowComments: false
+IncludeBlocks: Preserve
+DerivePointerAlignment: false
