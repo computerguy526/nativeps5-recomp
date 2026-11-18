@@ -50,7 +50,7 @@ base = `git -C #{work} merge-base HEAD origin/main 2>/dev/null || git -C #{work}
 exprs = { "github.event_name" => "pull_request", "github.event.pull_request.base.sha" => base,
           "github.event.pull_request.head.sha" => head, "github.event.before" => "0" * 40 }
 subst = ->(s) { s.to_s.gsub(/\$\{\{\s*([^}]*?)\s*\}\}/) { exprs.fetch($1, "") } }
-bash = File.exist?("/opt/homebrew/bin/bash") ? "/opt/homebrew/bin/bash" : "bash"
+bash = `which -a bash`.split.find { |b| `#{b} -c "echo ${BASH_VERSINFO[0]}"`.strip.to_i >= 4 } || "bash" # the runner has bash 5 on Linux
 darwin = RUBY_PLATFORM.include?("darwin")
 results = []
 wf["jobs"].each do |id, j|

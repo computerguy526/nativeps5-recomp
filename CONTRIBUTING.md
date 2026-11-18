@@ -5,6 +5,8 @@ game data, one change per PR, evidence format, run rules) are in that repository
 
 ## CI
 
+Before pushing, run `scripts/ci/run-local.sh` (commit first): it runs every job of `.github/workflows/ci.yml` from a clean checkout of HEAD (same steps, fresh venv, no submodules); `--job <id>` runs one, `--x86` runs the macOS job under Rosetta like the Intel hosted runner. See docs/ci.md.
+
 GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`, with no secrets, game data or GPU.
 Each check is one command locally (from the repository root):
 

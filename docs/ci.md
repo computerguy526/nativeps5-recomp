@@ -12,3 +12,5 @@ Workflow: `.github/workflows/ci.yml`, on every pull request and push.
 Rerun: Actions tab, open the run, "Re-run failed jobs"; or `gh run rerun <run-id> --failed`.
 Run locally: `go test ./...` and `bash tools/<name>_unit.sh`.
 - C unit test `perf_sampler` is skipped on the Intel macOS runner (it reads arm64 thread state); the arm64 pool is too starved to rely on.
+
+Run the whole workflow locally before every push: `scripts/ci/run-local.sh` (commit first; clean `git worktree` of HEAD, no submodules, fresh venv, same `run:` steps as the workflow; `--job <id>`, `--x86` for the macOS job under Rosetta, `--act` for ubuntu jobs in nektos/act). Needs ruby, git and the job tools (shellcheck, go, cmake, ninja, actionlint as the job needs).
