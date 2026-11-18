@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -55,7 +56,7 @@ func TestBundleAndLatest(t *testing.T) {
 	if len(m.Inputs) != 1 || m.Inputs[0].SHA256 != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" {
 		t.Errorf("inputs %+v", m.Inputs)
 	}
-	if m.Host.OSBuild == "" || m.Host.Model == "" {
+	if runtime.GOOS == "darwin" && (m.Host.OSBuild == "" || m.Host.Model == "") { // sysctl hw.model/kern.osversion exist only on macOS
 		t.Errorf("host info missing: %+v", m.Host)
 	}
 	if m.Result != "ok" {
