@@ -36,6 +36,7 @@ typedef struct SdMountSlot {
     char host_path[1024];
     uint64_t blocks;
     bool read_only;
+    bool transfer;      // another title's save (sceSaveDataTransferringMount): never matches the running title's dir names
 } SdMountSlot;
 
 static int g_savedata_initialized = 0;
@@ -562,7 +563,7 @@ static SdMountSlot *sd_find_mount_by_point(const GuestContext *ctx, uint64_t gad
 
 static SdMountSlot *sd_find_mount_by_dir(int32_t user_id, const char *dir_name) {
     for (int i = 0; i < SD_MAX_MOUNTS; i++) {
-        if (g_sd_mounts[i].active && g_sd_mounts[i].user_id == user_id &&
+        if (g_sd_mounts[i].active && !g_sd_mounts[i].transfer && g_sd_mounts[i].user_id == user_id &&
             strcmp(g_sd_mounts[i].dir_name, dir_name) == 0) {
             return &g_sd_mounts[i];
         }
@@ -571,8 +572,15 @@ static SdMountSlot *sd_find_mount_by_dir(int32_t user_id, const char *dir_name) 
 }
 
 // Unified mount function
+static int32_t sd_mount_at(GuestContext *ctx, int32_t userId, const char *dir_name, const char *forced_host_path,
+                           uint64_t blocks, uint32_t mountMode, SdMountResult *result);
 static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *dir_name,
                                  uint64_t blocks, uint32_t mountMode, SdMountResult *result) {
+    return sd_mount_at(ctx, userId, dir_name, NULL, blocks, mountMode, result);
+}
+// forced_host_path: mount this host directory instead of the running title's <user>/<dir_name> (a transferring mount).
+static int32_t sd_mount_at(GuestContext *ctx, int32_t userId, const char *dir_name, const char *forced_host_path,
+                           uint64_t blocks, uint32_t mountMode, SdMountResult *result) {
     if (!g_savedata_initialized) {
         return SD_ERR_NOT_INIT;
     }
@@ -597,13 +605,15 @@ static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *
         return SD_ERR_PARAMETER;
     }
     pthread_mutex_lock(&g_savedata_mutex);
-    if (sd_find_mount_by_dir(userId, dir_name)) {
-        pthread_mutex_unlock(&g_savedata_mutex);
-        return SD_ERR_BUSY;
-    }
-
     char host_path[1024];
-    sd_dir_path(userId, dir_name, host_path, sizeof(host_path));
+    if (forced_host_path) snprintf(host_path, sizeof(host_path), "%s", forced_host_path);
+    else sd_dir_path(userId, dir_name, host_path, sizeof(host_path));
+    for (int i = 0; i < SD_MAX_MOUNTS; i++) { // the same directory mounted twice (own saves: same user + dir name)
+        if (g_sd_mounts[i].active && strcmp(g_sd_mounts[i].host_path, host_path) == 0) {
+            pthread_mutex_unlock(&g_savedata_mutex);
+            return SD_ERR_BUSY;
+        }
+    }
     bool exists = sd_save_exists(host_path);
     uint32_t status = SD_MOUNT_STATUS_NOTHING;
 
@@ -660,6 +670,7 @@ static int32_t sd_mount_internal(GuestContext *ctx, int32_t userId, const char *
     slot->user_id = userId;
     slot->blocks = (blocks >= SD_BLOCKS_MIN && blocks <= SD_BLOCKS_MAX) ? blocks : SD_DEFAULT_BLOCKS;
     slot->read_only = is_ro;
+    slot->transfer = forced_host_path != NULL;
     snprintf(slot->dir_name, sizeof(slot->dir_name), "%s", dir_name);
     snprintf(slot->mount_point, sizeof(slot->mount_point), "/savedata%d", slot_idx);
     snprintf(slot->host_path, sizeof(slot->host_path), "%s", host_path);
@@ -691,16 +702,38 @@ int32_t sceSaveDataMount2(GuestContext *ctx, const SdMount2 *mount, SdMountResul
     return sd_mount_internal(ctx, mount->userId, dir_name, mount->blocks, mount->mountMode, result);
 }
 
+// The save another title made, for sceSaveDataTransferringMount: <save root>/transfer/<titleId>/user_<id>/<dir>.
+static void sd_transfer_dir_path(const char *title_id, int32_t user_id, const char *dir_name, char *out, size_t out_size) {
+    char game_dir[1024], clean[64];
+    get_game_save_dir(game_dir, sizeof(game_dir));
+    sanitize_filename(title_id, clean, sizeof(clean));
+    snprintf(out, out_size, "%s/transfer/%s/user_%08x/%s", game_dir, clean[0] ? clean : "unknown", (uint32_t)user_id, dir_name);
+}
+
 int32_t sceSaveDataTransferringMount(GuestContext *ctx, const SdTransferringMount *mount, SdMountResult *result) {
     if (!mount || !result) return SD_ERR_PARAMETER;
     char dir_name[SD_DIRNAME_SIZE];
     if (!sd_copy_dirname(ctx, mount->dirName, dir_name)) return SD_ERR_PARAMETER;
-    // ASTRO BOT 01.007 makes this its FIRST save mount (issue #27 of the PC port). A read-only open of a directory that does
-    // not exist yet is NOT_FOUND and the title takes that as "no save, cannot continue". Mount the same directory the way a
-    // normal first mount does: CREATE2 (open or create) | RDWR. APS5_SAVEDATA_TRANSFER_FALLBACK=0 restores the old read-only open.
+    // A transferring mount opens the save of ANOTHER title (param.json savedata.titleIdForTransferring; ASTRO BOT 01.007:
+    // PPSA01325 = Astro's Playroom, dir 'sce_sdmemory', read at 0x400 as that title's save memory). It must never be the running
+    // title's own directory: mounting our own sce_sdmemory here (the old CREATE2|RDWR fallback) made the title parse its own
+    // memory.dat as the Playroom save, and once the own save grew past 0x400 the window started inside a closing tag ->
+    // XML parser at depth -1 -> guest SIGBUS at boot (savecrash 2026-11-18). Like the console: the source title's save,
+    // read-only, NOT_FOUND when there is none. APS5_SAVEDATA_TRANSFER_FALLBACK=self = the old own-directory CREATE2|RDWR mount.
     const char *fb = getenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
-    const uint32_t mode = (fb && strcmp(fb, "0") == 0) ? SD_MOUNT_MODE_RDONLY : (SD_MOUNT_MODE_CREATE2 | SD_MOUNT_MODE_RDWR);
-    return sd_mount_internal(ctx, mount->userId, dir_name, 0, mode, result);
+    if (fb && strcmp(fb, "self") == 0)
+        return sd_mount_internal(ctx, mount->userId, dir_name, 0, SD_MOUNT_MODE_CREATE2 | SD_MOUNT_MODE_RDWR, result);
+    char title_id[SD_TITLE_ID_SIZE] = {0};
+    const char *tid = mount->titleId ? (const char *)recomp_guest_to_host(ctx, mount->titleId) : NULL;
+    if (tid) {
+        size_t n = strnlen(tid, SD_TITLE_ID_SIZE - 1);
+        memcpy(title_id, tid, n);
+        title_id[n] = '\0';
+    }
+    char host_path[1024];
+    sd_transfer_dir_path(title_id, mount->userId, dir_name, host_path, sizeof(host_path));
+    fprintf(stderr, "[ps4-savedata] TransferringMount: title='%s' dir='%s' -> %s\n", title_id, dir_name, host_path);
+    return sd_mount_at(ctx, mount->userId, dir_name, host_path, 0, SD_MOUNT_MODE_RDONLY, result);
 }
 
 int32_t sceSaveDataGetEventResult(GuestContext *ctx, uint64_t param_addr, uint64_t event_addr) {

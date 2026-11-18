@@ -109,28 +109,48 @@ int main(void) {
     assert(strcmp(read_str, test_str) == 0);
     printf("[+] Verified read data: '%s'\n", read_str);
 
-    // Transferring mount (ASTRO BOT 01.007 first mount): creates and opens read/write by default, NOT_FOUND with the fallback off.
+    // Transferring mount (ASTRO BOT 01.007 mounts PPSA01325's 'sce_sdmemory'): the SOURCE title's save, read-only, never the
+    // running title's own directory (savecrash: our own memory.dat parsed as the Playroom save crashed the boot).
     ret = sceSaveDataInitialize3(NULL);
     assert(ret == 0);
     {
-        const char dn[] = "astro_transfer";
+        const char dn[] = "sce_sdmemory";
+        const char tid[] = "PPSA01325";
         memcpy(ctx.mem_base + 0x70000, dn, sizeof dn);
+        memcpy(ctx.mem_base + 0x70100, tid, sizeof tid);
         SdTransferringMount *tm = (SdTransferringMount *)(ctx.mem_base + 0x71000);
         memset(tm, 0, sizeof *tm);
         tm->userId = 0x10000000;
         tm->dirName = 0x70000;
+        tm->titleId = 0x70100;
+        // the running title's own save memory exists (setup above): a transferring mount must not open it
         SdMountResult mr;
         memset(&mr, 0, sizeof mr);
-        setenv("APS5_SAVEDATA_TRANSFER_FALLBACK", "0", 1);
         ret = sceSaveDataTransferringMount(&ctx, tm, &mr);
-        assert(ret != 0);
-        printf("[+] transferring mount with the fallback off: 0x%x (read-only open of a missing save)\n", (unsigned)ret);
-        unsetenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
+        assert(ret == (int32_t)SD_ERR_NOT_FOUND);
+        printf("[+] transferring mount without a PPSA01325 save: NOT_FOUND 0x%x\n", (unsigned)ret);
+        // a source save present: mounted read-only from <save root>/transfer/<titleId>/user_<id>/<dir>
+        // (save root here = PS4_SAVEDATA_DIR/DefaultGame: the test has no param.sfo)
+        char cmd[768];
+        snprintf(cmd, sizeof cmd, "mkdir -p %s/DefaultGame/transfer/PPSA01325/user_10000000/sce_sdmemory/sce_sys && "
+                 "printf 'x' > %s/DefaultGame/transfer/PPSA01325/user_10000000/sce_sdmemory/sce_sys/param.sfo && "
+                 "printf 'PLAYROOM' > %s/DefaultGame/transfer/PPSA01325/user_10000000/sce_sdmemory/memory.dat", test_dir, test_dir, test_dir);
+        assert(system(cmd) == 0);
         memset(&mr, 0, sizeof mr);
         ret = sceSaveDataTransferringMount(&ctx, tm, &mr);
         assert(ret == 0);
         assert(mr.mountPoint.data[0] != 0);
-        printf("[+] transferring mount creates and mounts '%s'\n", mr.mountPoint.data);
+        printf("[+] transferring mount of an existing PPSA01325 save: '%s'\n", mr.mountPoint.data);
+        // the old own-directory fallback stays available for A/B
+        memcpy(ctx.mem_base + 0x70200, mr.mountPoint.data, sizeof mr.mountPoint.data);
+        ret = sceSaveDataUmount(&ctx, 0x70200);
+        assert(ret == 0);
+        setenv("APS5_SAVEDATA_TRANSFER_FALLBACK", "self", 1);
+        memset(&mr, 0, sizeof mr);
+        ret = sceSaveDataTransferringMount(&ctx, tm, &mr);
+        assert(ret == 0);
+        printf("[+] APS5_SAVEDATA_TRANSFER_FALLBACK=self mounts the own dir '%s'\n", mr.mountPoint.data);
+        unsetenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
     }
 
     ret = sceSaveDataTerminate();
