@@ -8,6 +8,7 @@
 #include "ps4_vfs.h"
 #include "ps4_savedata.h"
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -922,6 +923,75 @@ static void test_framerate_cfg(void) {
     CHECK(nps5_framerate_clamp(bad[i][0], bad[i][1], &lo, &hi) == 0 && lo == 20.0 && hi == 60.0);
   }
 }
+// dirfix (podtrace8): the guest's dir reader keeps only DT_REG/DT_DIR; host symlinks (the app0_fast* farm) must report the TARGET type.
+static uint8_t dirfix_type(const char *dir, const char *name, int *seen) {
+    DIR *d = opendir(dir);
+    uint8_t r = 0xEE;
+    *seen = 0;
+    if (!d) return r;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL)
+        if (!strcmp(e->d_name, name)) {
+            *seen = 1;
+            r = ps4_vfs_resolve_dirent_type(dirfd(d), e->d_name, e->d_type, NULL);
+        }
+    closedir(d);
+    return r;
+}
+static void test_dirent_types(const char *tmp) {
+    char d[600], p[700], q[700];
+    snprintf(d, sizeof d, "%s/dirfix", tmp);
+    mkdir(d, 0755);
+    snprintf(p, sizeof p, "%s/real.anim", d);
+    FILE *f = fopen(p, "w");
+    if (f) {
+        fputs("x", f);
+        fclose(f);
+    }
+    snprintf(p, sizeof p, "%s/realdir", d);
+    mkdir(p, 0755);
+    snprintf(p, sizeof p, "%s/real.anim", d);
+    snprintf(q, sizeof q, "%s/lnk_file.anim", d);
+    CHECK(symlink(p, q) == 0);
+    snprintf(p, sizeof p, "%s/realdir", d);
+    snprintf(q, sizeof q, "%s/lnk_dir", d);
+    CHECK(symlink(p, q) == 0);
+    snprintf(q, sizeof q, "%s/lnk_dangling", d);
+    CHECK(symlink("/nonexistent/dirfix_target", q) == 0);
+    snprintf(q, sizeof q, "%s/lnk_chain", d);
+    CHECK(symlink("lnk_file.anim", q) == 0); // relative link to a link
+    int seen;
+    CHECK(dirfix_type(d, "real.anim", &seen) == DT_REG && seen);
+    CHECK(dirfix_type(d, "realdir", &seen) == DT_DIR && seen);
+    CHECK(dirfix_type(d, "lnk_file.anim", &seen) == DT_REG && seen);
+    CHECK(dirfix_type(d, "lnk_dir", &seen) == DT_DIR && seen);
+    CHECK(dirfix_type(d, "lnk_chain", &seen) == DT_REG && seen);
+    CHECK(dirfix_type(d, "lnk_dangling", &seen) == 0xFF && seen);
+    CHECK(dirfix_type(d, "lnk_file.anim", &seen) == DT_REG); // second pass: served from the per-directory cache
+    // DT_UNKNOWN fallback (file systems without d_type): real file / dir / link / missing
+    int fd = open(d, O_RDONLY);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "real.anim", DT_UNKNOWN, NULL) == DT_REG);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "realdir", DT_UNKNOWN, NULL) == DT_DIR);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "lnk_dir", DT_UNKNOWN, NULL) == DT_DIR);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "lnk_dangling", DT_UNKNOWN, NULL) == DT_UNKNOWN); // stays unknown, not hidden
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "gone", DT_UNKNOWN, NULL) == DT_UNKNOWN);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "real.anim", DT_REG, NULL) == DT_REG); // plain types pass through untouched
+    close(fd);
+    // cache invalidation: directory changes (new entry) must not serve stale answers
+    snprintf(q, sizeof q, "%s/lnk_late", d);
+    snprintf(p, sizeof p, "%s/realdir", d);
+    CHECK(symlink(p, q) == 0);
+    CHECK(dirfix_type(d, "lnk_late", &seen) == DT_DIR && seen);
+    unlink(q);
+    snprintf(p, sizeof p, "%s/real.anim", d);
+    CHECK(symlink(p, q) == 0);
+    CHECK(dirfix_type(d, "lnk_late", &seen) == DT_REG && seen);
+    // sceKernelStat/stat on a symlink: the VFS stat follows it (target type)
+    struct stat st;
+    snprintf(q, sizeof q, "%s/lnk_dir", d);
+    CHECK(stat(q, &st) == 0 && S_ISDIR(st.st_mode));
+}
+
 static void test_level_open(void) {
   test_framerate_cfg();
   CHECK(ps4_vfs_note_level_path("/app0/data/prein/levels/hoover_beach/a.bin") == 1);
@@ -1099,6 +1169,7 @@ int main(void) {
   test_astro_stubs();
   test_misc();
   test_level_open();
+  test_dirent_types(tmp);
 
   char cmd[700]; snprintf(cmd, sizeof cmd, "rm -rf %s", tmp); system(cmd);
   test_ampr_external_events();

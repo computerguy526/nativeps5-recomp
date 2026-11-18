@@ -106,6 +106,7 @@ off_t ps4_vfs_lseek(int fd, off_t offset, int whence);
 int ps4_vfs_fstat(int fd, struct stat *st);
 int ps4_vfs_stat(const char *guest_path, struct stat *st);
 int ps4_vfs_lstat(const char *guest_path, struct stat *st);
+uint8_t ps4_vfs_resolve_dirent_type(int dirfd_, const char *name, uint8_t d_type, int *resolved);
 int ps4_vfs_access(const char *guest_path, int mode);
 void *ps4_vfs_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
 

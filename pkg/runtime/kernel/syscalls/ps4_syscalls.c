@@ -1267,10 +1267,13 @@ static GuestDirCache *guest_dir_cache_get(int fd) {
       slot->inos = (uint32_t *)realloc(slot->inos, cap * sizeof(uint32_t));
       slot->types = (uint8_t *)realloc(slot->types, cap * sizeof(uint8_t));
     }
+    uint8_t dtype =
+        ps4_vfs_resolve_dirent_type(dirfd(d), e->d_name, e->d_type, NULL); // dirfix: symlinks report the target's type
+    if (dtype == 0xFF) continue; // dangling link: hidden
     slot->names[slot->count] = strdup(e->d_name);
     slot->inos[slot->count] =
         (uint32_t)e->d_ino ? (uint32_t)e->d_ino : (uint32_t)(slot->count + 1);
-    slot->types[slot->count] = e->d_type; // DT_* values match FreeBSD
+    slot->types[slot->count] = dtype; // DT_* values match FreeBSD
     slot->count++;
   }
   closedir(d); // closes dfd

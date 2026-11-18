@@ -2012,3 +2012,93 @@ void ps4_vfs_destroy(void) {
 
   ps4_pak_destroy();
 }
+
+// dirfix (podtrace8): the guest's directory readers keep only DT_REG (8) / DT_DIR (4) entries. A host symlink farm (boot/app0_fast*) comes
+// back from readdir as DT_LNK (10), and some file systems report DT_UNKNOWN (0). Resolve both by following the link (fstatat, not lstat) so
+// the guest sees the TARGET's type, like stat/sceKernelStat already do. Returns the type to report, or 0xFF = hide the entry (dangling
+// link). A link to a device/socket/fifo reports DT_UNKNOWN (never DT_LNK). Results are cached per directory (dev, ino, mtime) so a level
+// folder that the game lists many times costs one stat per entry once. *resolved (optional) is set when the entry needed resolving.
+#define DIRTYPE_CACHE_DIRS 32
+typedef struct {
+    dev_t dev;
+    ino_t ino;
+    struct timespec mt;
+    int n, cap;
+    char **names;
+    uint8_t *types;
+    unsigned long stamp;
+} DirTypeCache;
+static DirTypeCache g_dtc[DIRTYPE_CACHE_DIRS];
+static unsigned long g_dtc_clock;
+static pthread_mutex_t g_dtc_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void dtc_clear(DirTypeCache *c) {
+    for (int i = 0; i < c->n; i++)
+        free(c->names[i]);
+    free(c->names);
+    free(c->types);
+    memset(c, 0, sizeof(*c));
+}
+
+uint8_t ps4_vfs_resolve_dirent_type(int dirfd_, const char *name, uint8_t d_type, int *resolved) {
+    if (d_type != DT_LNK && d_type != DT_UNKNOWN) return d_type;
+    if (resolved) *resolved = 1;
+    struct stat ds;
+    DirTypeCache *c = NULL;
+    int have_ds = fstat(dirfd_, &ds) == 0;
+    if (have_ds) {
+        pthread_mutex_lock(&g_dtc_lock);
+        DirTypeCache *victim = &g_dtc[0];
+        for (int i = 0; i < DIRTYPE_CACHE_DIRS; i++) {
+            DirTypeCache *e = &g_dtc[i];
+            if (e->names && e->dev == ds.st_dev && e->ino == ds.st_ino) {
+                if (e->mt.tv_sec == ds.st_mtimespec.tv_sec && e->mt.tv_nsec == ds.st_mtimespec.tv_nsec) {
+                    c = e;
+                    break;
+                }
+                dtc_clear(e);
+                victim = e;
+                break; // directory changed: start over
+            }
+            if (e->stamp < victim->stamp) victim = e;
+        }
+        if (!c) {
+            if (victim->names) dtc_clear(victim);
+            victim->dev = ds.st_dev;
+            victim->ino = ds.st_ino;
+            victim->mt = ds.st_mtimespec;
+            c = victim;
+        }
+        c->stamp = ++g_dtc_clock;
+        for (int i = 0; i < c->n; i++)
+            if (strcmp(c->names[i], name) == 0) {
+                uint8_t t = c->types[i];
+                pthread_mutex_unlock(&g_dtc_lock);
+                return t == 0xFE ? (d_type == DT_LNK ? 0xFF : d_type) : t;
+            }
+        pthread_mutex_unlock(&g_dtc_lock);
+    }
+    uint8_t t; // 0xFE in the cache = stat failed (the answer then depends on the caller's d_type)
+    struct stat ts;
+    if (fstatat(dirfd_, name, &ts, 0) == 0)
+        t = S_ISDIR(ts.st_mode) ? DT_DIR : S_ISREG(ts.st_mode) ? DT_REG : DT_UNKNOWN;
+    else
+        t = 0xFE;
+    if (c) {
+        pthread_mutex_lock(&g_dtc_lock);
+        if (c->dev == ds.st_dev && c->ino == ds.st_ino) { // slot not recycled meanwhile
+            if (c->n == c->cap) {
+                int nc = c->cap ? c->cap * 2 : 64;
+                c->names = (char **)realloc(c->names, nc * sizeof(char *));
+                c->types = (uint8_t *)realloc(c->types, nc);
+                c->cap = nc;
+            }
+            c->names[c->n] = strdup(name);
+            c->types[c->n] = t;
+            c->n++;
+        }
+        pthread_mutex_unlock(&g_dtc_lock);
+    }
+    return t == 0xFE ? (d_type == DT_LNK ? 0xFF : d_type)
+                     : t; // dangling link: hide; DT_UNKNOWN that cannot be stat'ed: keep
+}
