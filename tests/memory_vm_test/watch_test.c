@@ -262,6 +262,7 @@ int main(int argc, char **argv) {
       atomic_store(&g_reclose, 2);
       CHECK(nps5_kfread(dst + PG - 8192, 1, 2 * 8192, fp) == 2 * 8192 && !memcmp(dst + PG - 8192, pat + 9, 2 * 8192), "nps5_kfread across a page closed again");
       CHECK(ftello(fp) == 9 + 2 * 8192 && !ferror(fp), "stream position and error flag after a repeated fread");
+      CHECK(nps5_host_write_refault_count() > r0, "the fread was repeated (stdio read straight into the closed page)");
       printf("refault: fread repeated %llu times\n", (unsigned long long)(nps5_host_write_refault_count() - r0));
       atomic_store(&g_reclose, 0);
       fclose(fp);

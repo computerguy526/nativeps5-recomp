@@ -97,9 +97,10 @@ static inline size_t nps5_kfread(void *buf, size_t size, size_t count, FILE *f) 
     errno = 0;
     const size_t r = fread(buf, size, count, f);
     const int e = errno;
-    if (r < count && pos >= 0 && ferror(f) && e == EFAULT && nps5_host_write_refault(buf, n, &tries)) {
+    // seek first: if the stream cannot go back, its error flag stays set (the caller sees a read error, not an EOF)
+    if (r < count && pos >= 0 && ferror(f) && e == EFAULT && nps5_host_write_refault(buf, n, &tries) && fseeko(f, pos, SEEK_SET) == 0) {
       clearerr(f);
-      if (fseeko(f, pos, SEEK_SET) == 0) continue;
+      continue;
     }
     nps5_host_write_end(buf, n);
     errno = e;
