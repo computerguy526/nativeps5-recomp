@@ -85,13 +85,41 @@ static inline ssize_t nps5_kread(int fd, void *buf, size_t n) {
   }
 }
 static inline ssize_t nps5_krecv(int s, void *buf, size_t n, int flags) { NPS5_KIO_FILL(ssize_t, buf, n, recv(s, buf, n, flags)); }
+// fread: stdio reads a large request straight into the caller's buffer with read(), so the same EFAULT applies (a short
+// count with the error flag set: savedata and libc fread into guest memory). Repeated from the original stream position
+// (clearerr + fseeko drop the stdio buffer) where the stream can seek; a pipe keeps the short count.
 static inline size_t nps5_kfread(void *buf, size_t size, size_t count, FILE *f) {
-  NPS5_KIO_FILL(size_t, buf, size * count, fread(buf, size, count, f));
+  const size_t n = size * count;
+  unsigned tries = 0;
+  const off_t pos = (nps5_host_access_active() && n) ? ftello(f) : (off_t)-1;
+  nps5_host_write_begin(buf, n);
+  for (;;) {
+    errno = 0;
+    const size_t r = fread(buf, size, count, f);
+    const int e = errno;
+    if (r < count && pos >= 0 && ferror(f) && e == EFAULT && nps5_host_write_refault(buf, n, &tries)) {
+      clearerr(f);
+      if (fseeko(f, pos, SEEK_SET) == 0) continue;
+    }
+    nps5_host_write_end(buf, n);
+    errno = e;
+    return r;
+  }
 }
+// readv: as nps5_kread, for every buffer of the vector; the file position is put back before a repeat where it can seek.
 static inline ssize_t nps5_kreadv(int fd, const struct iovec *iov, int n) {
   nps5_kio_iov(iov, n, 0);
-  const ssize_t r = readv(fd, iov, n);
-  const int e = errno;
+  const off_t pos = (iov && n > 0 && nps5_host_access_active()) ? lseek(fd, 0, SEEK_CUR) : (off_t)-1;
+  ssize_t r = readv(fd, iov, n);
+  int e = errno;
+  for (unsigned t = 0; r < 0 && e == EFAULT && pos >= 0 && t < NPS5_KIO_RETRIES; t++) {
+    unsigned one = 0;
+    bool ours = false;
+    for (int i = 0; i < n; i++) { one = 0; ours |= nps5_host_write_refault(iov[i].iov_base, iov[i].iov_len, &one); }
+    if (!ours || lseek(fd, pos, SEEK_SET) != pos) break;
+    r = readv(fd, iov, n);
+    e = errno;
+  }
   nps5_kio_iov(iov, n, 1);
   errno = e;
   return r;
