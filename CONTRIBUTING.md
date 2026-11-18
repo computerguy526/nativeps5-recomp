@@ -11,7 +11,7 @@ Each check is one command locally (from the repository root):
 | Job | What | Locally |
 |---|---|---|
 | go | `gofmt` on the Go files the change touches, `go vet`, `go test` | `export GOFLAGS=-mod=vendor; gofmt -l <your .go files>; go vet ./... && go test ./pkg/cli ./pkg/diag ./pkg/disasm ./pkg/elfloader ./pkg/thunkgen` |
-| unit | the standalone C host tests, macOS arm64 | `bash tools/kernelfs_unit.sh` (one per `tools/*_unit.sh`) |
+| unit | the standalone C host tests, GitHub macOS runner (macos-15-intel: the arm64 pool is capacity-starved) | `bash tools/kernelfs_unit.sh` (one per `tools/*_unit.sh`) |
 | clang-format | C/C++ lines the change touches (`.clang-format`); the existing code is never reformatted | `git clang-format origin/main -- pkg tests cmd` (or `--diff` to look) |
 | privacy | game data, secrets, personal paths, commit e-mails (a copy of the entry repository's gate, `.github/nps5-ci/`) | `BASE=origin/main TIP=HEAD .github/nps5-ci/privacy.sh` |
 | workflows | workflow syntax | `actionlint` |

@@ -1,0 +1,4 @@
+# macos-15-intel is a valid GitHub-hosted label that the pinned actionlint does not know yet.
+self-hosted-runner:
+  labels:
+    - macos-15-intel

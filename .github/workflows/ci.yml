@@ -53,8 +53,8 @@ jobs:
           go test ./pkg/emitter -run 'Patch|Shipped|AstroStubs' -count=1
 
   unit:
-    name: C unit tests (macOS arm64)
-    runs-on: macos-26
+    name: C unit tests (macOS)
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
