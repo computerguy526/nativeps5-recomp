@@ -265,8 +265,8 @@ func TestShippedProfileUpscaling(t *testing.T) {
 	if up == nil {
 		t.Fatal("no upscaling patch")
 	}
-	// default: off = native 1080p (2026-11-17: 720p/900p show block artefacts); "off" stays the first option
-	if def, err := checkPatchOptions(up); err != nil || def != 0 || up.Options[2].Setenv["KYTY_METALFX"] != "spatial" || up.Options[1].Setenv["KYTY_METALFX"] != "spatial" {
+	// default: metalfx720 (v1.0.3, user decision 2026-11-18); "off" (native 1080p) stays the first option
+	if def, err := checkPatchOptions(up); err != nil || def != 2 || up.Options[2].Setenv["KYTY_METALFX"] != "spatial" || up.Options[1].Setenv["KYTY_METALFX"] != "spatial" {
 		t.Fatalf("options: %d %v", def, err)
 	}
 	if len(up.Options) != 3 || up.Options[0].Name != "off" || up.Options[1].Name != "metalfx900" || up.Options[2].Name != "metalfx720" ||

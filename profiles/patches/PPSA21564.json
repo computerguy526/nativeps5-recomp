@@ -28,9 +28,9 @@
         {
           "key": "upscaling",
           "title": "Upscaling",
-          "description": "Renders the 3D scene at 720p or 900p instead of 1080p and lets Apple MetalFX (spatial) scale it to the game's output size; menus and text stay sharp. Fewer pixels to shade: shorter frames. Off is the game's own 1080p picture and upscaler. Experimental: 720p and 900p set the renderer's light-tile grid fix (KYTY_ASTRO_TILE_GRID=auto) that removes the blocky squares on dust, glass and particles; spatial MetalFX has no anti-aliasing of its own, so edges can look more jagged than Off, which stays the default. Needs a Mac with MetalFX (macOS 13+); the dynamic-resolution lock of the standard build is assumed.",
+          "description": "Renders the 3D scene at 720p or 900p instead of 1080p and lets Apple MetalFX (spatial) scale it to the game's output size; menus and text stay sharp. Fewer pixels to shade: shorter frames. Off is the game's own 1080p picture and upscaler (NPS5_ASTRO_UPSCALING=off). The default is MetalFX 720p. 720p and 900p set the renderer's light-tile grid fix (KYTY_ASTRO_TILE_GRID=auto) that removes the blocky squares on dust, glass and particles; spatial MetalFX has no anti-aliasing of its own, so edges can look more jagged than Off. Needs a Mac with MetalFX (macOS 13+); the dynamic-resolution lock of the standard build is assumed.",
           "env": "NPS5_ASTRO_UPSCALING",
-          "default_option": "off",
+          "default_option": "metalfx720",
           "options": [
             {
               "name": "off",
@@ -38,7 +38,7 @@
             },
             {
               "name": "metalfx900",
-              "label": "MetalFX quality (900p, experimental)",
+              "label": "MetalFX quality (900p)",
               "setenv": {
                 "KYTY_ASTRO_TILE_GRID": "auto",
                 "KYTY_METALFX": "spatial"
@@ -46,7 +46,7 @@
             },
             {
               "name": "metalfx720",
-              "label": "MetalFX performance (720p, experimental)",
+              "label": "MetalFX performance (720p, default)",
               "setenv": {
                 "KYTY_ASTRO_TILE_GRID": "auto",
                 "KYTY_METALFX": "spatial"
