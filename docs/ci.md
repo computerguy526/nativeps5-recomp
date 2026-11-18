@@ -14,3 +14,5 @@ Run locally: `go test ./...` and `bash tools/<name>_unit.sh`.
 - The C unit tests build the arm64 runtime, so on the Intel macOS runner the job reports a notice and skips (green); they run for real with `scripts/ci/run-local.sh` on Apple silicon.
 
 Run the whole workflow locally before every push: `scripts/ci/run-local.sh` (commit first; clean `git worktree` of HEAD, no submodules, fresh venv, same `run:` steps as the workflow; `--job <id>`, `--x86` for the macOS job under Rosetta, `--act` for ubuntu jobs in nektos/act). Needs ruby, git and the job tools (shellcheck, go, cmake, ninja, actionlint as the job needs).
+
+Be gentle with GitHub (contributors and agents): no pushes until `scripts/ci/run-local.sh` passes; at most one push per branch, batching commits; do not poll `gh` in loops (look at most every ~5 minutes, or use one `gh run watch <run-id>`); never re-run jobs to test for flakiness (reproduce locally); no bulk API calls. Hammering the API gets the account suspended.
