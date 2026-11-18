@@ -18,6 +18,7 @@
 
 ## Safety
 
+- [ ] CI is green (CONTRIBUTING.md, "CI")
 - [ ] No game files, shaders, journals, frame dumps, caches or anything extracted from a game in the diff
 - [ ] No secrets, personal paths or machine names
 - [ ] New behaviour is off by default behind an environment switch, or the evidence shows it is neutral or better
