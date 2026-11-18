@@ -2098,6 +2098,8 @@ func (l *Arm64Lifter) liftRcp(inst disasm.Instruction, nextPC uint64, lines []st
 	}
 
 	if isScalar {
+		// The estimate is computed first: d may alias src2 and the merge copy of src1 would clobber it.
+		lines = append(lines, x86Recip(false, "v16", sLowV)...)
 		if isAvx {
 			if s1Reg, okS1 := inst.Inst.Args[1].(x86asm.Reg); okS1 {
 				if _, _, _, s1Low, _, _, _, okS1D := getVectorDesc(s1Reg); okS1D && dLowV != s1Low {
@@ -2105,7 +2107,6 @@ func (l *Arm64Lifter) liftRcp(inst disasm.Instruction, nextPC uint64, lines []st
 				}
 			}
 		}
-		lines = append(lines, x86Recip(false, "v16", sLowV)...)
 		lines = append(lines, fmt.Sprintf("    mov %s.s[0], v16.s[0]", dLowV))
 		if isAvx {
 			lines = append(lines, fmt.Sprintf("    movi %s.16b, #0", dHighV))
