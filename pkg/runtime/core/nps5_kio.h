@@ -91,48 +91,43 @@ static inline ssize_t nps5_krecv(int s, void *buf, size_t n, int flags) { NPS5_K
 // position (clearerr + fseeko drop the stdio buffer) where the stream can seek;
 // a pipe keeps the short count.
 static inline size_t nps5_kfread(void *buf, size_t size, size_t count, FILE *f) {
-  const size_t n = size * count;
-  unsigned tries = 0;
-  const off_t pos = (nps5_host_access_active() && n) ? ftello(f) : (off_t)-1;
-  nps5_host_write_begin(buf, n);
-  for (;;) {
-    errno = 0;
-    const size_t r = fread(buf, size, count, f);
-    const int e = errno;
-    // seek first: if the stream cannot go back, its error flag stays set (the
-    // caller sees a read error, not an EOF)
-    if (r < count && pos >= 0 && ferror(f) && e == EFAULT &&
-        nps5_host_write_refault(buf, n, &tries) &&
-        fseeko(f, pos, SEEK_SET) == 0) {
-      clearerr(f);
-      continue;
+    const size_t n = size * count;
+    unsigned tries = 0;
+    const off_t pos = (nps5_host_access_active() && n) ? ftello(f) : (off_t)-1;
+    nps5_host_write_begin(buf, n);
+    for (;;) {
+        errno = 0;
+        const size_t r = fread(buf, size, count, f);
+        const int e = errno;
+        // seek first: if the stream cannot go back, its error flag stays set (the
+        // caller sees a read error, not an EOF)
+        if (r < count && pos >= 0 && ferror(f) && e == EFAULT && nps5_host_write_refault(buf, n, &tries) &&
+            fseeko(f, pos, SEEK_SET) == 0) {
+            clearerr(f);
+            continue;
+        }
+        nps5_host_write_end(buf, n);
+        errno = e;
+        return r;
     }
-    nps5_host_write_end(buf, n);
-    errno = e;
-    return r;
-  }
 }
 // readv: as nps5_kread, for every buffer of the vector; the file position is
 // put back before a repeat where it can seek.
 static inline ssize_t nps5_kreadv(int fd, const struct iovec *iov, int n) {
   nps5_kio_iov(iov, n, 0);
-  const off_t pos = (iov && n > 0 && nps5_host_access_active())
-                        ? lseek(fd, 0, SEEK_CUR)
-                        : (off_t)-1;
+  const off_t pos = (iov && n > 0 && nps5_host_access_active()) ? lseek(fd, 0, SEEK_CUR) : (off_t)-1;
   ssize_t r = readv(fd, iov, n);
   int e = errno;
-  for (unsigned t = 0; r < 0 && e == EFAULT && pos >= 0 && t < NPS5_KIO_RETRIES;
-       t++) {
-    unsigned one = 0;
-    bool ours = false;
-    for (int i = 0; i < n; i++) {
-      one = 0;
-      ours |= nps5_host_write_refault(iov[i].iov_base, iov[i].iov_len, &one);
-    }
-    if (!ours || lseek(fd, pos, SEEK_SET) != pos)
-      break;
-    r = readv(fd, iov, n);
-    e = errno;
+  for (unsigned t = 0; r < 0 && e == EFAULT && pos >= 0 && t < NPS5_KIO_RETRIES; t++) {
+      unsigned one = 0;
+      bool ours = false;
+      for (int i = 0; i < n; i++) {
+          one = 0;
+          ours |= nps5_host_write_refault(iov[i].iov_base, iov[i].iov_len, &one);
+      }
+      if (!ours || lseek(fd, pos, SEEK_SET) != pos) break;
+      r = readv(fd, iov, n);
+      e = errno;
   }
   nps5_kio_iov(iov, n, 1);
   errno = e;

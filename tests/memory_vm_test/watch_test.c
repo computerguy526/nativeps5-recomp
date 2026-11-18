@@ -252,32 +252,26 @@ int main(int argc, char **argv) {
     memset(dst, 0, 2 * PG);
     r0 = nps5_host_write_refault_count();
     atomic_store(&g_reclose, 2);
-    CHECK(nps5_kreadv(fd, iov, 2) == 4000 &&
-              !memcmp(dst + 16, pat + 13, 1000) &&
+    CHECK(nps5_kreadv(fd, iov, 2) == 4000 && !memcmp(dst + 16, pat + 13, 1000) &&
               !memcmp(dst + PG + 16, pat + 1013, 3000),
           "nps5_kreadv with a page closed again");
-    CHECK(lseek(fd, 0, SEEK_CUR) == 13 + 4000 &&
-              nps5_host_write_refault_count() > r0,
+    CHECK(lseek(fd, 0, SEEK_CUR) == 13 + 4000 && nps5_host_write_refault_count() > r0,
           "position after a repeated readv");
     atomic_store(&g_reclose, 0);
     {
-      FILE *fp = fdopen(dup(fd), "rb");
-      CHECK(fp && fseeko(fp, 9, SEEK_SET) == 0, "fdopen");
-      memset(dst, 0, 2 * PG);
-      r0 = nps5_host_write_refault_count();
-      atomic_store(&g_reclose, 2);
-      CHECK(nps5_kfread(dst + PG - 8192, 1, 2 * 8192, fp) == 2 * 8192 &&
-                !memcmp(dst + PG - 8192, pat + 9, 2 * 8192),
-            "nps5_kfread across a page closed again");
-      CHECK(ftello(fp) == 9 + 2 * 8192 && !ferror(fp),
-            "stream position and error flag after a repeated fread");
-      CHECK(
-          nps5_host_write_refault_count() > r0,
-          "the fread was repeated (stdio read straight into the closed page)");
-      printf("refault: fread repeated %llu times\n",
-             (unsigned long long)(nps5_host_write_refault_count() - r0));
-      atomic_store(&g_reclose, 0);
-      fclose(fp);
+        FILE *fp = fdopen(dup(fd), "rb");
+        CHECK(fp && fseeko(fp, 9, SEEK_SET) == 0, "fdopen");
+        memset(dst, 0, 2 * PG);
+        r0 = nps5_host_write_refault_count();
+        atomic_store(&g_reclose, 2);
+        CHECK(nps5_kfread(dst + PG - 8192, 1, 2 * 8192, fp) == 2 * 8192 && !memcmp(dst + PG - 8192, pat + 9, 2 * 8192),
+              "nps5_kfread across a page closed again");
+        CHECK(ftello(fp) == 9 + 2 * 8192 && !ferror(fp), "stream position and error flag after a repeated fread");
+        CHECK(nps5_host_write_refault_count() > r0,
+              "the fread was repeated (stdio read straight into the closed page)");
+        printf("refault: fread repeated %llu times\n", (unsigned long long)(nps5_host_write_refault_count() - r0));
+        atomic_store(&g_reclose, 0);
+        fclose(fp);
     }
     // a page that is closed again every time is given up after NPS5_KIO_RETRIES: EFAULT, as for a bad pointer
     atomic_store(&g_reclose, 1 << 20);
