@@ -1266,13 +1266,13 @@ static size_t g_scene_klen = 7;
 static _Atomic(const char *) g_scene_current;
 static char g_scene_skip[160] = "ui_";
 static void scene_set_current(const char *entry) {
-  if (atomic_load_explicit(&g_scene_current, memory_order_relaxed) == entry) return;
-  if (nps5_scene_tag_skipped(entry, g_scene_skip)) return;
-  atomic_store_explicit(&g_scene_current, entry, memory_order_release);
+    if (atomic_load_explicit(&g_scene_current, memory_order_relaxed) == entry) return;
+    if (nps5_scene_tag_skipped(entry, g_scene_skip)) return;
+    atomic_store_explicit(&g_scene_current, entry, memory_order_release);
 }
 __attribute__((visibility("default"), used)) const char *nps5_vfs_current_scene(void) {
-  const char *c = atomic_load_explicit(&g_scene_current, memory_order_acquire);
-  return c ? c : "";
+    const char *c = atomic_load_explicit(&g_scene_current, memory_order_acquire);
+    return c ? c : "";
 }
 // Parse the key value (NULL = default) into key/klen; returns 0 when scene logging is off. Pure, for the unit test.
 int ps4_vfs_scene_key_parse(const char *v, char *key, size_t cap, size_t *klen) {
@@ -1295,7 +1295,10 @@ void ps4_vfs_scene_reset(void) {
   g_lvl_off = getenv("NPS5_NO_LEVEL_LOG") != NULL;
   g_lvl_alias = getenv("NPS5_NO_LEVEL_ALIAS") == NULL;
   if (!ps4_vfs_scene_key_parse(getenv("NPS5_SCENE_OPEN_KEY"), g_scene_key, sizeof g_scene_key, &g_scene_klen)) g_lvl_off = 1;
-  { const char *sk = getenv("NPS5_SCENE_TAG_SKIP"); if (sk) snprintf(g_scene_skip, sizeof g_scene_skip, "%s", sk); }
+  {
+      const char *sk = getenv("NPS5_SCENE_TAG_SKIP");
+      if (sk) snprintf(g_scene_skip, sizeof g_scene_skip, "%s", sk);
+  }
   pthread_mutex_unlock(&g_lvl_mu);
 }
 __attribute__((constructor)) static void lvl_init_clock(void) {
@@ -1323,7 +1326,11 @@ int ps4_vfs_note_scene_path(const char *path) {
   }
   nm[n] = 0;
   int cnt = atomic_load_explicit(&g_lvl_count, memory_order_acquire);
-  for (int i = 0; i < cnt; i++) if (!strcmp(g_lvl_names[i], nm)) { scene_set_current(g_lvl_names[i]); return 0; }
+  for (int i = 0; i < cnt; i++)
+      if (!strcmp(g_lvl_names[i], nm)) {
+          scene_set_current(g_lvl_names[i]);
+          return 0;
+      }
   int added = 0;
   pthread_mutex_lock(&g_lvl_mu);
   cnt = atomic_load_explicit(&g_lvl_count, memory_order_relaxed);

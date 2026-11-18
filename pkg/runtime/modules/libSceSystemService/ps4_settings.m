@@ -104,8 +104,9 @@ typedef struct {
     int pro;     // PS4 Pro mode
     int upscale; // MetalFX upscaling
     int hud;     // Metal performance HUD
-    int prep;    // shader preparation at launch: 0 = all (every known pipeline before the game), 1 = scene
-                 // (the scene the save continues in first, the rest in the background)
+    // shader preparation at launch: 0 = all (every known pipeline before the game), 1 = scene
+    // (the scene the save continues in first, the rest in the background)
+    int prep;
 } HostSettings;
 
 static HostSettings g_settings = {-1, 1, 0, 1, 0};
@@ -212,13 +213,15 @@ static void show_settings_dialog(HostSettings *s) {
         [prep addItemWithTitle:@"All shaders before the game (default)"];
         [prep addItemWithTitle:@"Next scene first, the rest in the background"];
         [prep selectItemAtIndex:s->prep ? 1 : 0];
-        prepLabel.toolTip = @"All: nothing compiles while you play. Scene: a shorter start; shaders of other scenes are "
-                            @"prepared behind the game.";
+        prepLabel.toolTip =
+            @"All: nothing compiles while you play. Scene: a shorter start; shaders of other scenes are "
+            @"prepared behind the game.";
         prep.toolTip = prepLabel.toolTip;
         NSButton *remember = [NSButton checkboxWithTitle:@"Запомнить / Remember" target:nil action:nil];
         remember.state = NSControlStateValueOn;
         // Game patches: "<title>:" and a pop-up with the patched choice first; the profile default is marked.
-        NSMutableArray<NSView *> *views = [NSMutableArray arrayWithArray:@[ langLabel, popup, pro, up, hud, prepLabel, prep ]];
+        NSMutableArray<NSView *> *views =
+            [NSMutableArray arrayWithArray:@[ langLabel, popup, pro, up, hud, prepLabel, prep ]];
         NSMutableArray<NSPopUpButton *> *patchPopups = [NSMutableArray array];
         const int npatch = nps5_patches_count();
         for (int i = 0; i < npatch; i++) {
@@ -318,8 +321,9 @@ void ps4_host_settings_init(void) {
     g_settings = s;
     g_settings_ready = true;
     nps5_patches_resolve(); // game patches: environment overrides, flag bytes, one log line each
-    fprintf(stderr, "[ps4-settings] language %d, PS4 Pro mode %s, MetalFX upscaling %s, FPS HUD %s, shader preparation %s\n", s.lang,
-            s.pro ? "on" : "off", s.upscale ? "on" : "off", s.hud ? "on" : "off", s.prep ? "scene" : "all");
+    fprintf(stderr,
+            "[ps4-settings] language %d, PS4 Pro mode %s, MetalFX upscaling %s, FPS HUD %s, shader preparation %s\n",
+            s.lang, s.pro ? "on" : "off", s.upscale ? "on" : "off", s.hud ? "on" : "off", s.prep ? "scene" : "all");
 }
 
 int ps4_host_choose_language(void) {
