@@ -6,6 +6,7 @@
 #include "nps5_diag.h"
 #include "ps4_equeue.h"
 #include "ps4_vfs.h"
+#include "ps4_savedata.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -311,6 +312,71 @@ static void test_savedata(const char *tmp) {
   CHECK(mount3("SLOT1", 0x2, 0, res) == 0);
   reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2);
   printf("savedata: round trip under %s ok\n", root);
+}
+
+// sceSaveDataTransferringMount opens ANOTHER title's save: <root>/transfer/<titleId>/user_<id>/<dir>, read-only,
+// NOT_FOUND when absent; never the running title's own <root>/user_<id>/<dir> (the v1.0.1 save-load crash).
+static int transfer_mount(const char *title, const char *dir, uint64_t result) {
+  uint64_t m = galloc(sizeof(SdTransferringMount));
+  SdTransferringMount *tm = (SdTransferringMount *)H(m);
+  memset(tm, 0, sizeof *tm);
+  tm->userId = 0x10000000;
+  tm->dirName = gstr(dir);
+  tm->titleId = title ? gstr(title) : 0;
+  return sceSaveDataTransferringMount(C, tm, (SdMountResult *)H(result));
+}
+
+static void test_savedata_transfer(const char *tmp) {
+  const int32_t NOT_FOUND = (int32_t)0x809f0008, PARAM = (int32_t)0x809f0000, BUSY = (int32_t)0x809f0003;
+  char root[600]; snprintf(root, sizeof root, "%s/save", tmp);
+  uint64_t res = galloc(0x40), res2 = galloc(0x40);
+  // the running title's own sce_sdmemory exists and must not be what a transferring mount opens
+  CHECK(mount3("sce_sdmemory", 0x20 | 0x2, 96, res) == 0);
+  { int fd = ps4_vfs_open("/savedata0/memory.dat", O_WRONLY | O_CREAT | O_TRUNC, 0644); CHECK(fd >= 0); if (fd >= 0) ps4_vfs_close(fd); }
+  reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2); CHECK(RAX32 == 0);
+  CHECK(transfer_mount("PPSA01325", "sce_sdmemory", res) == NOT_FOUND);          // no source save: NOT_FOUND
+  char p[900]; struct stat st;
+  snprintf(p, sizeof p, "%s/transfer", root);
+  CHECK(stat(p, &st) != 0);                                                       // and nothing was created
+  // a title id that is not one path component is refused ('..' would reach <root>/user_<id>/sce_sdmemory)
+  CHECK(transfer_mount("..", "sce_sdmemory", res) == PARAM);
+  CHECK(transfer_mount("../x", "sce_sdmemory", res) == PARAM);
+  CHECK(transfer_mount("", "sce_sdmemory", res) == PARAM);
+  CHECK(transfer_mount(NULL, "sce_sdmemory", res) == PARAM);
+  CHECK(transfer_mount("PPSA01325", "..", res) == PARAM);
+  // a source save present: mounted read-only
+  char cmd[1400];
+  snprintf(cmd, sizeof cmd, "mkdir -p '%s/transfer/PPSA01325/user_10000000/sce_sdmemory/sce_sys' && printf x > "
+           "'%s/transfer/PPSA01325/user_10000000/sce_sdmemory/sce_sys/param.sfo' && printf PLAYROOM > "
+           "'%s/transfer/PPSA01325/user_10000000/sce_sdmemory/memory.dat'", root, root, root);
+  CHECK(system(cmd) == 0);
+  CHECK(transfer_mount("PPSA01325", "sce_sdmemory", res) == 0);
+  char mp[32]; snprintf(mp, sizeof mp, "%s", (char *)H(res));
+  char path[64], back[16] = {0};
+  snprintf(path, sizeof path, "%s/memory.dat", mp);
+  CHECK(rd_file(path, back, sizeof back) == 8 && memcmp(back, "PLAYROOM", 8) == 0);
+  errno = 0; CHECK(ps4_vfs_open(path, O_WRONLY, 0) == -1 && errno == EROFS);
+  snprintf(path, sizeof path, "%s/new.dat", mp);
+  errno = 0; CHECK(ps4_vfs_open(path, O_WRONLY | O_CREAT, 0644) == -1 && errno == EROFS);
+  uint64_t t = gstr("x"), icon = galloc(sizeof(SdIcon));
+  CHECK(sceSaveDataSetParam(C, res, 1 /*TITLE*/, t, 2) != 0);
+  SdIcon *ic = (SdIcon *)H(icon); memset(ic, 0, sizeof *ic); ic->buf = t; ic->bufSize = ic->dataSize = 1;
+  CHECK(sceSaveDataSaveIcon(C, res, ic) != 0);
+  snprintf(p, sizeof p, "%s/transfer/PPSA01325/user_10000000/sce_sdmemory/sce_sys/icon0.png", root);
+  CHECK(stat(p, &st) != 0);                                                       // the other title's save is untouched
+  // the same source twice is BUSY; the own directory of the same name is not
+  CHECK(transfer_mount("PPSA01325", "sce_sdmemory", res2) == BUSY);
+  CHECK(mount3("sce_sdmemory", 0x2, 0, res2) == 0);
+  reset_regs(); C->rdi = 0; C->rsi = res2; CALL(shim_sceSaveDataUmount2); CHECK(RAX32 == 0);
+  reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2); CHECK(RAX32 == 0);
+  // APS5_SAVEDATA_TRANSFER_FALLBACK=self: the old own-directory read/write mount
+  setenv("APS5_SAVEDATA_TRANSFER_FALLBACK", "self", 1);
+  CHECK(transfer_mount("PPSA01325", "sce_sdmemory", res) == 0);
+  snprintf(path, sizeof path, "%s/memory.dat", (char *)H(res));
+  CHECK(rd_file(path, back, sizeof back) == 0);                                    // the own (empty) memory.dat
+  unsetenv("APS5_SAVEDATA_TRANSFER_FALLBACK");
+  reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2); CHECK(RAX32 == 0);
+  printf("hlesys: savedata transferring mount ok\n");
 }
 
 // -------------------------------------------------------------------------------------- Apr
@@ -1026,6 +1092,7 @@ int main(void) {
   test_app0_readonly(appdir);
   test_savedata(tmp);
   test_savedata_modes();
+  test_savedata_transfer(tmp);
   test_apr(tmp);
   test_apr_more(tmp);
   test_apr_hardening();

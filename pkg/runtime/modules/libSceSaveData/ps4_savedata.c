@@ -703,11 +703,21 @@ int32_t sceSaveDataMount2(GuestContext *ctx, const SdMount2 *mount, SdMountResul
 }
 
 // The save another title made, for sceSaveDataTransferringMount: <save root>/transfer/<titleId>/user_<id>/<dir>.
+// title_id must have passed sd_transfer_title_ok (one path component, no '.' or '/').
 static void sd_transfer_dir_path(const char *title_id, int32_t user_id, const char *dir_name, char *out, size_t out_size) {
-    char game_dir[1024], clean[64];
+    char game_dir[1024];
     get_game_save_dir(game_dir, sizeof(game_dir));
-    sanitize_filename(title_id, clean, sizeof(clean));
-    snprintf(out, out_size, "%s/transfer/%s/user_%08x/%s", game_dir, clean[0] ? clean : "unknown", (uint32_t)user_id, dir_name);
+    snprintf(out, out_size, "%s/transfer/%s/user_%08x/%s", game_dir, title_id, (uint32_t)user_id, dir_name);
+}
+
+// A title id is letters and digits (PPSA01325, CUSA00001; SdTitleId holds at most 15 characters). Anything else
+// (empty, '..', '/', spaces) would leave <save root>/transfer/ - '..' even reaches the running title's own
+// user_<id>/<dir>, the directory this mount must never open - so it is a parameter error.
+static bool sd_transfer_title_ok(const char *title_id) {
+    if (!title_id[0]) return false;
+    for (const char *c = title_id; *c; c++)
+        if (!isalnum((unsigned char)*c)) return false;
+    return true;
 }
 
 int32_t sceSaveDataTransferringMount(GuestContext *ctx, const SdTransferringMount *mount, SdMountResult *result) {
@@ -729,6 +739,10 @@ int32_t sceSaveDataTransferringMount(GuestContext *ctx, const SdTransferringMoun
         size_t n = strnlen(tid, SD_TITLE_ID_SIZE - 1);
         memcpy(title_id, tid, n);
         title_id[n] = '\0';
+    }
+    if (!sd_transfer_title_ok(title_id)) {
+        fprintf(stderr, "[ps4-savedata] TransferringMount: title id missing or not alphanumeric -> PARAMETER\n");
+        return SD_ERR_PARAMETER;
     }
     char host_path[1024];
     sd_transfer_dir_path(title_id, mount->userId, dir_name, host_path, sizeof(host_path));
@@ -943,6 +957,10 @@ int32_t sceSaveDataSaveIcon(GuestContext *ctx, uint64_t mount_point_addr, const 
     if (!slot) {
         pthread_mutex_unlock(&g_savedata_mutex);
         return SD_ERR_NOT_MOUNTED;
+    }
+    if (slot->read_only) { // read-only mounts (RDONLY, another title's save via TransferringMount) are never written; as SetParam
+        pthread_mutex_unlock(&g_savedata_mutex);
+        return SD_ERR_INTERNAL;
     }
     char path[1200];
     snprintf(path, sizeof(path), "%s/sce_sys", slot->host_path);
