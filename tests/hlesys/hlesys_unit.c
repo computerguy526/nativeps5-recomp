@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -992,6 +993,60 @@ static void test_dirent_types(const char *tmp) {
     CHECK(stat(q, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
+// review-recomp: the per-directory cache on a farm-sized folder (cached path: the folder's mtime is set into the past), a dangling
+// link whose target appears later without the link's folder changing (must become visible: misses are never cached), and a
+// directory changed within the racy window.
+static void test_dirent_cache(const char *tmp) {
+    char d[600], p[700], q[700];
+    snprintf(d, sizeof d, "%s/dirfix_cache", tmp);
+    mkdir(d, 0755);
+    snprintf(p, sizeof p, "%s/target.bin", tmp);
+    FILE *f = fopen(p, "w");
+    if (f) fclose(f);
+    enum { N = 3000 };
+    for (int i = 0; i < N; i++) {
+        snprintf(q, sizeof q, "%s/some_long_shared_prefix_anim_%05d.anim", d, i);
+        CHECK(symlink(p, q) == 0);
+    }
+    snprintf(q, sizeof q, "%s/late.anim", d);
+    snprintf(p, sizeof p, "%s/late_target.anim", tmp);
+    unlink(p);
+    CHECK(symlink(p, q) == 0);
+    struct timeval past[2] = {{1000000000, 0}, {1000000000, 0}};
+    CHECK(utimes(d, past) == 0);
+    for (int pass = 0; pass < 3; pass++) {
+        DIR *dir = opendir(d);
+        int reg = 0, hidden = 0, other = 0;
+        struct dirent *e;
+        while (dir && (e = readdir(dir)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            uint8_t t = ps4_vfs_resolve_dirent_type(dirfd(dir), e->d_name, e->d_type, NULL);
+            if (t == DT_REG)
+                reg++;
+            else if (t == 0xFF && !strcmp(e->d_name, "late.anim"))
+                hidden++;
+            else
+                other++;
+        }
+        if (dir) closedir(dir);
+        CHECK(reg == N + (pass == 2) && hidden == (pass < 2) && other == 0);
+        if (pass == 1) { // the target appears; the farm folder (and its mtime) is untouched
+            f = fopen(p, "w");
+            if (f) fclose(f);
+        }
+    }
+    // a folder modified just now is answered without the cache, and still correctly
+    snprintf(q, sizeof q, "%s/fresh.anim", d);
+    CHECK(symlink("/nonexistent/dirfix_target", q) == 0);
+    int fd = open(d, O_RDONLY);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "fresh.anim", DT_LNK, NULL) == 0xFF);
+    unlink(q);
+    snprintf(p, sizeof p, "%s/target.bin", tmp);
+    CHECK(symlink(p, q) == 0);
+    CHECK(ps4_vfs_resolve_dirent_type(fd, "fresh.anim", DT_LNK, NULL) == DT_REG);
+    close(fd);
+}
+
 static void test_level_open(void) {
   test_framerate_cfg();
   CHECK(ps4_vfs_note_level_path("/app0/data/prein/levels/hoover_beach/a.bin") == 1);
@@ -1170,6 +1225,7 @@ int main(void) {
   test_misc();
   test_level_open();
   test_dirent_types(tmp);
+  test_dirent_cache(tmp);
 
   char cmd[700]; snprintf(cmd, sizeof cmd, "rm -rf %s", tmp); system(cmd);
   test_ampr_external_events();

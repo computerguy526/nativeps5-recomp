@@ -2018,14 +2018,26 @@ void ps4_vfs_destroy(void) {
 // the guest sees the TARGET's type, like stat/sceKernelStat already do. Returns the type to report, or 0xFF = hide the entry (dangling
 // link). A link to a device/socket/fifo reports DT_UNKNOWN (never DT_LNK). Results are cached per directory (dev, ino, mtime) so a level
 // folder that the game lists many times costs one stat per entry once. *resolved (optional) is set when the entry needed resolving.
+//
+// Cache rules (review-recomp 2026-11-19):
+//  - lookups go through a per-directory hash index: farm folders hold up to ~46k entries and a linear scan made one listing O(n^2)
+//    (about 3 s per listing of a 46k folder, under the getdents lock);
+//  - only successful stats are cached. A failed one (dangling link, EACCES, ELOOP) is retried next time: the link's target can appear
+//    later without the link's own directory changing, so a cached miss would hide the entry for the rest of the run;
+//  - a directory whose mtime is within DIRTYPE_RACY_SEC of now is not cached (file systems with 1-2 s mtime granularity could
+//    change it again without a visible mtime change);
+//  - an entry is added only if the slot still describes the same directory version (dev, ino, mtime) after the unlocked stat.
 #define DIRTYPE_CACHE_DIRS 32
+#define DIRTYPE_RACY_SEC 2
 typedef struct {
     dev_t dev;
     ino_t ino;
     struct timespec mt;
+    int live;
     int n, cap;
     char **names;
     uint8_t *types;
+    int32_t *idx; // open-addressing hash: entry index + 1, 0 = empty; idxcap = 2 * cap (power of two)
     unsigned long stamp;
 } DirTypeCache;
 static DirTypeCache g_dtc[DIRTYPE_CACHE_DIRS];
@@ -2037,7 +2049,65 @@ static void dtc_clear(DirTypeCache *c) {
         free(c->names[i]);
     free(c->names);
     free(c->types);
+    free(c->idx);
     memset(c, 0, sizeof(*c));
+}
+
+static uint32_t dtc_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    while (*s)
+        h = (h ^ (uint8_t)*s++) * 16777619u;
+    return h;
+}
+
+static int dtc_find(const DirTypeCache *c, const char *name, uint32_t h) {
+    if (!c->idx) return -1;
+    uint32_t mask = (uint32_t)c->cap * 2 - 1;
+    for (uint32_t k = h & mask;; k = (k + 1) & mask) {
+        int32_t v = c->idx[k];
+        if (v == 0) return -1;
+        if (strcmp(c->names[v - 1], name) == 0) return v - 1;
+    }
+}
+
+static int dtc_same(const DirTypeCache *c, const struct stat *ds) {
+    return c->live && c->dev == ds->st_dev && c->ino == ds->st_ino && c->mt.tv_sec == ds->st_mtimespec.tv_sec &&
+           c->mt.tv_nsec == ds->st_mtimespec.tv_nsec;
+}
+
+// Adds name -> t; on allocation failure the entry is simply not cached.
+static void dtc_add(DirTypeCache *c, const char *name, uint32_t h, uint8_t t) {
+    if (dtc_find(c, name, h) >= 0) return; // another thread resolved it meanwhile
+    if (c->n == c->cap) {
+        int nc = c->cap ? c->cap * 2 : 64;
+        char **nn = (char **)realloc(c->names, nc * sizeof(char *));
+        if (!nn) return;
+        c->names = nn;
+        uint8_t *nt = (uint8_t *)realloc(c->types, nc);
+        if (!nt) return;
+        c->types = nt;
+        int32_t *ni = (int32_t *)calloc((size_t)nc * 2, sizeof(int32_t));
+        if (!ni) return;
+        free(c->idx);
+        c->idx = ni;
+        c->cap = nc;
+        uint32_t mask = (uint32_t)nc * 2 - 1;
+        for (int i = 0; i < c->n; i++) { // rehash
+            uint32_t k = dtc_hash(c->names[i]) & mask;
+            while (c->idx[k])
+                k = (k + 1) & mask;
+            c->idx[k] = i + 1;
+        }
+    }
+    char *dup = strdup(name);
+    if (!dup) return;
+    uint32_t mask = (uint32_t)c->cap * 2 - 1;
+    uint32_t k = h & mask;
+    while (c->idx[k])
+        k = (k + 1) & mask;
+    c->names[c->n] = dup;
+    c->types[c->n] = t;
+    c->idx[k] = ++c->n;
 }
 
 uint8_t ps4_vfs_resolve_dirent_type(int dirfd_, const char *name, uint8_t d_type, int *resolved) {
@@ -2045,14 +2115,15 @@ uint8_t ps4_vfs_resolve_dirent_type(int dirfd_, const char *name, uint8_t d_type
     if (resolved) *resolved = 1;
     struct stat ds;
     DirTypeCache *c = NULL;
-    int have_ds = fstat(dirfd_, &ds) == 0;
-    if (have_ds) {
+    const uint32_t h = dtc_hash(name);
+    int cacheable = fstat(dirfd_, &ds) == 0 && ds.st_mtimespec.tv_sec < time(NULL) - DIRTYPE_RACY_SEC;
+    if (cacheable) {
         pthread_mutex_lock(&g_dtc_lock);
         DirTypeCache *victim = &g_dtc[0];
         for (int i = 0; i < DIRTYPE_CACHE_DIRS; i++) {
             DirTypeCache *e = &g_dtc[i];
-            if (e->names && e->dev == ds.st_dev && e->ino == ds.st_ino) {
-                if (e->mt.tv_sec == ds.st_mtimespec.tv_sec && e->mt.tv_nsec == ds.st_mtimespec.tv_nsec) {
+            if (e->live && e->dev == ds.st_dev && e->ino == ds.st_ino) {
+                if (dtc_same(e, &ds)) {
                     c = e;
                     break;
                 }
@@ -2063,42 +2134,31 @@ uint8_t ps4_vfs_resolve_dirent_type(int dirfd_, const char *name, uint8_t d_type
             if (e->stamp < victim->stamp) victim = e;
         }
         if (!c) {
-            if (victim->names) dtc_clear(victim);
+            dtc_clear(victim);
             victim->dev = ds.st_dev;
             victim->ino = ds.st_ino;
             victim->mt = ds.st_mtimespec;
+            victim->live = 1;
             c = victim;
         }
         c->stamp = ++g_dtc_clock;
-        for (int i = 0; i < c->n; i++)
-            if (strcmp(c->names[i], name) == 0) {
-                uint8_t t = c->types[i];
-                pthread_mutex_unlock(&g_dtc_lock);
-                return t == 0xFE ? (d_type == DT_LNK ? 0xFF : d_type) : t;
-            }
-        pthread_mutex_unlock(&g_dtc_lock);
-    }
-    uint8_t t; // 0xFE in the cache = stat failed (the answer then depends on the caller's d_type)
-    struct stat ts;
-    if (fstatat(dirfd_, name, &ts, 0) == 0)
-        t = S_ISDIR(ts.st_mode) ? DT_DIR : S_ISREG(ts.st_mode) ? DT_REG : DT_UNKNOWN;
-    else
-        t = 0xFE;
-    if (c) {
-        pthread_mutex_lock(&g_dtc_lock);
-        if (c->dev == ds.st_dev && c->ino == ds.st_ino) { // slot not recycled meanwhile
-            if (c->n == c->cap) {
-                int nc = c->cap ? c->cap * 2 : 64;
-                c->names = (char **)realloc(c->names, nc * sizeof(char *));
-                c->types = (uint8_t *)realloc(c->types, nc);
-                c->cap = nc;
-            }
-            c->names[c->n] = strdup(name);
-            c->types[c->n] = t;
-            c->n++;
+        int i = dtc_find(c, name, h);
+        if (i >= 0) {
+            uint8_t t = c->types[i];
+            pthread_mutex_unlock(&g_dtc_lock);
+            return t;
         }
         pthread_mutex_unlock(&g_dtc_lock);
     }
-    return t == 0xFE ? (d_type == DT_LNK ? 0xFF : d_type)
-                     : t; // dangling link: hide; DT_UNKNOWN that cannot be stat'ed: keep
+    struct stat ts;
+    if (fstatat(dirfd_, name, &ts, 0) != 0)
+        return d_type == DT_LNK ? 0xFF
+                                : d_type; // dangling link: hide; DT_UNKNOWN that cannot be stat'ed: keep (never cached)
+    uint8_t t = S_ISDIR(ts.st_mode) ? DT_DIR : S_ISREG(ts.st_mode) ? DT_REG : DT_UNKNOWN;
+    if (c) {
+        pthread_mutex_lock(&g_dtc_lock);
+        if (dtc_same(c, &ds)) dtc_add(c, name, h, t); // slot not recycled / directory not changed meanwhile
+        pthread_mutex_unlock(&g_dtc_lock);
+    }
+    return t;
 }
