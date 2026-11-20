@@ -74,6 +74,14 @@ func translationStamp(cfg *Config) (string, error) {
 		}
 		fmt.Fprintf(h, "patches=%x\n", sha256.Sum256(pb))
 	}
+	if cfg.HLEReplace != "" {
+		// the replacement table decides which functions become shims or wraps: a changed table is a different translation
+		rb, err := os.ReadFile(cfg.HLEReplace)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "hlereplace=%x|%t\n", sha256.Sum256(rb), cfg.HLEReplaceUnverified)
+	}
 	if cfg.SeedsFrom != "" {
 		seeds, err := readTier1Seeds(cfg.SeedsFrom)
 		if err != nil {
