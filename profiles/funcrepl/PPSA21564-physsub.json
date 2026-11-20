@@ -16,9 +16,52 @@
       "sha256": "2326f834cfda62fc746d3f0e5eddd00e95631f1aa510f986dfed23f9b8d846c6",
       "shim": "nps5_physsub_cloth_step",
       "wrap": true
+    },
+    {
+      "name": "JungleBridge::Step",
+      "addr": "0x5ab75d0",
+      "size": 2105,
+      "sha256": "e142b1944173a239a30264fc831b51d0b59c852f05120423ac4db6d27e6163eb",
+      "shim": "nps5_physsub_spring_step_a",
+      "wrap": true
+    },
+    {
+      "name": "SuspentionBridge::Step",
+      "addr": "0x4db75b0",
+      "size": 2364,
+      "sha256": "b8749a1dbc0742b92eba3ddf6dea1b78dc443f63a07e495ff8e06752fe8774ba",
+      "shim": "nps5_physsub_spring_step_b",
+      "wrap": true
     }
   ],
   "params": [
-    {"key": "physsub.cloth.skip_flag", "value": "0x195"}
+    {
+      "key": "physsub.cloth.skip_flag",
+      "value": "0x195"
+    },
+    {
+      "key": "physsub.spring.a.nodes",
+      "value": "0x5e0"
+    },
+    {
+      "key": "physsub.spring.b.nodes",
+      "value": "0x988"
+    },
+    {
+      "key": "physsub.spring.stride",
+      "value": "0xc0"
+    },
+    {
+      "key": "physsub.spring.pos",
+      "value": "0x10"
+    },
+    {
+      "key": "physsub.spring.vel",
+      "value": "0x70"
+    },
+    {
+      "key": "physsub.spring.fixed",
+      "value": "0x4"
+    }
   ]
 }
