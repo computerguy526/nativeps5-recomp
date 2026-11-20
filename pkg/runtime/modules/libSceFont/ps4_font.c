@@ -93,6 +93,40 @@ static const char *g_fallback_font_candidates[] = {
     NULL
 };
 
+static void font_active_weight(const InternalFontHandle *h, int use_render, float *wx, float *wy) {
+    *wx = h->weight_x; *wy = h->weight_y;
+    if (use_render && (h->render_weight_x != 1.0f || h->render_weight_y != 1.0f)) { *wx = h->render_weight_x; *wy = h->render_weight_y; }
+}
+
+// fontfix: the horizontal layout of the PS5 font library's FreeType driver (AnyPS5 libSceFontFt Driver.cpp
+// LibraryComputeLayout, a reconstruction of the real driver) is built from the face BOUNDING BOX, not from the
+// hhea ascender/height: baselineOffset = bbox.yMax, lineAdvance = bbox.yMax - bbox.yMin, both FT_MulFix'ed by the
+// current y scale (26.6), and decorationExtent = half the effect-weight growth (0 at weight 1). Astro Bot places the
+// first baseline of its banner/title text with it (guest 0x12d6ede stores baselineOffset; the banner surface puts the
+// baseline at (480 - size + baselineOffset) / 2 + ...): with the hhea ascender (0.82 em for LevelNameFont, bbox yMax is
+// 1.274 em) the baseline came out 70 px too high at 310 px and the tops of the capitals were cut off.
+// NPS5_FONT_LAYOUT=hhea restores the old values.
+static int font_layout_hhea(void) { static int v = -1; if (v < 0) { const char *e = getenv("NPS5_FONT_LAYOUT"); v = (e && strcmp(e, "hhea") == 0); } return v; }
+// Caller holds g_font_mutex and has applied the size. Returns 1 and fills the three values from the face bbox.
+static int font_bbox_layout(const InternalFontHandle *h, float weight_y, float *baseline, float *line_adv, float *deco) {
+    if (font_layout_hhea() || !h->ft_face || !h->ft_face->size) return 0;
+    FT_Face f = h->ft_face;
+    const FT_Fixed ys = f->size->metrics.y_scale;
+    FT_Pos ymax = FT_MulFix(f->bbox.yMax, ys), ymin = FT_MulFix(f->bbox.yMin, ys);
+    float effect = 0.0f;
+    const float d = weight_y - 1.0f;
+    if (d != 0.0f && d == d) {
+        const FT_Pos em = FT_MulFix((FT_Long)f->units_per_EM, ys);           // em size in 26.6
+        const FT_Pos half = (FT_Pos)(d * (float)em) / 2;
+        effect = (float)half / 64.0f;
+        ymin -= half; ymax += half;
+    }
+    *baseline = (float)ymax / 64.0f;
+    *line_adv = (float)(ymax - ymin) / 64.0f;
+    *deco = effect;
+    return 1;
+}
+
 static FT_Face load_system_fallback_face(FT_Library ft_lib) {
     for (int i = 0; g_fallback_font_candidates[i] != NULL; i++) {
         const char *candidate = g_fallback_font_candidates[i];
@@ -1264,6 +1298,11 @@ static void font_render_glyph_common(GuestContext *ctx, int add_baseline) {
         if (add_baseline) {
             float asc = (float)(h->ft_face->size->metrics.ascender >> 6);
             if (asc <= 0.0f) asc = hgt * 0.8f;
+            {   // the library adds the layout baseline (render scale, render weight), see font_bbox_layout
+                float b, la, de, wx, wy;
+                font_active_weight(h, 1, &wx, &wy);
+                if (font_bbox_layout(h, wy, &b, &la, &de)) asc = b;
+            }
             y_used = y + asc;
         }
 
@@ -1843,12 +1882,19 @@ void shim_sceFontGetHorizontalLayout(GuestContext *ctx) {
             line_adv = (ft_hgt > 0.0f) ? ft_hgt : (asc - desc);
         }
     }
+    float bb_base = 0.0f, bb_adv = 0.0f, bb_deco = 0.0f;
+    const int bbox_ok = font_bbox_layout(h, h->weight_y, &bb_base, &bb_adv, &bb_deco);
     pthread_mutex_unlock(&g_font_mutex);
 
     OrbisFontHorizontalLayout *layout = (OrbisFontHorizontalLayout *)(ctx->mem_base + layoutGuest);
     layout->baselineOffset = asc;
     layout->lineAdvance = line_adv;
     layout->decorationExtent = (desc < 0.0f) ? -desc : 0.0f;
+    if (bbox_ok) {
+        layout->baselineOffset = bb_base;
+        layout->lineAdvance = bb_adv;
+        layout->decorationExtent = bb_deco;
+    }
 
     ctx->rax = ORBIS_FONT_OK;
     SHIM_RETURN();
