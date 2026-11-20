@@ -385,29 +385,26 @@ static struct {
   double ema, cur, lo, hi;
   uint32_t frames, tries, rewrites;
   Nps5Fr l;
-  int no_freeze_av, no_freeze_load;
-  unsigned long long last_bytes; uint64_t bytes_ns, load_until_ns; int last_phase;
+  int no_freeze_av, no_freeze_load, last_frozen;
+  Nps5FrLoad load;
 } g_fr;
 
 // Freeze sources (see nps5_framerate_logic.h). Weak refs: the video shim and the VFS counters live in other modules.
 extern int nps5_avplayer_playing_count(void) __attribute__((weak_import));
 extern _Atomic int nps5_vfs_phase __attribute__((weak_import));
 extern _Atomic unsigned long long nps5_vfs_bytes_read __attribute__((weak_import));
-// Loading = a new levels/<name> phase appeared in the last 5 s, or the VFS read more than 6 MB within a second; the
-// latter stays on for 2 s after the last such second (loading card up / first content frames still settling).
+// Loading = a new levels/<name> phase appeared in the last 5 s, or the VFS read more than 6 MB within a second (+2 s);
+// the VFS part is capped per run of busy seconds (NPS5_FRAMERATE_LOAD_MAX_MS, default 8000, 0 = no cap), after that it
+// counts as streaming until 5 quiet seconds (nps5_fr_load_step). Returns 0, or 1 video, 2 phase, 3 VFS volume.
 static int nps5_framerate_frozen(uint64_t now) {
   if (!g_fr.no_freeze_av && nps5_avplayer_playing_count && nps5_avplayer_playing_count() > 0) return 1;
   if (g_fr.no_freeze_load) return 0;
   if (&nps5_vfs_bytes_read && &nps5_vfs_phase) {
-    const int ph = atomic_load_explicit(&nps5_vfs_phase, memory_order_relaxed);
-    if (ph != g_fr.last_phase) { g_fr.last_phase = ph; g_fr.load_until_ns = now + 5000000000ull; }
-    if (now - g_fr.bytes_ns >= 1000000000ull) {
-      const unsigned long long by = atomic_load_explicit(&nps5_vfs_bytes_read, memory_order_relaxed);
-      if (g_fr.bytes_ns && by - g_fr.last_bytes > 6ull * 1024 * 1024) g_fr.load_until_ns = now + 2000000000ull;
-      g_fr.last_bytes = by; g_fr.bytes_ns = now;
-    }
+      const int r = nps5_fr_load_step(&g_fr.load, now, atomic_load_explicit(&nps5_vfs_phase, memory_order_relaxed),
+                                      atomic_load_explicit(&nps5_vfs_bytes_read, memory_order_relaxed));
+      return r ? r + 1 : 0;
   }
-  return now < g_fr.load_until_ns;
+  return 0;
 }
 
 #include "nps5_framerate_cfg.h"
@@ -424,6 +421,11 @@ static void nps5_framerate_init(void) {
   if (getenv("NPS5_FRAMERATE_LEGACY") && atoi(getenv("NPS5_FRAMERATE_LEGACY")) > 0) g_fr.l.legacy = 1;
   g_fr.no_freeze_av = getenv("NPS5_FRAMERATE_NO_FREEZE_AV") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_AV")) > 0;
   g_fr.no_freeze_load = getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD") && atoi(getenv("NPS5_FRAMERATE_NO_FREEZE_LOAD")) > 0;
+  double load_ms = 8000.0;
+  if (nps5_fr_tune_one(getenv("NPS5_FRAMERATE_LOAD_MAX_MS"), 0.0, 600000.0, 0, &load_ms))
+      fprintf(stderr,
+              "[framerate] NPS5_FRAMERATE_LOAD_MAX_MS (0..600000, 0 = no cap) not a number in range: using 8000\n");
+  nps5_fr_load_init(&g_fr.load, (uint64_t)(load_ms * 1e6));
   if (nps5_fr_tune(&g_fr.l, getenv("NPS5_FRAMERATE_EMA"), getenv("NPS5_FRAMERATE_HYST_PCT"), getenv("NPS5_FRAMERATE_HYST_MS"), getenv("NPS5_FRAMERATE_WARM")))
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_EMA (0 < v <= 1) / _HYST_PCT (0..50) / _HYST_MS (0..60000) / _WARM (0..36000): a value outside its range is ignored, the default stays\n");
 }
@@ -454,6 +456,7 @@ static void nps5_framerate_tick(GuestContext *ctx) {
   }
   g_fr.frames++;
   const int frozen = nps5_framerate_frozen(now);
+  g_fr.last_frozen = frozen;
   double want = 0, inst = 1.0 / (((double)(now - g_fr.last_ns) * 1e-9) + 1e-9);
   const int rw = nps5_fr_step(&g_fr.l, now, frozen, &want);
   g_fr.last_ns = now;
@@ -466,8 +469,12 @@ static void nps5_framerate_tick(GuestContext *ctx) {
   if (now - g_fr.last_log_ns >= 5000000000ull) {
     double d; float f; uint64_t us;
     memcpy(&d, b, 8); memcpy(&f, b + 8, 4); memcpy(&us, b + 16, 8);
-    fprintf(stderr, "[framerate] frame %u measured %.1f fps (ema %.1f) block now f64 %.3f f32 %.9g u64 %llu (%u rewrites)\n", g_fr.frames, inst, g_fr.ema, d, (double)f,
-            (unsigned long long)us, g_fr.rewrites);
+    static const char *const fz[] = {"-", "video", "phase", "vfs"};
+    fprintf(stderr,
+            "[framerate] frame %u measured %.1f fps (ema %.1f) block now f64 %.3f f32 %.9g u64 %llu (%u rewrites) "
+            "frozen %s%s\n",
+            g_fr.frames, inst, g_fr.ema, d, (double)f, (unsigned long long)us, g_fr.rewrites, fz[g_fr.last_frozen & 3],
+            g_fr.load.streaming ? " streaming" : "");
     g_fr.last_log_ns = now;
   }
 }
