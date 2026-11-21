@@ -430,6 +430,13 @@ public:
         }
     }
 
+    // ue2boot: tear down on the CALLING guest thread's context. The destructor uses m_main_ctx (the context of the
+    // thread that called Init); when Close comes from another thread, the guest deallocate callbacks then run on a
+    // context that its own thread is using at the same time (PPSA07631: UE closes the logo movie from a task
+    // thread -> the init thread's registers were clobbered -> wcslen(0x40000000) SIGBUS). Opt-in:
+    // NPS5_AVPLAYER_CLOSE_CALLER_CTX=1.
+    void stop_on_caller(GuestContext *ctx) { stop_playback_internal(ctx, false); }
+
     void post_init(const AvPlayerPostInitData &data) {
         m_post_init_data = data;
     }
@@ -1601,6 +1608,11 @@ void shim_sceAvPlayerClose(GuestContext *ctx) {
         SHIM_RETURN();
     }
     AVPLAYER_LOG("sceAvPlayerClose called");
+    {
+        static int caller_ctx = -1;
+        if (caller_ctx < 0) { const char *e = getenv("NPS5_AVPLAYER_CLOSE_CALLER_CTX"); caller_ctx = (e && e[0] == '1') ? 1 : 0; }
+        if (caller_ctx == 1) player->stop_on_caller(ctx);
+    }
     delete player;
     ctx->rax = 0;
     SHIM_RETURN();
