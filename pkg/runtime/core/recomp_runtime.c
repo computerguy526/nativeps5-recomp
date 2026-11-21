@@ -354,6 +354,18 @@ void shim_unresolved_stub(GuestContext *ctx) {
             (unsigned long long)caller_rip,
             (unsigned long long)(ctx ? ctx->rsp : 0));
   }
+  // ue2boot: NPS5_UNRESOLVED_RET0=1 (bring-up of a new title, opt-in): return 0 to the caller instead of
+  // aborting, so a run gets past imports nobody has implemented yet. Each name is reported above every time
+  // it is called until NPS5_UNRESOLVED_RET0_QUIET=1; the run summary still counts unresolved hits.
+  {
+    static int ret0 = -1;
+    if (ret0 < 0) { const char *e = getenv("NPS5_UNRESOLVED_RET0"); ret0 = (e && e[0] == '1') ? 1 : 0; }
+    if (ret0 == 1) {
+      fflush(stderr);
+      if (ctx) { ctx->rax = 0; ctx->rsp += 8; }
+      return;
+    }
+  }
   recomp_dump_guest_context(ctx);
   fflush(stderr);
   abort();

@@ -3,6 +3,7 @@ package disasm
 import (
 	"debug/elf"
 	"encoding/binary"
+	"os"
 
 	"ps4-recomp/pkg/elfloader"
 
@@ -318,9 +319,19 @@ func prologueByte(b byte) bool {
 // methods and getters start with whatever their first statement is (cmp/test on a member, xor
 // eax, movzx, a VEX load) and are reached through vtables and callbacks only; filtered out,
 // they and everything only they call are missing from the translation.
+var seedAfterUD2 = os.Getenv("NPS5_SEED_AFTER_UD2") == "1"
+
 func gapEntryOK(img *elfloader.Image, addr uint64) bool {
 	prev := img.Bytes(addr-1, 1)
 	afterPad := len(prev) == 1 && (prev[0] == 0xCC || prev[0] == 0x90 || prev[0] == 0xC3)
+	// A ud2 (0F 0B) ends the previous function in titles built without function alignment (clang trap
+	// after a noreturn call / unreachable; PPSA07631: 257 of 308 tier-1 misses sat right behind one).
+	// Opt-in (translate-time env NPS5_SEED_AFTER_UD2=1) so other titles' discovery is unchanged.
+	if !afterPad && seedAfterUD2 {
+		if p2 := img.Bytes(addr-2, 2); len(p2) == 2 && p2[0] == 0x0F && p2[1] == 0x0B {
+			afterPad = true
+		}
+	}
 	if addr&15 == 0 && afterPad {
 		code := img.From(addr)
 		// Padding itself is not an entry (a pointer into an int3/nop run).

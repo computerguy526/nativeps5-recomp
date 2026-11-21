@@ -67,6 +67,34 @@ void shim_pthread_attr_setsolosched_np(GuestContext *ctx) {
   RET32(ctx, 0);
 }
 
+// int sceKernelGetOperationMode(int *mode, int *submode) (NID NH6xARDOVv8, SDK 11 titles: PPSA07631): base PS5
+// (mode 2; 3 would be the Pro "trinity" mode, which sceKernelIsTrinityMode already answers 0 for), no sub-mode.
+void shim_sceKernelGetOperationMode(GuestContext *ctx) {
+  int32_t *mode = ctx->rdi ? (int32_t *)NPS5_G2H(ctx, ctx->rdi) : NULL;
+  int32_t *submode = ctx->rsi ? (int32_t *)NPS5_G2H(ctx, ctx->rsi) : NULL;
+  if (mode) *mode = 2;
+  if (submode) *submode = 0;
+  hs_once("sceKernelGetOperationMode", "base PS5 mode 2, sub-mode 0");
+  RET32(ctx, 0);
+}
+
+// int _sceLibcInternalThreadAtexit(...) (NID qBS714-Jr3g): libc.prx's __cxa_thread_atexit hands the thread-exit
+// destructor to the system. Accepted and not recorded: thread_local destructors do not run at guest thread exit.
+void shim__sceLibcInternalThreadAtexit(GuestContext *ctx) {
+  hs_once("_sceLibcInternalThreadAtexit", "thread-exit destructors accepted, not run");
+  RET32(ctx, 0);
+}
+
+// ---- libScePsml Mfsr2 (PSSR 2 upscaler, PS5 Pro only; PPSA07631) ----------------------------------------
+// Behaviour as upstream KytyPS5 (GPL-2.0, src/libs/libPsml.cpp, namespace Mfsr2) on a base console: Initialize
+// answers NOT_AVAILABLE (0x8a8a0012) outside Pro ("trinity") mode, every other entry NOT_INITIALIZED (0x8a8a0001),
+// so the title keeps its own upscaler. Bound by NID (no names in our NID table).
+void shim_psml_mfsr2_initialize(GuestContext *ctx) {
+  hs_once("scePsmlMfsr2Initialize", "base PS5: PSSR not available (0x8a8a0012)");
+  RET32(ctx, (int32_t)0x8a8a0012u);
+}
+void shim_psml_mfsr2_not_initialized(GuestContext *ctx) { RET32(ctx, (int32_t)0x8a8a0001u); }
+
 // ---- libScePad (adaptive triggers / vibration mode) --------------------------------------------
 // Host fallback for a build without a pad backend (`-gpu off`): there is no controller, so there is nothing to drive.
 // With `-gpu anyps5` the four imports below are rebound to AnyPS5's libScePad (shim_aps5_<name>, emitter.EnableAnyPS5Shims),

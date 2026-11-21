@@ -129,6 +129,8 @@ var hlesysShims = []string{
 	"sceCoredumpWriteUserString",
 	"sceCoredumpSetUserDataType",
 	"pthread_attr_setsolosched_np",
+	"sceKernelGetOperationMode",
+	"_sceLibcInternalThreadAtexit",
 
 	// libScePad (libSceHlesys)
 	"scePadSetVibrationMode",
@@ -142,5 +144,14 @@ func init() {
 		if _, dup := CanonicalShims[n]; !dup {
 			CanonicalShims[n] = "shim_" + n
 		}
+	}
+	// SDK 11 titles (PPSA07631) import the scePthread name (NID Dk6FC-TI+7Q) of the same call.
+	// libScePsml Mfsr2 (PSSR 2, Pro only) by NID: Initialize, then the 8 calls that need it (KytyPS5 libPsml.cpp table).
+	CanonicalShims["o+NM86gEwFE"] = "shim_psml_mfsr2_initialize"
+	for _, nid := range []string{"1ic5q-kdOsc", "gMduXCLYrNg", "0GAw7SmkwII", "5z2gBlqxJ+0", "m9JLPc3wOQw", "Kyy1baXgaVU", "ZLL31lzzxr4", "lrJwpLjKXRc"} {
+		CanonicalShims[nid] = "shim_psml_mfsr2_not_initialized"
+	}
+	if _, dup := CanonicalShims["scePthreadAttrSetsolosched"]; !dup {
+		CanonicalShims["scePthreadAttrSetsolosched"] = "shim_pthread_attr_setsolosched_np"
 	}
 }
