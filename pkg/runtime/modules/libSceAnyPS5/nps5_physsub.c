@@ -41,6 +41,9 @@
 static Nps5PhysCfg g_ps;
 static pthread_once_t g_ps_once = PTHREAD_ONCE_INIT;
 static uint64_t g_ps_cloth_skip; // 0 = none, else byte offset + 1
+// dtfix: world step dt offset + 1, engine pointer offset + 1, engine solver dt offset + 1 (0 = not given); g_ps_dtfix = switch
+static uint64_t g_ps_stepdt, g_ps_engine_ptr, g_ps_engine_dt;
+static int g_ps_dtfix = 1;
 
 static _Atomic uint64_t g_ps_calls[2], g_ps_steps[2], g_ps_split[2], g_ps_clamped;
 static _Atomic uint32_t g_ps_maxdt_bits[2];
@@ -52,11 +55,23 @@ static void ps_init(void) {
                                    getenv("NPS5_PHYS_SUBSTEP_WORLD"), getenv("NPS5_PHYS_SUBSTEP_LOG"));
     uint64_t off = 0;
     if (nps5_repl_param("physsub.cloth.skip_flag", &off)) g_ps_cloth_skip = off + 1;
+    if (nps5_repl_param("physsub.world.stepdt", &off)) g_ps_stepdt = off + 1;
+    if (nps5_repl_param("physsub.world.engine", &off)) g_ps_engine_ptr = off + 1;
+    if (nps5_repl_param("physsub.engine.solver_dt", &off)) g_ps_engine_dt = off + 1;
+    {
+        double v = 1;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_DTFIX"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_DTFIX: 0|1\n");
+        g_ps_dtfix = v == 1.0;
+    }
     if (bad)
         fprintf(stderr,
                 "[physsub] W %d NPS5_PHYS_SUBSTEP* value(s) ignored (SUBSTEP 0|1, HZ 10..240, MAX 1..16, CLOTH "
                 "clamp|substep|off, WORLD 0|1, LOG 0|1)\n",
                 bad);
+    if (g_ps.on && g_ps.world)
+        fprintf(stderr, "[physsub] world dtfix %s (world step dt %s, engine solver dt %s)\n", g_ps_dtfix ? "on" : "off",
+                g_ps_stepdt ? "yes" : "no param", g_ps_engine_ptr && g_ps_engine_dt ? "yes" : "no param");
     if (g_ps.on)
         fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s\n",
                 g_ps.world ? "substepped" : "untouched", g_ps.hz, g_ps.max,
@@ -176,6 +191,16 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         const float sub = dt / (float)n;
         for (int i = 0; i < n; i++)
             ps_call(ctx, &g_w_world, &a, sub);
+        if (g_ps_dtfix) {
+            // the last sub-step left dt / n and n / dt as the step values; per-frame readers must see the frame's
+            float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
+            float *e = NULL;
+            if (g_ps_engine_ptr && g_ps_engine_dt) {
+                const uint64_t eng = *(const uint64_t *)NPS5_G2H(ctx, a.rdi + g_ps_engine_ptr - 1);
+                if (eng) e = (float *)NPS5_G2H(ctx, eng + g_ps_engine_dt - 1);
+            }
+            nps5_ps_frame_dt(dt, w, e);
+        }
     }
     if (g_ps.on) {
         atomic_fetch_add_explicit(&g_ps_calls[0], 1, memory_order_relaxed);

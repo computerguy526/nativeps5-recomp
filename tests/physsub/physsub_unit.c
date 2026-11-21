@@ -54,6 +54,17 @@ int main(void) {
               c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log,
           "bad values not ignored");
     CHECK(nps5_ps_config(&c, "0", NULL, NULL, NULL, NULL, NULL) == 0 && !c.on, "0 = off");
+    // dtfix: the frame's step values
+    {
+        float w[2] = {0.1f, 10.0f}, e[8] = {0};
+        nps5_ps_frame_dt(0.05f, w, e);
+        CHECK(w[0] == 0.05f && w[1] == 1.0f / 0.05f && e[0] == 0.05f && e[3] == 0.05f && e[4] == 1.0f / 0.05f &&
+                  e[7] == 1.0f / 0.05f,
+              "frame dt");
+        nps5_ps_frame_dt(NAN, w, e);
+        nps5_ps_frame_dt(0.0f, w, NULL);
+        CHECK(w[0] == 0.05f && e[0] == 0.05f, "bad dt written");
+    }
     if (fails) {
         printf("physsub_unit: %d FAILED\n", fails);
         return 1;

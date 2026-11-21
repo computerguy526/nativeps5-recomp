@@ -17,6 +17,10 @@
 //   NPS5_PHYS_SUBSTEP_CLOTH=clamp clamp | substep | off  (off = cloth untouched)
 //   NPS5_PHYS_SUBSTEP_WORLD=1     0 = rigid-body world untouched (cloth only)
 //   NPS5_PHYS_SUBSTEP_LOG=1       one [physsub] line every 5 s (calls, steps, largest dt)
+//   NPS5_PHYS_SUBSTEP_DTFIX=1     after a split world step, the step dt / 1/dt the simulation left behind (dt / n, n / dt) are set to the
+//                                 frame's in the world (param physsub.world.stepdt) and in the physics engine's solver info (params
+//                                 physsub.world.engine = pointer offset, physsub.engine.solver_dt = {dt x4, 1/dt x4}): per-frame readers
+//                                 then see one step of the frame dt, as without sub-steps (ASTRO BOT: leaves flicker otherwise). 0 = off.
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -97,4 +101,19 @@ static inline float nps5_ps_clamp(float dt, double hz) {
     if (!(dt > 0.0f) || !isfinite(dt) || !(hz > 0.0)) return dt;
     const float m = (float)(1.0 / hz);
     return dt > m ? m : dt;
+}
+
+// The frame's step values after a split step: world {dt, 1/dt}, engine solver info {dt x4, 1/dt x4} (NULL = not written).
+static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
+    if (!(dt > 0.0f) || !isfinite(dt)) return;
+    const float inv = 1.0f / dt;
+    if (world2) {
+        world2[0] = dt;
+        world2[1] = inv;
+    }
+    if (engine8)
+        for (int k = 0; k < 4; k++) {
+            engine8[k] = dt;
+            engine8[4 + k] = inv;
+        }
 }

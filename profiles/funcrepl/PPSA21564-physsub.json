@@ -62,6 +62,18 @@
         {
             "key": "physsub.spring.fixed",
             "value": "0x4"
+        },
+        {
+            "key": "physsub.world.stepdt",
+            "value": "0x240"
+        },
+        {
+            "key": "physsub.world.engine",
+            "value": "0x30"
+        },
+        {
+            "key": "physsub.engine.solver_dt",
+            "value": "0x560"
         }
     ]
 }
