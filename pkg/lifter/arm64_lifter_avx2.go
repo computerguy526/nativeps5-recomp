@@ -296,11 +296,47 @@ func fmaForm(op x86asm.Op) (neg, sub bool, order int, scalar, double, ok bool) {
 	return
 }
 
+// fmaAddSubForm parses VFMADDSUB/VFMSUBADD{132,213,231}{PS,PD}: addSub = even lanes subtract the addend
+// (FMADDSUB), else even lanes add and odd lanes subtract (FMSUBADD).
+func fmaAddSubForm(op x86asm.Op) (addSub bool, order int, double, ok bool) {
+	n := op.String()
+	switch {
+	case strings.HasPrefix(n, "VFMADDSUB"):
+		addSub = true
+	case strings.HasPrefix(n, "VFMSUBADD"):
+	default:
+		return
+	}
+	s := n[9:]
+	if len(s) != 5 || s[3] != 'P' {
+		return
+	}
+	switch s[:3] {
+	case "132":
+		order = 132
+	case "213":
+		order = 213
+	case "231":
+		order = 231
+	default:
+		return
+	}
+	double = s[4] == 'D'
+	ok = s[4] == 'S' || s[4] == 'D'
+	return
+}
+
 // liftFma handles the FMA3 families. With op1 = dst, op2 = src1, op3 = src2:
 // 132: op1*op3 +- op2; 213: op2*op1 +- op3; 231: op2*op3 +- op1. FMADD = P+C, FMSUB = P-C,
 // FNMADD = -P+C, FNMSUB = -P-C (single rounding, as ARM FMADD/FMLA).
 func (l *Arm64Lifter) liftFma(inst disasm.Instruction, nextPC uint64, lines []string) ([]string, error) {
 	neg, sub, order, scalar, double, _ := fmaForm(inst.Inst.Op)
+	// VFMADDSUB / VFMSUBADD (packed only), as FEX AVX_128.cpp AVX128_VFMAddSubImpl (MIT): the addend's sign is
+	// flipped in alternate lanes, then one fused multiply-add per 128-bit half.
+	addSub, asOrder, asDouble, isAddSub := fmaAddSubForm(inst.Inst.Op)
+	if isAddSub {
+		order, double, scalar, neg, sub = asOrder, asDouble, false, false, false
+	}
 	dstReg, okDst := vecReg(inst.Inst.Args[0])
 	s2Reg, okS2 := vecReg(inst.Inst.Args[1])
 	isYmm, _, _, dLowV, dHighV, dS, dD, okD := getVectorDesc(dstReg)
@@ -399,9 +435,25 @@ func (l *Arm64Lifter) liftFma(inst disasm.Instruction, nextPC uint64, lines []st
 		}
 		// t = +-C, then t +-= A*B fused. -C is negated first (not the sum afterwards) so that an
 		// exact cancellation yields +0 as on x86.
-		if sub {
+		switch {
+		case isAddSub:
+			// t = C with the sign flipped in the subtracting lanes: FMADDSUB subtracts in even lanes
+			// (0, 2), FMSUBADD in odd lanes (1, 3). fneg into v18, then copy those lanes over.
+			lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", t, c))
+			lines = append(lines, fmt.Sprintf("    fneg v18.%s, %s.%s", lane, c, lane))
+			first := 1
+			if addSub {
+				first = 0
+			}
+			if double {
+				lines = append(lines, fmt.Sprintf("    mov %s.d[%d], v18.d[%d]", t, first, first))
+			} else {
+				lines = append(lines, fmt.Sprintf("    mov %s.s[%d], v18.s[%d]", t, first, first))
+				lines = append(lines, fmt.Sprintf("    mov %s.s[%d], v18.s[%d]", t, first+2, first+2))
+			}
+		case sub:
 			lines = append(lines, fmt.Sprintf("    fneg %s.%s, %s.%s", t, lane, c, lane))
-		} else {
+		default:
 			lines = append(lines, fmt.Sprintf("    mov %s.16b, %s.16b", t, c))
 		}
 		acc := "fmla"

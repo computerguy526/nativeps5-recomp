@@ -228,6 +228,67 @@ func avCases() []avCase {
 				return out
 			}})
 	}
+	// FMADDSUB / FMSUBADD (packed only): 132 = 0x96/0x97, 213 = 0xa6/0xa7, 231 = 0xb6/0xb7. FMADDSUB subtracts
+	// the addend in even lanes and adds it in odd lanes; FMSUBADD the other way round.
+	for _, f := range []struct {
+		name   string
+		addSub bool
+		base   byte
+	}{{"vfmaddsub", true, 0x96}, {"vfmsubadd", false, 0x97}} {
+		f := f
+		for oi, order := range []int{132, 213, 231} {
+			order := order
+			for _, t := range []struct {
+				n   string
+				dbl bool
+				l   int
+			}{{"ps", false, 1}, {"ps", false, 0}, {"pd", true, 1}, {"pd", true, 0}} {
+				t := t
+				opc := f.base + byte(oi)*0x10
+				w, sz := 0, 4
+				if t.dbl {
+					w, sz = 1, 8
+				}
+				cs = append(cs, avCase{name: fmt.Sprintf("%s%d%s l%d", f.name, order, t.n, t.l), float: sz,
+					code: func(mem bool) string { return vexHex(2, w, 1, t.l, 1, opc, mem) },
+					ref: func(in1, in2, init []byte) []byte {
+						out := make([]byte, 32)
+						n := 32 / sz
+						if t.l == 0 {
+							n = 16 / sz
+						}
+						for i := 0; i < n; i++ {
+							get := func(buf []byte) float64 {
+								if sz == 4 {
+									return float64(math.Float32frombits(u32(buf, i)))
+								}
+								return math.Float64frombits(u64(buf, i))
+							}
+							op1, op2, op3 := get(init), get(in1), get(in2)
+							var a, b, c float64
+							switch order {
+							case 132:
+								a, b, c = op1, op3, op2
+							case 213:
+								a, b, c = op2, op1, op3
+							default:
+								a, b, c = op2, op3, op1
+							}
+							if (i%2 == 0) == f.addSub {
+								c = -c
+							}
+							r := a*b + c
+							if sz == 4 {
+								put32(out, i, math.Float32bits(float32(r)))
+							} else {
+								put64(out, i, math.Float64bits(r))
+							}
+						}
+						return out
+					}})
+			}
+		}
+	}
 	// FMA families.
 	type fk struct {
 		name     string
