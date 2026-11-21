@@ -1,2 +1,2 @@
 { "name": "PPSA21564",
-  "translate": { "gpu": "anyps5", "args": ["-allow-unsupported", "-patches", "profiles/patches/PPSA21564.json"] } }
+  "translate": { "gpu": "anyps5", "args": ["-allow-unsupported", "-patches", "profiles/patches/PPSA21564.json", "-hle-replace", "profiles/funcrepl/PPSA21564-physsub.json"] } }

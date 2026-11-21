@@ -143,3 +143,10 @@ First user: `[physsub]` (`pkg/runtime/modules/libSceAnyPS5/nps5_physsub.c`, swit
 physics steps split into steps <= 1/hz s when a title runs at real-time speed below its fixed frame rate. Tests:
 `tools/physsub_unit.sh` (logic), `tools/physsub_test.sh` (synthetic program: direct call, function pointer and tail call
 reach the shim; counts and dt sums with the switch off, on, and on with substepped cloth), `pkg/emitter/funcwrap_test.go`.
+
+ASTRO BOT (PPSA21564 01.007) ships the table `profiles/funcrepl/PPSA21564-physsub.json` (passed by `profiles/PPSA21564.json`),
+on by default since v1.2.1: Havok world step <= 1/60 s (at most 4 per frame), ApCloth step clamped to 1/60 s, the
+JungleBridge / SuspentionBridge spring steps <= 1/600 s (at most 8 per call). Every entry is sha256-checked: another build of
+the game is refused with a named error, as the patch profile is. Off switches (run time, no retranslate):
+`NPS5_PHYS_SUBSTEP=0` (world + cloth), `NPS5_PHYS_SUBSTEP_WORLD=0`, `NPS5_PHYS_SUBSTEP_CLOTH=off`, `NPS5_PHYS_SPRING=0`;
+`NPS5_PHYS_SUBSTEP_LOG=1` / `NPS5_PHYS_SPRING_LOG=1` print `[physsub]` lines.

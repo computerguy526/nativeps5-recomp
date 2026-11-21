@@ -32,10 +32,10 @@ int main(void) {
   CHECK(nps5_ps_clamp(0.0f, 60) == 0.0f && isnan(nps5_ps_clamp(NAN, 60)), "clamp of a bad dt changed it");
   // config
   Nps5PhysCfg c;
-  CHECK(nps5_ps_config(&c, NULL, NULL, NULL, NULL, NULL, NULL) == 0 && !c.on && c.world && c.cloth == NPS5_PS_CLOTH_CLAMP && c.hz == 60 && c.max == 4 && !c.log, "defaults");
+  CHECK(nps5_ps_config(&c, NULL, NULL, NULL, NULL, NULL, NULL) == 0 && c.on && c.world && c.cloth == NPS5_PS_CLOTH_CLAMP && c.hz == 60 && c.max == 4 && !c.log, "defaults");
   CHECK(nps5_ps_config(&c, "1", "120", "8", "substep", "0", "1") == 0 && c.on && !c.world && c.cloth == NPS5_PS_CLOTH_SUBSTEP && c.hz == 120 && c.max == 8 && c.log, "all set");
   CHECK(nps5_ps_config(&c, "1", NULL, NULL, "off", NULL, NULL) == 0 && c.cloth == NPS5_PS_CLOTH_OFF, "cloth off");
-  CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && !c.on && c.hz == 60 && c.max == 4 && c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log, "bad values not ignored");
+  CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && c.on && c.hz == 60 && c.max == 4 && c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log, "bad values not ignored");
   CHECK(nps5_ps_config(&c, "0", NULL, NULL, NULL, NULL, NULL) == 0 && !c.on, "0 = off");
   if (fails) { printf("physsub_unit: %d FAILED\n", fails); return 1; }
   printf("physsub_unit: all passed\n");

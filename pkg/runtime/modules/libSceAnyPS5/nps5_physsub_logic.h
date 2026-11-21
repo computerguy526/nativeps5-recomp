@@ -10,7 +10,8 @@
 // still equals real time and everything else keeps the real dt. Cloth can instead be clamped (one call with min(dt, 1/hz):
 // cloth runs slower than real time below hz fps, the AstroHybrid behaviour) or substepped.
 //
-//   NPS5_PHYS_SUBSTEP=1           on (default off: every shim calls the original once with the unchanged arguments)
+//   NPS5_PHYS_SUBSTEP=0           off: every shim calls the original once with the unchanged arguments (default on; the
+//                                 shims exist only in a program translated with a physsub table, so other titles are untouched)
 //   NPS5_PHYS_SUBSTEP_HZ=60       the longest step is 1/hz s (10..240)
 //   NPS5_PHYS_SUBSTEP_MAX=4       at most this many steps per call (1..16); a longer dt is split into max equal steps
 //   NPS5_PHYS_SUBSTEP_CLOTH=clamp clamp | substep | off  (off = cloth untouched)
@@ -45,8 +46,8 @@ static inline int nps5_ps_config(Nps5PhysCfg *c, const char *on, const char *hz,
                                  const char *log) {
   int bad = 0;
   double v;
-  c->on = 0; c->world = 1; c->cloth = NPS5_PS_CLOTH_CLAMP; c->log = 0; c->hz = 60.0; c->max = 4;
-  v = 0; bad += nps5_ps_num(on, 0, 1, &v); c->on = v == 1.0;
+  c->on = 1; c->world = 1; c->cloth = NPS5_PS_CLOTH_CLAMP; c->log = 0; c->hz = 60.0; c->max = 4;
+  v = 1; bad += nps5_ps_num(on, 0, 1, &v); c->on = v == 1.0;
   v = c->hz; bad += nps5_ps_num(hz, 10, 240, &v); c->hz = v;
   v = c->max; bad += nps5_ps_num(max, 1, 16, &v); c->max = (int)v;
   if (cloth && *cloth) {

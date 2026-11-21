@@ -19,13 +19,15 @@
 //       (ASTRO BOT: JungleBridge / SuspentionBridge, called 10x per frame with h = dt / 10: explicit springs + Euler, stable
 //       at h = 1/600 s, runs away to inf/NaN at the h of a 20..25 fps frame and never recovers: the plank deck and ropes vanish).
 //       Own switches, independent of NPS5_PHYS_SUBSTEP:
-//         NPS5_PHYS_SPRING=1        split each call into n calls of h / n with h / n <= 1 / NPS5_PHYS_SPRING_HZ (default off)
+//         NPS5_PHYS_SPRING=1        split each call into n calls of h / n with h / n <= 1 / NPS5_PHYS_SPRING_HZ (default on;
+//                                   NPS5_PHYS_SPRING=0 = each call runs the original once)
 //         NPS5_PHYS_SPRING_HZ=600   10..4000        NPS5_PHYS_SPRING_MAX=8   1..16
 //         NPS5_PHYS_SPRING_LOG=1    per object: first step, first non-finite node, and a line every 5 s
 //       params (per shim x = a|b): "physsub.spring.x.nodes" = offset in *this of the node vector {begin, end};
 //       shared "physsub.spring.stride", ".pos", ".vel", ".fixed" (node layout). Without the nodes param nothing is read.
 //
-// ASTRO BOT (PPSA21564 01.007): table in profiles/funcrepl/PPSA21564-physsub.json (local).
+// ASTRO BOT (PPSA21564 01.007): table in profiles/funcrepl/PPSA21564-physsub.json (passed by profiles/PPSA21564.json;
+// each entry is sha256-checked, so another build of the game is refused, as the patch profile is).
 #include "nps5_funcrepl.h"
 #include "nps5_physsub_logic.h"
 #include "nps5_thunk.h"
@@ -54,7 +56,7 @@ static void ps_init(void) {
     fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s\n", g_ps.world ? "substepped" : "untouched", g_ps.hz, g_ps.max,
             g_ps.cloth == NPS5_PS_CLOTH_CLAMP ? "clamped to 1/hz" : g_ps.cloth == NPS5_PS_CLOTH_SUBSTEP ? "substepped" : "untouched");
   else
-    fprintf(stderr, "[physsub] off (wrapped physics steps run unchanged; NPS5_PHYS_SUBSTEP=1 turns it on)\n");
+    fprintf(stderr, "[physsub] off (NPS5_PHYS_SUBSTEP=0: wrapped physics steps run unchanged)\n");
 }
 
 typedef struct {
@@ -206,7 +208,7 @@ static uint64_t g_sp_last_log;
 static void sp_init(void) {
   double v;
   int bad = 0;
-  v = 0; bad += nps5_ps_num(getenv("NPS5_PHYS_SPRING"), 0, 1, &v); g_sp.on = v == 1.0;
+  v = 1; bad += nps5_ps_num(getenv("NPS5_PHYS_SPRING"), 0, 1, &v); g_sp.on = v == 1.0;
   v = 0; bad += nps5_ps_num(getenv("NPS5_PHYS_SPRING_LOG"), 0, 1, &v); g_sp.log = v == 1.0;
   v = 600; bad += nps5_ps_num(getenv("NPS5_PHYS_SPRING_HZ"), 10, 4000, &v); g_sp.hz = v;
   v = 8; bad += nps5_ps_num(getenv("NPS5_PHYS_SPRING_MAX"), 1, 16, &v); g_sp.max = (int)v;
