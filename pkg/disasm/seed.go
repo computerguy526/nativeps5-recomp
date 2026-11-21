@@ -331,6 +331,15 @@ func gapEntryOK(img *elfloader.Image, addr uint64) bool {
 		if p2 := img.Bytes(addr-2, 2); len(p2) == 2 && p2[0] == 0x0F && p2[1] == 0x0B {
 			afterPad = true
 		}
+		// The same packed layout also ends a function with an unconditional jmp (rel8 back edge or rel32 tail
+		// jump; PPSA07631 r8: 551 of 598 misses behind `pop rbp; jmp short <back>`). Code right after an
+		// unconditional jmp is only reached by branches, so a relocation pointing there is an entry.
+		if p2 := img.Bytes(addr-2, 2); !afterPad && len(p2) == 2 && p2[0] == 0xEB && p2[1]&0x80 != 0 {
+			afterPad = true
+		}
+		if p5 := img.Bytes(addr-5, 5); !afterPad && len(p5) == 5 && p5[0] == 0xE9 {
+			afterPad = true
+		}
 	}
 	if addr&15 == 0 && afterPad {
 		code := img.From(addr)
