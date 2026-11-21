@@ -94,8 +94,12 @@ static const char *g_fallback_font_candidates[] = {
 };
 
 static void font_active_weight(const InternalFontHandle *h, int use_render, float *wx, float *wy) {
-    *wx = h->weight_x; *wy = h->weight_y;
-    if (use_render && (h->render_weight_x != 1.0f || h->render_weight_y != 1.0f)) { *wx = h->render_weight_x; *wy = h->render_weight_y; }
+    *wx = h->weight_x;
+    *wy = h->weight_y;
+    if (use_render && (h->render_weight_x != 1.0f || h->render_weight_y != 1.0f)) {
+        *wx = h->render_weight_x;
+        *wy = h->render_weight_y;
+    }
 }
 
 // fontfix: the horizontal layout of the PS5 font library's FreeType driver (AnyPS5 libSceFontFt Driver.cpp
@@ -106,9 +110,17 @@ static void font_active_weight(const InternalFontHandle *h, int use_render, floa
 // baseline at (480 - size + baselineOffset) / 2 + ...): with the hhea ascender (0.82 em for LevelNameFont, bbox yMax is
 // 1.274 em) the baseline came out 70 px too high at 310 px and the tops of the capitals were cut off.
 // NPS5_FONT_LAYOUT=hhea restores the old values.
-static int font_layout_hhea(void) { static int v = -1; if (v < 0) { const char *e = getenv("NPS5_FONT_LAYOUT"); v = (e && strcmp(e, "hhea") == 0); } return v; }
+static int font_layout_hhea(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("NPS5_FONT_LAYOUT");
+        v = (e && strcmp(e, "hhea") == 0);
+    }
+    return v;
+}
 // Caller holds g_font_mutex and has applied the size. Returns 1 and fills the three values from the face bbox.
-static int font_bbox_layout(const InternalFontHandle *h, float weight_y, float *baseline, float *line_adv, float *deco) {
+static int font_bbox_layout(const InternalFontHandle *h, float weight_y, float *baseline, float *line_adv,
+                            float *deco) {
     if (font_layout_hhea() || !h->ft_face || !h->ft_face->size) return 0;
     FT_Face f = h->ft_face;
     const FT_Fixed ys = f->size->metrics.y_scale;
@@ -116,10 +128,11 @@ static int font_bbox_layout(const InternalFontHandle *h, float weight_y, float *
     float effect = 0.0f;
     const float d = weight_y - 1.0f;
     if (d != 0.0f && d == d) {
-        const FT_Pos em = FT_MulFix((FT_Long)f->units_per_EM, ys);           // em size in 26.6
+        const FT_Pos em = FT_MulFix((FT_Long)f->units_per_EM, ys); // em size in 26.6
         const FT_Pos half = (FT_Pos)(d * (float)em) / 2;
         effect = (float)half / 64.0f;
-        ymin -= half; ymax += half;
+        ymin -= half;
+        ymax += half;
     }
     *baseline = (float)ymax / 64.0f;
     *line_adv = (float)(ymax - ymin) / 64.0f;
@@ -1298,7 +1311,7 @@ static void font_render_glyph_common(GuestContext *ctx, int add_baseline) {
         if (add_baseline) {
             float asc = (float)(h->ft_face->size->metrics.ascender >> 6);
             if (asc <= 0.0f) asc = hgt * 0.8f;
-            {   // the library adds the layout baseline (render scale, render weight), see font_bbox_layout
+            { // the library adds the layout baseline (render scale, render weight), see font_bbox_layout
                 float b, la, de, wx, wy;
                 font_active_weight(h, 1, &wx, &wy);
                 if (font_bbox_layout(h, wy, &b, &la, &de)) asc = b;

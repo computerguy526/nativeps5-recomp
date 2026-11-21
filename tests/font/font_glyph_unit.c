@@ -190,36 +190,57 @@ int main(void) {
   //     lineAdvance = bbox height at the font scale, so a line cell holds every glyph: a baseline placed at
   //     baselineOffset below the cell top never cuts the top of any glyph (Astro Bot's 310 px banners lost their cap tops).
   {
-    float saved_w = h->scale_w, saved_h = h->scale_h, saved_rw = h->render_scale_w, saved_rh = h->render_scale_h;
-    h->scale_w = h->scale_h = h->render_scale_w = h->render_scale_h = 310.0f;
-    uint64_t lg = galloc(sizeof(OrbisFontHorizontalLayout));
-    C.rdi = font; C.rsi = lg; shim_sceFontGetHorizontalLayout(&C);
-    CHECK((int32_t)C.rax == ORBIS_FONT_OK);
-    OrbisFontHorizontalLayout L = *(OrbisFontHorizontalLayout *)H(lg);
-    FT_Face f = h->ft_face;
-    const float want_base = (float)FT_MulFix(f->bbox.yMax, f->size->metrics.y_scale) / 64.0f;
-    const float want_adv = (float)(FT_MulFix(f->bbox.yMax, f->size->metrics.y_scale) - FT_MulFix(f->bbox.yMin, f->size->metrics.y_scale)) / 64.0f;
-    CHECK(fabsf(L.baselineOffset - want_base) < 0.02f && fabsf(L.lineAdvance - want_adv) < 0.02f && L.decorationExtent == 0.0f);
-    CHECK(L.baselineOffset > (float)(f->size->metrics.ascender >> 6)); // Helvetica: bbox top above the hhea ascender
-    checks += 2;
-    // every printable ASCII glyph drawn at baseline = cell top + baselineOffset stays inside [0, lineAdvance)
-    const int cell = (int)ceilf(L.lineAdvance) + 2;
-    uint64_t buf = galloc((size_t)400 * cell), surf = galloc(sizeof(OrbisFontRenderSurface));
-    uint64_t met = galloc(sizeof(OrbisFontGlyphMetrics)), res = galloc(sizeof(OrbisFontRenderOutput));
-    for (uint32_t c = 0x21; c < 0x7f; c++) {
-      OrbisFontRenderSurface *s = H(surf); memset(s, 0, sizeof(*s));
-      s->buffer = (void *)(uintptr_t)buf; s->widthByte = 400; s->pixelSizeByte = 1; s->width = 400; s->height = cell;
-      s->sc_x1 = 400; s->sc_y1 = cell;
-      OrbisFontGlyphMetrics gm; CHECK(metrics(font, c, &gm) == ORBIS_FONT_OK);
-      CHECK(gm.Horizontal.bearingY <= L.baselineOffset + 0.5f);                       // top inside the cell
-      CHECK(gm.height - gm.Horizontal.bearingY <= L.lineAdvance - L.baselineOffset + 0.5f); // bottom inside the cell
-      C.xmm[0].f32[0] = 20.0f; C.xmm[1].f32[0] = L.baselineOffset;
-      C.rdi = font; C.rsi = c; C.rdx = surf; C.rcx = met; C.r8 = res;
-      shim_sceFontRenderCharGlyphImageHorizontal(&C);
+      float saved_w = h->scale_w, saved_h = h->scale_h, saved_rw = h->render_scale_w, saved_rh = h->render_scale_h;
+      h->scale_w = h->scale_h = h->render_scale_w = h->render_scale_h = 310.0f;
+      uint64_t lg = galloc(sizeof(OrbisFontHorizontalLayout));
+      C.rdi = font;
+      C.rsi = lg;
+      shim_sceFontGetHorizontalLayout(&C);
       CHECK((int32_t)C.rax == ORBIS_FONT_OK);
-      checks += 3;
-    }
-    h->scale_w = saved_w; h->scale_h = saved_h; h->render_scale_w = saved_rw; h->render_scale_h = saved_rh;
+      OrbisFontHorizontalLayout L = *(OrbisFontHorizontalLayout *)H(lg);
+      FT_Face f = h->ft_face;
+      const float want_base = (float)FT_MulFix(f->bbox.yMax, f->size->metrics.y_scale) / 64.0f;
+      const float want_adv = (float)(FT_MulFix(f->bbox.yMax, f->size->metrics.y_scale) -
+                                     FT_MulFix(f->bbox.yMin, f->size->metrics.y_scale)) /
+                             64.0f;
+      CHECK(fabsf(L.baselineOffset - want_base) < 0.02f && fabsf(L.lineAdvance - want_adv) < 0.02f &&
+            L.decorationExtent == 0.0f);
+      CHECK(L.baselineOffset > (float)(f->size->metrics.ascender >> 6)); // Helvetica: bbox top above the hhea ascender
+      checks += 2;
+      // every printable ASCII glyph drawn at baseline = cell top + baselineOffset stays inside [0, lineAdvance)
+      const int cell = (int)ceilf(L.lineAdvance) + 2;
+      uint64_t buf = galloc((size_t)400 * cell), surf = galloc(sizeof(OrbisFontRenderSurface));
+      uint64_t met = galloc(sizeof(OrbisFontGlyphMetrics)), res = galloc(sizeof(OrbisFontRenderOutput));
+      for (uint32_t c = 0x21; c < 0x7f; c++) {
+          OrbisFontRenderSurface *s = H(surf);
+          memset(s, 0, sizeof(*s));
+          s->buffer = (void *)(uintptr_t)buf;
+          s->widthByte = 400;
+          s->pixelSizeByte = 1;
+          s->width = 400;
+          s->height = cell;
+          s->sc_x1 = 400;
+          s->sc_y1 = cell;
+          OrbisFontGlyphMetrics gm;
+          CHECK(metrics(font, c, &gm) == ORBIS_FONT_OK);
+          CHECK(gm.Horizontal.bearingY <= L.baselineOffset + 0.5f); // top inside the cell
+          CHECK(gm.height - gm.Horizontal.bearingY <=
+                L.lineAdvance - L.baselineOffset + 0.5f); // bottom inside the cell
+          C.xmm[0].f32[0] = 20.0f;
+          C.xmm[1].f32[0] = L.baselineOffset;
+          C.rdi = font;
+          C.rsi = c;
+          C.rdx = surf;
+          C.rcx = met;
+          C.r8 = res;
+          shim_sceFontRenderCharGlyphImageHorizontal(&C);
+          CHECK((int32_t)C.rax == ORBIS_FONT_OK);
+          checks += 3;
+      }
+      h->scale_w = saved_w;
+      h->scale_h = saved_h;
+      h->render_scale_w = saved_rw;
+      h->render_scale_h = saved_rh;
   }
 
   if (fails) { printf("FONT FAIL %d\n", fails); return 1; }

@@ -26,56 +26,75 @@
 enum { NPS5_PS_CLOTH_OFF = 0, NPS5_PS_CLOTH_CLAMP = 1, NPS5_PS_CLOTH_SUBSTEP = 2 };
 
 typedef struct {
-  int on, world, cloth, log;
-  double hz;
-  int max;
+    int on, world, cloth, log;
+    double hz;
+    int max;
 } Nps5PhysCfg;
 
 // One number from text in [lo, hi]; NULL keeps *out. Returns 1 when the text was set but not a number in range.
 static inline int nps5_ps_num(const char *text, double lo, double hi, double *out) {
-  if (!text || !*text) return 0;
-  char *end = NULL;
-  const double v = strtod(text, &end);
-  if (end == text || *end != 0 || !(v >= lo && v <= hi)) return 1;
-  *out = v;
-  return 0;
+    if (!text || !*text) return 0;
+    char *end = NULL;
+    const double v = strtod(text, &end);
+    if (end == text || *end != 0 || !(v >= lo && v <= hi)) return 1;
+    *out = v;
+    return 0;
 }
 
 // Reads the switches (NULL = not set). Returns how many values were ignored (out of range / unknown word).
-static inline int nps5_ps_config(Nps5PhysCfg *c, const char *on, const char *hz, const char *max, const char *cloth, const char *world,
-                                 const char *log) {
-  int bad = 0;
-  double v;
-  c->on = 1; c->world = 1; c->cloth = NPS5_PS_CLOTH_CLAMP; c->log = 0; c->hz = 60.0; c->max = 4;
-  v = 1; bad += nps5_ps_num(on, 0, 1, &v); c->on = v == 1.0;
-  v = c->hz; bad += nps5_ps_num(hz, 10, 240, &v); c->hz = v;
-  v = c->max; bad += nps5_ps_num(max, 1, 16, &v); c->max = (int)v;
-  if (cloth && *cloth) {
-    if (!strcmp(cloth, "clamp")) c->cloth = NPS5_PS_CLOTH_CLAMP;
-    else if (!strcmp(cloth, "substep")) c->cloth = NPS5_PS_CLOTH_SUBSTEP;
-    else if (!strcmp(cloth, "off") || !strcmp(cloth, "0")) c->cloth = NPS5_PS_CLOTH_OFF;
-    else bad++;
-  }
-  v = 1; bad += nps5_ps_num(world, 0, 1, &v); c->world = v == 1.0;
-  v = 0; bad += nps5_ps_num(log, 0, 1, &v); c->log = v == 1.0;
-  return bad;
+static inline int nps5_ps_config(Nps5PhysCfg *c, const char *on, const char *hz, const char *max, const char *cloth,
+                                 const char *world, const char *log) {
+    int bad = 0;
+    double v;
+    c->on = 1;
+    c->world = 1;
+    c->cloth = NPS5_PS_CLOTH_CLAMP;
+    c->log = 0;
+    c->hz = 60.0;
+    c->max = 4;
+    v = 1;
+    bad += nps5_ps_num(on, 0, 1, &v);
+    c->on = v == 1.0;
+    v = c->hz;
+    bad += nps5_ps_num(hz, 10, 240, &v);
+    c->hz = v;
+    v = c->max;
+    bad += nps5_ps_num(max, 1, 16, &v);
+    c->max = (int)v;
+    if (cloth && *cloth) {
+        if (!strcmp(cloth, "clamp"))
+            c->cloth = NPS5_PS_CLOTH_CLAMP;
+        else if (!strcmp(cloth, "substep"))
+            c->cloth = NPS5_PS_CLOTH_SUBSTEP;
+        else if (!strcmp(cloth, "off") || !strcmp(cloth, "0"))
+            c->cloth = NPS5_PS_CLOTH_OFF;
+        else
+            bad++;
+    }
+    v = 1;
+    bad += nps5_ps_num(world, 0, 1, &v);
+    c->world = v == 1.0;
+    v = 0;
+    bad += nps5_ps_num(log, 0, 1, &v);
+    c->log = v == 1.0;
+    return bad;
 }
 
 // How many steps of dt / n a step of dt becomes: the least n with dt / n <= 1 / hz (a dt at most 0.1 % over 1/hz
 // still counts as one step: the block's 1/60 is a rounded float), at most max. A dt that is not a positive finite
 // number is not split (1).
 static inline int nps5_ps_steps(double dt, double hz, int max) {
-  if (!(dt > 0.0) || !isfinite(dt) || !(hz > 0.0) || max <= 1) return 1;
-  const double r = dt * hz;
-  if (r <= 1.001) return 1;
-  double n = ceil(r - 0.001);
-  if (n > (double)max) n = (double)max;
-  return n < 1.0 ? 1 : (int)n;
+    if (!(dt > 0.0) || !isfinite(dt) || !(hz > 0.0) || max <= 1) return 1;
+    const double r = dt * hz;
+    if (r <= 1.001) return 1;
+    double n = ceil(r - 0.001);
+    if (n > (double)max) n = (double)max;
+    return n < 1.0 ? 1 : (int)n;
 }
 
 // The clamped single step: min(dt, 1 / hz); a dt that is not a positive finite number stays as it is.
 static inline float nps5_ps_clamp(float dt, double hz) {
-  if (!(dt > 0.0f) || !isfinite(dt) || !(hz > 0.0)) return dt;
-  const float m = (float)(1.0 / hz);
-  return dt > m ? m : dt;
+    if (!(dt > 0.0f) || !isfinite(dt) || !(hz > 0.0)) return dt;
+    const float m = (float)(1.0 / hz);
+    return dt > m ? m : dt;
 }

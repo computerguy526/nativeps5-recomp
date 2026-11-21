@@ -27,9 +27,9 @@ bool nps5_repl_param(const char *key, uint64_t *out);
 // symbol of guest code: enter it with recomp_call_entry). Terminated by an entry with a NULL shim; a build
 // without wrapped functions links the empty weak definition from nps5_uemalloc.c.
 typedef struct Nps5ReplWrap {
-  const char *shim;
-  uint64_t guest;
-  void (*body)(void *ctx);
+    const char *shim;
+    uint64_t guest;
+    void (*body)(void *ctx);
 } Nps5ReplWrap;
 extern const Nps5ReplWrap nps5_repl_wraps[];
 
