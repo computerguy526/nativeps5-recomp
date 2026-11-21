@@ -244,7 +244,13 @@ func seedWritableData(loaded *elfloader.LoadedELF, addPtr func(uint64), add func
 				// pointer into a function body (resume address, jump slot) or an integer.
 				continue
 			}
-			if val&15 != 0 || !plausibleEntry(img, val) {
+			if seedAfterUD2 {
+				// Packed layout: the same entry test as relocation targets (behind padding or a terminator).
+				if !gapEntryOK(img, val) {
+					rep.Rejected["data_scan"]++
+					continue
+				}
+			} else if val&15 != 0 || !plausibleEntry(img, val) {
 				rep.Rejected["data_scan"]++
 				continue
 			}
@@ -341,7 +347,9 @@ func gapEntryOK(img *elfloader.Image, addr uint64) bool {
 			afterPad = true
 		}
 	}
-	if addr&15 == 0 && afterPad {
+	// Packed layout (opt-in): behind any padding or terminator the first-byte prologue filter does not
+	// apply either (small methods start with a VEX load, cmp, xor ...): only the clean run is required.
+	if afterPad && (addr&15 == 0 || seedAfterUD2) {
 		code := img.From(addr)
 		// Padding itself is not an entry (a pointer into an int3/nop run).
 		return len(code) > 0 && code[0] != 0xCC && cleanRun(img, addr)
