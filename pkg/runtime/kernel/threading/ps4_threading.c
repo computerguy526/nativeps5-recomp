@@ -403,6 +403,16 @@ static int do_thread_join(RecompThread *t, void **thread_return) {
   }
   pthread_mutex_unlock(&t->lock);
 
+  // ue2boot: NPS5_TRACE_JOIN=1 names both sides of every join (diagnosis of joins that never return).
+  {
+    static int tj = -1;
+    if (tj < 0) { const char *e = getenv("NPS5_TRACE_JOIN"); tj = (e && e[0] == '1') ? 1 : 0; }
+    if (tj == 1) {
+      fprintf(stderr, "[join] '%s' joins '%s' (tid %d, host %p)\n", g_current_thread ? g_current_thread->name : "?",
+              t->name, atomic_load_explicit(&t->tid, memory_order_relaxed), (void *)t->host_thread);
+      fflush(stderr);
+    }
+  }
   // Wait for the target thread to signal termination via join_wait_cv
   pthread_mutex_lock(&t->join_wait_mutex);
   while (atomic_load_explicit(&t->tid, memory_order_acquire) != TID_TERMINATED) {
