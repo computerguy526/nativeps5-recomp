@@ -41,6 +41,7 @@ const char *nps5_vfs_current_scene(void); // kernel/vfs/ps4_vfs.c
 #define RS_KEY "render_scale"
 #define RS_MAX_SITES 16
 #define RS_DATA_FLIP 600
+#define RS_RING 1024 // frames kept for the per-switch trace (+-2 s; 1024 frames = 17 s at 60 fps)
 
 static struct {
     int state; // 0 = not started, 1 = live, -1 = off
@@ -61,6 +62,11 @@ static struct {
     int pending; // NPS5_RENDER_SWITCH=scene: a decision waiting for a level change or a load (-1 = none)
     double sum_ms[2];
     uint32_t n_ms[2];
+    double ring_t[RS_RING], ring_ms[RS_RING]; // per-switch trace: the frames around a switch
+    uint32_t ring_n;
+    double trace_at; // switch time waiting for its +2 s report (0 = none)
+    int trace_from, trace_to;
+    uint32_t trace_no;
 } g_rs = {.choice = -1, .mode_env = -1, .file_mode = -1, .log = 1, .pending = -1};
 
 uint64_t *nps5_choices_values(void); // nps5_patches.c (not in the header: generated code includes it)
@@ -269,6 +275,9 @@ static void rs_apply(int level, const char *why) {
     const int from = g_rs.applied;
     g_rs.applied = level;
     const double now = rs_now(g_rs.last_ns);
+    g_rs.trace_at = now;
+    g_rs.trace_from = from;
+    g_rs.trace_to = level;
     nps5_rs_set_level(&g_rs.r, level, now);
     fprintf(stderr, "[rscale] %s -> %s (%s; ema %.1f ms, target %.1f; scene %s) t=%.1f\n", from ? "540p" : "720p",
             level ? "540p" : "720p", why, g_rs.r.ema_ms, g_rs.r.target_ms,
@@ -294,6 +303,38 @@ static void rs_file_poll(uint64_t now) {
                          : "540p");
         g_rs.file_mode = m;
     }
+}
+
+// Worst frame, frames over 50 ms and the mean of the ring frames with lo <= t < hi.
+static void rs_window(double lo, double hi, double *worst, uint32_t *n50, uint32_t *n, double *mean) {
+    *worst = 0;
+    *n50 = *n = 0;
+    double sum = 0;
+    const uint32_t k0 = g_rs.ring_n > RS_RING ? g_rs.ring_n - RS_RING : 0;
+    for (uint32_t k = k0; k < g_rs.ring_n; k++) {
+        const double t = g_rs.ring_t[k % RS_RING], m = g_rs.ring_ms[k % RS_RING];
+        if (t < lo || t >= hi) continue;
+        (*n)++;
+        sum += m;
+        if (m > *worst) *worst = m;
+        if (m > 50) (*n50)++;
+    }
+    *mean = *n ? sum / *n : 0;
+}
+// 2 s after a switch: one line with the +-2 s window around it and the 4 s before it (the switch's cost in frame time).
+static void rs_trace(double now) {
+    if (g_rs.trace_at <= 0 || now < g_rs.trace_at + 2.0) return;
+    const double s = g_rs.trace_at;
+    g_rs.trace_at = 0;
+    double w1, w0, m1, m0;
+    uint32_t a1, a0, n1, n0;
+    rs_window(s - 2, s + 2, &w1, &a1, &n1, &m1);
+    rs_window(s - 6, s - 2, &w0, &a0, &n0, &m0);
+    fprintf(stderr,
+            "[rscale] switch #%u %s -> %s at t=%.1f: +-2 s worst %.1f ms, >50 ms %u of %u, mean %.1f | 4 s before: "
+            "worst %.1f ms, >50 ms %u of %u, mean %.1f\n",
+            ++g_rs.trace_no, g_rs.trace_from ? "540p" : "720p", g_rs.trace_to ? "540p" : "720p", s, w1, a1, n1, m1, w0,
+            a0, n0, m0);
 }
 
 // Every game frame (the flip packet), on the game's thread.
@@ -344,6 +385,12 @@ void nps5_rscale_flip(void) {
             g_rs.pending = -1;
         }
     }
+    if (ms > 0) {
+        g_rs.ring_t[g_rs.ring_n % RS_RING] = now;
+        g_rs.ring_ms[g_rs.ring_n % RS_RING] = ms;
+        g_rs.ring_n++;
+    }
+    rs_trace(now);
     if (ms > 0 && ms <= g_rs.r.hitch_ms) {
         g_rs.sum_ms[g_rs.applied] += ms;
         g_rs.n_ms[g_rs.applied]++;
