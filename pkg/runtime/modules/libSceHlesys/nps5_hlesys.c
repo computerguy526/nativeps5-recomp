@@ -95,6 +95,34 @@ void shim_psml_mfsr2_initialize(GuestContext *ctx) {
 }
 void shim_psml_mfsr2_not_initialized(GuestContext *ctx) { RET32(ctx, (int32_t)0x8a8a0001u); }
 
+// ---- NpEntitlementAccess / NpManager account queries (PPSA07631) ----------------------------------------
+// Behaviour of upstream KytyPS5 (GPL-2.0: libNpEntitlementAccess.cpp, network.cpp) for an offline, signed-out
+// user: the game is the full SKU, no game trial, account age/language not available (SIGNED_OUT 0x80550006).
+void shim_sceNpEntitlementAccessGetSkuFlag(GuestContext *ctx) {
+  uint32_t *flag = ctx->rdi ? (uint32_t *)NPS5_G2H(ctx, ctx->rdi) : NULL;
+  if (!flag) RET32(ctx, (int32_t)0x817D0002u);
+  *flag = 3; // SKU_FLAG_FULL
+  hs_once("sceNpEntitlementAccessGetSkuFlag", "full SKU");
+  RET32(ctx, 0);
+}
+void shim_sceNpEntitlementAccessGetGameTrialsFlag(GuestContext *ctx) {
+  uint32_t *flag = ctx->rdi ? (uint32_t *)NPS5_G2H(ctx, ctx->rdi) : NULL;
+  if (!flag) RET32(ctx, (int32_t)0x817D0002u);
+  *flag = 0; // GAME_TRIALS_FLAG_OFF
+  RET32(ctx, 0);
+}
+void shim_sceNpGetAccountAge(GuestContext *ctx) {
+  uint8_t *age = ctx->rdx ? (uint8_t *)NPS5_G2H(ctx, ctx->rdx) : NULL;
+  if ((int32_t)ctx->rdi <= 0 || !age) RET32(ctx, (int32_t)0x80550003u);
+  *age = 0;
+  RET32(ctx, (int32_t)0x80550006u);
+}
+void shim_sceNpGetAccountLanguage2(GuestContext *ctx) {
+  uint8_t *code = ctx->rdx ? (uint8_t *)NPS5_G2H(ctx, ctx->rdx) : NULL;
+  if ((int32_t)ctx->rdi <= 0 || !code) RET32(ctx, (int32_t)0x80550003u);
+  RET32(ctx, (int32_t)0x80550006u);
+}
+
 // ---- libScePad (adaptive triggers / vibration mode) --------------------------------------------
 // Host fallback for a build without a pad backend (`-gpu off`): there is no controller, so there is nothing to drive.
 // With `-gpu anyps5` the four imports below are rebound to AnyPS5's libScePad (shim_aps5_<name>, emitter.EnableAnyPS5Shims),

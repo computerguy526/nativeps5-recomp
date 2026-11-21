@@ -131,6 +131,10 @@ var hlesysShims = []string{
 	"pthread_attr_setsolosched_np",
 	"sceKernelGetOperationMode",
 	"_sceLibcInternalThreadAtexit",
+	"sceNpEntitlementAccessGetSkuFlag",
+	"sceNpEntitlementAccessGetGameTrialsFlag",
+	"sceNpGetAccountAge",
+	"sceNpGetAccountLanguage2",
 
 	// libScePad (libSceHlesys)
 	"scePadSetVibrationMode",
