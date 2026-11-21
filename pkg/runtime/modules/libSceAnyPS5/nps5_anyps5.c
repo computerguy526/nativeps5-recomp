@@ -479,8 +479,12 @@ static void nps5_framerate_tick(GuestContext *ctx) {
   }
 }
 
+void nps5_rscale_flip(void); // core/nps5_rscale.c
 void nps5_anyps5_enter(GuestContext *ctx, const char *name) {
-  if (g_fr.state >= 0 && name[3] == 'A' && !strcmp(name, "sceAgcDcbSetFlip")) nps5_framerate_tick(ctx);
+    if (name[3] == 'A' && !strcmp(name, "sceAgcDcbSetFlip")) {
+        if (g_fr.state >= 0) nps5_framerate_tick(ctx);
+        nps5_rscale_flip(); // core/nps5_rscale.c: render-scale controller (no-op unless the profile's render_scale is live)
+    }
   nps5_hostcall_enter(ctx); // AnyPS5 calls guest callbacks (Agc command buffer out-of-space) by pointer
   if (trace_on() >= 2) fprintf(stderr, "[anyps5] > %s(0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx)\n", name, (unsigned long long)ctx->rdi, (unsigned long long)ctx->rsi,
                                (unsigned long long)ctx->rdx, (unsigned long long)ctx->rcx, (unsigned long long)ctx->r8, (unsigned long long)ctx->r9);

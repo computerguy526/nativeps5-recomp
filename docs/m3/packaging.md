@@ -105,6 +105,21 @@ game's own upscaler) | `metalfx900` | `metalfx720` (default), variable `NPS5_AST
 Tests: `TestPatchChoice*`, `TestShippedProfileUpscaling`, `TestShippedProfileBindsTitle` (with `NPS5_TEST_PPSA21564_EBOOT`),
 lifter `TestPatchValue*`, cli `TestSettingsResolveChoicePatch`.
 
+**Live choice sites** (v1.2.2) are for a setting the runtime changes while the game runs. `override`: a 32-bit register move
+(`mov r32, r32` / `mov r32, m32`) whose result is replaced by the slot's low 32 bits after the ordinary lowering, unless the slot is
+`"keep"` (bit 63 set) or, with `"keep_negative": true`, the move's own result is negative; the code reads the slot each time it runs.
+`data32`: a 32-bit word of the image (a constant table), asserted by its bytes and the SHA-256 of an image range around it
+(`func`/`func_size`/`func_sha256`), written by the runtime when the setting first needs it. One option must keep the game (`"keep"`).
+ASTRO BOT 01.007 `render_scale` = `auto` (default) | `p540` | `p720`: level 1 of the game's own dynamic-resolution pipeline sets is
+built at 960x540, the per-frame level selector and the scene level getter are override sites, the level-1 light-tile words data32
+sites. `p720` keeps the game everywhere (the 720p of v1.2.1). The controller (`core/nps5_rscale.c`, logic `nps5_rscale_logic.h`) runs on
+every flip packet: frame-time EMA (1 s), 540p after 2 s over the budget (`NPS5_RENDER_TARGET_MS`, default 33.3, +5 %), back to 720p
+after 8 s under budget at 540p (with an 8 % margin for the dearer level), 20 s dwell, a quick bounce bans the next return (120 s,
+doubling); frames over 250 ms (loads) do not count. `NPS5_RENDER=auto|720|540` (wins over the settings file), `NPS5_RENDER_LEVELS=
+<level>=<mode>,..,*=<mode>`, `NPS5_RENDER_SWITCH=scene` (switch only at a level change or load), `NPS5_RENDER_TUNE`, `NPS5_RENDER_FILE`
+(live override), `NPS5_RENDER_LOG`. One `[rscale]` line per switch. Tests: `TestPatchLive*`, `TestShippedProfileRenderScale`, lifter
+`TestPatchOverride*`, `tests/rscale/rscale_unit.c`.
+
 ## Results (`tools/nps5_app_smoke.sh`, launched with `open -n`, killed after the wait)
 
 | title | build (warm obj cache) | cold GPU cache | warm, 10 s | moved/renamed .app |

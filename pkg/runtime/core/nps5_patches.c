@@ -84,6 +84,10 @@ void nps5_patch_choices_register(int abi, const char *profile, const Nps5ChoiceD
     for (int i = 0; i < n; i++) g_copt[i] = (uint8_t)descs[i].def;
 }
 
+// The registered value slots (NULL when the title has none): for nps5_rscale.c, which rewrites the slots of the live
+// sites while the game runs. Declared there, not in the header (generated code includes it).
+uint64_t *nps5_choices_values(void) { return g_values; }
+
 int nps5_choices_count(void) { return g_cn; }
 const Nps5ChoiceDesc *nps5_choices_desc(int i) { return i >= 0 && i < g_cn ? &g_cdescs[i] : NULL; }
 int nps5_choices_get(int i) { return i >= 0 && i < g_cn ? g_copt[i] : 0; }
@@ -191,8 +195,13 @@ static int parse_switch(const char *v) {
     return -1;
 }
 
+// nps5_rscale.c: NPS5_RENDER picks the render_scale option / the live part of render_scale (no-op without that setting).
+// Weak no-op definitions here, so that a program (or a test) without that file still links.
+__attribute__((weak)) void nps5_rscale_preresolve(void) {}
+__attribute__((weak)) void nps5_rscale_start(void) {}
 void nps5_patches_resolve(void) {
     if (g_resolved) return;
+    nps5_rscale_preresolve();
     for (int i = 0; i < g_n; i++) {
         const Nps5PatchDesc *d = &g_descs[i];
         const char *src = g_val[i] == (d->def != 0) ? "default" : "settings";
@@ -219,4 +228,5 @@ void nps5_patches_resolve(void) {
     }
     choices_resolve();
     g_resolved = 1;
+    nps5_rscale_start();
 }

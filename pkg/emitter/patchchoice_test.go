@@ -344,8 +344,68 @@ func TestShippedProfileBindsTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Sites != 5 || strings.Join(rep.Keys, ",") != "fast_lighting,upscaling" {
+	if rep.Sites != 14 || strings.Join(rep.Keys, ",") != "fast_lighting,upscaling,render_scale" {
 		t.Errorf("report %+v", rep)
+	}
+}
+
+// The shipped render_scale setting: auto (default) and p540 build level 1 at 960x540 and open the level selector + the scene
+// level getter (override sites) and the level-1 light-tile words (data32); p720 keeps the game everywhere.
+func TestShippedProfileRenderScale(t *testing.T) {
+	p, err := LoadPatchProfile(filepath.Join("..", "..", "profiles", "patches", "PPSA21564.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rs *Patch
+	for i := range p.Builds[0].Patches {
+		if p.Builds[0].Patches[i].Key == "render_scale" {
+			rs = &p.Builds[0].Patches[i]
+		}
+	}
+	if rs == nil {
+		t.Fatal("no render_scale patch")
+	}
+	if def, err := checkPatchOptions(rs); err != nil || def != 0 || len(rs.Options) != 3 || rs.Options[0].Name != "auto" || rs.Options[1].Name != "p540" ||
+		rs.Options[2].Name != "p720" || rs.Env != "" {
+		t.Fatalf("options %+v %d %v", rs.Options, def, err)
+	}
+	n := map[string]int{}
+	for _, s := range rs.Sites {
+		n[s.Op]++
+		if s.Values[2] != "keep" && s.Op != PatchValue && s.Op != PatchValueF32 {
+			t.Errorf("site %s: p720 must keep the game (%v)", s.Addr, s.Values)
+		}
+		if s.Values[0] != s.Values[1] {
+			t.Errorf("site %s: auto and p540 differ (%v)", s.Addr, s.Values)
+		}
+		if s.Op == PatchData32 {
+			continue
+		}
+		b, err := hexBytes(s.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst, err := x86asm.Decode(b, 64)
+		if err != nil || inst.Len != len(b) {
+			t.Fatalf("site %s: %v", s.Addr, err)
+		}
+		switch s.Op {
+		case PatchOverride:
+			if _, _, err := lifter.PatchValueTarget(inst, lifter.PatchValueOverride); err != nil || s.Values[0] != "0" {
+				t.Errorf("site %s: %v %v", s.Addr, err, s.Values)
+			}
+		case PatchValueF32:
+			if strings.Join(s.Values, ",") != "960,960,2432" {
+				t.Errorf("site %s widths %v", s.Addr, s.Values)
+			}
+		case PatchValue:
+			if strings.Join(s.Values, ",") != "0x21c000003c0,0x21c000003c0,0x55800000980" {
+				t.Errorf("site %s sizes %v", s.Addr, s.Values)
+			}
+		}
+	}
+	if n[PatchOverride] != 3 || n[PatchData32] != 2 || n[PatchValue] != 2 || n[PatchValueF32] != 2 {
+		t.Errorf("sites per op %v", n)
 	}
 }
 

@@ -27,13 +27,26 @@ const (
 	// PatchValueF32: a scalar single load "movss/vmovss/movd/vmovd xmm, m32"; the low 32 bits of
 	// the slot hold the float's bits.
 	PatchValueF32
+	// PatchValueOverride: "mov r32, r32" / "mov r32, m32" whose result a setting may replace while
+	// the game runs. The slot holds either the replacement (bits 0-31, bit 63 clear) or "keep"
+	// (bit 63 set: the instruction's own result stays). With KeepNegative an own result with bit 31
+	// set (a negative int32) stays too. The runtime may rewrite the slot at any time (a live
+	// setting: nps5_rscale.c), the translated code reads it every time the instruction runs.
+	PatchValueOverride
+	// PatchValueData32: not an instruction: a 32-bit word of the image's data that the runtime
+	// writes (the slot holds the word; bit 63 = keep). No lowering exists for it.
+	PatchValueData32
 )
+
+// PatchOverrideKeep is the slot content of an override or data site that keeps the game's value.
+const PatchOverrideKeep = ^uint64(0)
 
 // PatchValueSite is one value site: the register the instruction at that address writes is
 // loaded from slot Slot afterwards.
 type PatchValueSite struct {
-	Slot int
-	Kind PatchValueKind
+	Slot         int
+	Kind         PatchValueKind
+	KeepNegative bool // PatchValueOverride only
 }
 
 // SetPatchValueSites installs the value sites by guest address. The map is shared read-only by
@@ -83,6 +96,32 @@ func PatchValueTarget(inst x86asm.Inst, kind PatchValueKind) (reg string, imm ui
 		// "ldr sN" writes bits 0-31 and clears 32-127 of vN, as the load itself does; the upper
 		// YMM half (v16+N) keeps what the ordinary lowering left there.
 		return lowS, 0, nil
+	case PatchValueOverride:
+		if inst.Op != x86asm.MOV {
+			return "", 0, fmt.Errorf("%s is not a mov", inst.Op)
+		}
+		r, ok := inst.Args[0].(x86asm.Reg)
+		if !ok {
+			return "", 0, fmt.Errorf("the destination is not a register")
+		}
+		desc, ok := arm64RegMap[r]
+		if !ok || desc.IsHigh8 || desc.Size != 4 {
+			return "", 0, fmt.Errorf("destination %s is not a 32-bit register", r)
+		}
+		switch src := inst.Args[1].(type) {
+		case x86asm.Reg:
+			if sd, ok := arm64RegMap[src]; !ok || sd.Size != 4 || sd.IsHigh8 {
+				return "", 0, fmt.Errorf("source %s is not a 32-bit register", src)
+			}
+		case x86asm.Mem:
+			if inst.MemBytes != 4 {
+				return "", 0, fmt.Errorf("not a 32-bit load")
+			}
+		default:
+			return "", 0, fmt.Errorf("not a register <- register or register <- m32 move")
+		}
+		// A 32-bit mov writes the register zero-extended and nothing else: no flags, no memory.
+		return desc.W, 0, nil
 	}
 	return "", 0, fmt.Errorf("unknown value kind %d", kind)
 }
@@ -100,6 +139,25 @@ func (l *Arm64Lifter) patchValueSuffix(inst disasm.Instruction, vs PatchValueSit
 	}
 	if vs.Slot < 0 || vs.Slot*8 > 32760 {
 		return nil, fmt.Errorf("value patch point at 0x%x: slot %d", inst.Address, vs.Slot)
+	}
+	if vs.Kind == PatchValueOverride {
+		// adrp/add x16 ; ldr x16, [x16, #8*slot] ; tbnz x16, #63, keep ; [tbnz wR, #31, keep] ;
+		// mov wR, w16 ; keep:   (branches only: NZCV untouched, x16 the only other register)
+		keep := fmt.Sprintf("L_pv_0x%x_%d", inst.Address, l.labelCounter)
+		l.labelCounter++
+		out := []string{
+			fmt.Sprintf("    adrp x16, %s@PAGE", PatchValuesSymbol),
+			fmt.Sprintf("    add x16, x16, %s@PAGEOFF", PatchValuesSymbol),
+			fmt.Sprintf("    ldr x16, [x16, #%d]", vs.Slot*8),
+			"    tbnz x16, #63, " + keep,
+		}
+		if vs.KeepNegative {
+			out = append(out, fmt.Sprintf("    tbnz %s, #31, %s", reg, keep))
+		}
+		return append(out, fmt.Sprintf("    mov %s, w16", reg), keep+":"), nil
+	}
+	if vs.Kind == PatchValueData32 {
+		return nil, fmt.Errorf("value patch point at 0x%x: a data site is not an instruction", inst.Address)
 	}
 	return []string{
 		fmt.Sprintf("    adrp x16, %s@PAGE", PatchValuesSymbol),

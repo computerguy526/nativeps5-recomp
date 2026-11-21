@@ -111,6 +111,155 @@
               "note": "same case: 'movabs rcx, 0x43800000780' = the level's {width, height} pair"
             }
           ]
+        },
+        {
+          "key": "render_scale",
+          "title": "Render scale",
+          "description": "Automatic: the 3D scene renders at 720p and drops to 540p while frames take longer than the budget (33 ms = 30 fps; NPS5_RENDER_TARGET_MS), back to 720p when there is headroom; MetalFX upscales either size, menus and text stay sharp. 540p gives about 6 % shorter frames on an M4 Pro (Sky Garden) for a softer picture. The switch uses the game's own dynamic-resolution pipeline sets (level 1 is built at 960x540), so nothing is re-created. NPS5_RENDER=auto|720|540 chooses too, NPS5_RENDER_LEVELS sets it per level; 720p is the game as before. Assumes the Upscaling setting's 720p.",
+          "default_option": "auto",
+          "options": [
+            {
+              "name": "auto",
+              "label": "Automatic (720p, 540p when frames are over budget, default)"
+            },
+            {
+              "name": "p540",
+              "label": "540p always"
+            },
+            {
+              "name": "p720",
+              "label": "720p always (the game's own level selection)"
+            }
+          ],
+          "sites": [
+            {
+              "addr": "0x73be7c0",
+              "bytes": "c5fa10050010f900",
+              "op": "value-f32",
+              "func": "0x73be670",
+              "func_size": 79354,
+              "func_sha256": "585365f787f546fecda455c39edd27ccd2a2fbd3161c62cd6626a287f54d480f",
+              "values": [
+                "960",
+                "960",
+                "2432"
+              ],
+              "note": "scene parameters, dynamic-resolution level 1 case of function 0x73be670 (guest 0x77be670): 'vmovss xmm0, [rip+0xf91000]' loads the level width as a float (texture LOD bias)"
+            },
+            {
+              "addr": "0x73be7cf",
+              "bytes": "48ba8009000058050000",
+              "op": "value",
+              "func": "0x73be670",
+              "func_size": 79354,
+              "func_sha256": "585365f787f546fecda455c39edd27ccd2a2fbd3161c62cd6626a287f54d480f",
+              "values": [
+                "0x21c000003c0",
+                "0x21c000003c0",
+                "0x55800000980"
+              ],
+              "note": "same case: 'movabs rdx, 0x55800000980' = the level's {width, height} pair"
+            },
+            {
+              "addr": "0x70cff59",
+              "bytes": "c5f96e0567f82701",
+              "op": "value-f32",
+              "func": "0x70cef60",
+              "func_size": 26565,
+              "func_sha256": "5b103fce3ff8de4c813be8c24e03c98fa5538a44d0179d28a1d302b5c58bc245",
+              "values": [
+                "960",
+                "960",
+                "2432"
+              ],
+              "note": "scene parameters, dynamic-resolution level 1 (and 2: one block) case of function 0x70cef60 (guest 0x74cef60): 'vmovd xmm0, [rip+0x127f867]' loads the level width as a float"
+            },
+            {
+              "addr": "0x70cff61",
+              "bytes": "48b98009000058050000",
+              "op": "value",
+              "func": "0x70cef60",
+              "func_size": 26565,
+              "func_sha256": "5b103fce3ff8de4c813be8c24e03c98fa5538a44d0179d28a1d302b5c58bc245",
+              "values": [
+                "0x21c000003c0",
+                "0x21c000003c0",
+                "0x55800000980"
+              ],
+              "note": "same case: 'movabs rcx, 0x55800000980' = the level's {width, height} pair"
+            },
+            {
+              "addr": "0xc53627",
+              "bytes": "8b8030ae2f00",
+              "op": "override",
+              "func": "0xc53370",
+              "func_size": 740,
+              "func_sha256": "04e918f90091e3e868e783880de5e6ee9b51f1cf81c4ec5a9f3554b5360e07a5",
+              "values": [
+                "0",
+                "0",
+                "keep"
+              ],
+              "note": "per-frame application update, function 0xc53370 (guest 0x1053370): 'mov eax, [rax+0x2fae30]' = the renderer's requested DRS level; the game compares it with the current level and switches pipeline sets [app+0x15c0+8*level] on a change"
+            },
+            {
+              "addr": "0xc53637",
+              "bytes": "8b8390230000",
+              "op": "override",
+              "func": "0xc53370",
+              "func_size": 740,
+              "func_sha256": "04e918f90091e3e868e783880de5e6ee9b51f1cf81c4ec5a9f3554b5360e07a5",
+              "values": [
+                "0",
+                "0",
+                "keep"
+              ],
+              "note": "same selector, other branch: 'mov eax, [rbx+0x2390]' = the application's DRS level"
+            },
+            {
+              "addr": "0x7418b6d",
+              "bytes": "89d8",
+              "op": "override",
+              "func": "0x7418ad0",
+              "func_size": 338,
+              "func_sha256": "ef75b27baf7bf53f03cec3f4d077f2cf79d0b26ee05de2087363720d4de25349",
+              "values": [
+                "0",
+                "0",
+                "keep"
+              ],
+              "keep_negative": true,
+              "note": "per-frame scene level getter, function 0x7418ad0 (guest 0x7818ad0): 'mov eax, ebx' returns the scene's DRS level (read only by the light-tile grid table lookup); a negative level (no DRS) stays"
+            },
+            {
+              "addr": "0x87e9850",
+              "bytes": "56000000",
+              "op": "data32",
+              "func": "0x87e984c",
+              "func_size": 40,
+              "func_sha256": "cd44ce4ecda4c982576ac8eab89894d1b614f454b243c836205664034025b3d8",
+              "values": [
+                "34",
+                "34",
+                "keep"
+              ],
+              "note": "light-tile grid tables (guest 0x8be984c: tiles y per DRS level {68, 86, 86, 117, 135}, 0x8be9860: tiles x {120, 152, 152, 208, 240}): level-1 tiles y = ceil(540/16)"
+            },
+            {
+              "addr": "0x87e9864",
+              "bytes": "98000000",
+              "op": "data32",
+              "func": "0x87e984c",
+              "func_size": 40,
+              "func_sha256": "cd44ce4ecda4c982576ac8eab89894d1b614f454b243c836205664034025b3d8",
+              "values": [
+                "60",
+                "60",
+                "keep"
+              ],
+              "note": "same tables: level-1 tiles x = 960/16"
+            }
+          ]
         }
       ]
     }
