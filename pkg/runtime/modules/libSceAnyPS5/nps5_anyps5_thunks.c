@@ -633,7 +633,7 @@ void shim_aps5_sceAgcBranchPatchSetThenTarget_0300(GuestContext *ctx) {
   uint8_t a1 = (uint8_t)ctx->rsi;
   void *a2 = (void *)NPS5_G2H(ctx, ctx->rdx);
   uint32_t a3 = (uint32_t)ctx->rcx;
-  int r = sceAgcBranchPatchSetThenTarget_0300(a0, a1, a2, a3);
+  int r = aps5_rt_sceAgcBranchPatchSetThenTarget_0300(a0, a1, a2, a3);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcBranchPatchSetThenTarget_0300");
   SHIM_RETURN();
@@ -654,7 +654,7 @@ void shim_aps5_sceAgcCbBranch(GuestContext *ctx) {
   uint8_t a9 = (uint8_t)NPS5_GUEST_STACK_ARG(ctx, 3);
   void *a10 = (void *)NPS5_G2H(ctx, NPS5_GUEST_STACK_ARG(ctx, 4));
   uint32_t a11 = (uint32_t)NPS5_GUEST_STACK_ARG(ctx, 5);
-  void * r = sceAgcCbBranch(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+  void * r = aps5_rt_sceAgcCbBranch(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
   ctx->rax = NPS5_H2G(ctx, r);
   nps5_anyps5_leave(ctx, "sceAgcCbBranch");
   SHIM_RETURN();
@@ -663,7 +663,7 @@ void shim_aps5_sceAgcCbBranch(GuestContext *ctx) {
 // uint32_t sceAgcCbBranchGetSize(void)
 void shim_aps5_sceAgcCbBranchGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcCbBranchGetSize");
-  uint32_t r = sceAgcCbBranchGetSize();
+  uint32_t r = aps5_rt_sceAgcCbBranchGetSize();
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcCbBranchGetSize");
   SHIM_RETURN();
@@ -938,7 +938,7 @@ void shim_aps5_sceAgcCreateInterpolantMapping_10000(GuestContext *ctx) {
   void *a0 = (void *)NPS5_G2H(ctx, ctx->rdi);
   void *a1 = (void *)NPS5_G2H(ctx, ctx->rsi);
   void *a2 = (void *)NPS5_G2H(ctx, ctx->rdx);
-  int r = sceAgcCreateInterpolantMapping_10000(a0, a1, a2);
+  int r = aps5_rt_sceAgcCreateInterpolantMapping_10000(a0, a1, a2);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcCreateInterpolantMapping_10000");
   SHIM_RETURN();
@@ -1188,7 +1188,7 @@ void shim_aps5_sceAgcDcbDispatchIndirect(GuestContext *ctx) {
 // uint32_t sceAgcDcbDispatchIndirectGetSize(void)
 void shim_aps5_sceAgcDcbDispatchIndirectGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcDcbDispatchIndirectGetSize");
-  uint32_t r = sceAgcDcbDispatchIndirectGetSize();
+  uint32_t r = aps5_rt_sceAgcDcbDispatchIndirectGetSize();
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcDcbDispatchIndirectGetSize");
   SHIM_RETURN();
@@ -1298,7 +1298,7 @@ void shim_aps5_sceAgcDcbDrawIndexIndirectMulti(GuestContext *ctx) {
   void *a4 = (void *)NPS5_G2H(ctx, ctx->r8);
   uint32_t a5 = (uint32_t)ctx->r9;
   uint64_t a6 = (uint64_t)NPS5_GUEST_STACK_ARG(ctx, 0);
-  void * r = sceAgcDcbDrawIndexIndirectMulti(a0, a1, a2, a3, a4, a5, a6);
+  void * r = aps5_rt_sceAgcDcbDrawIndexIndirectMulti(a0, a1, a2, a3, a4, a5, a6);
   ctx->rax = NPS5_H2G(ctx, r);
   nps5_anyps5_leave(ctx, "sceAgcDcbDrawIndexIndirectMulti");
   SHIM_RETURN();
@@ -1365,7 +1365,7 @@ void shim_aps5_sceAgcDcbDrawIndirect(GuestContext *ctx) {
   void *a0 = (void *)NPS5_G2H(ctx, ctx->rdi);
   uint32_t a1 = (uint32_t)ctx->rsi;
   uint64_t a2 = (uint64_t)ctx->rdx;
-  void * r = sceAgcDcbDrawIndirect(a0, a1, a2);
+  void * r = aps5_rt_sceAgcDcbDrawIndirect(a0, a1, a2);
   ctx->rax = NPS5_H2G(ctx, r);
   nps5_anyps5_leave(ctx, "sceAgcDcbDrawIndirect");
   SHIM_RETURN();
@@ -1374,7 +1374,7 @@ void shim_aps5_sceAgcDcbDrawIndirect(GuestContext *ctx) {
 // uint32_t sceAgcDcbDrawIndirectGetSize(void)
 void shim_aps5_sceAgcDcbDrawIndirectGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcDcbDrawIndirectGetSize");
-  uint32_t r = sceAgcDcbDrawIndirectGetSize();
+  uint32_t r = aps5_rt_sceAgcDcbDrawIndirectGetSize();
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcDcbDrawIndirectGetSize");
   SHIM_RETURN();
@@ -1481,7 +1481,7 @@ void shim_aps5_sceAgcDcbJump(GuestContext *ctx) {
   uint8_t a2 = (uint8_t)ctx->rdx;
   void *a3 = (void *)NPS5_G2H(ctx, ctx->rcx);
   uint32_t a4 = (uint32_t)ctx->r8;
-  void * r = sceAgcDcbJump(a0, a1, a2, a3, a4);
+  void * r = aps5_rt_sceAgcDcbJump(a0, a1, a2, a3, a4);
   ctx->rax = NPS5_H2G(ctx, r);
   nps5_anyps5_leave(ctx, "sceAgcDcbJump");
   SHIM_RETURN();
@@ -1706,7 +1706,7 @@ void shim_aps5_sceAgcDcbSetCxRegistersIndirect(GuestContext *ctx) {
 void shim_aps5_sceAgcDcbSetCxRegistersIndirectGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcDcbSetCxRegistersIndirectGetSize");
   uint32_t a0 = (uint32_t)ctx->rdi;
-  uint32_t r = sceAgcDcbSetCxRegistersIndirectGetSize(a0);
+  uint32_t r = aps5_rt_sceAgcDcbSetCxRegistersIndirectGetSize(a0);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcDcbSetCxRegistersIndirectGetSize");
   SHIM_RETURN();
@@ -1875,7 +1875,7 @@ void shim_aps5_sceAgcDcbSetPredication(GuestContext *ctx) {
   uint8_t a3 = (uint8_t)ctx->rcx;
   void *a4 = (void *)NPS5_G2H(ctx, ctx->r8);
   uint32_t a5 = (uint32_t)ctx->r9;
-  void * r = sceAgcDcbSetPredication(a0, a1, a2, a3, a4, a5);
+  void * r = aps5_rt_sceAgcDcbSetPredication(a0, a1, a2, a3, a4, a5);
   ctx->rax = NPS5_H2G(ctx, r);
   nps5_anyps5_leave(ctx, "sceAgcDcbSetPredication");
   SHIM_RETURN();
@@ -1926,7 +1926,7 @@ void shim_aps5_sceAgcDcbSetShRegistersIndirect(GuestContext *ctx) {
 void shim_aps5_sceAgcDcbSetShRegistersIndirectGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcDcbSetShRegistersIndirectGetSize");
   uint32_t a0 = (uint32_t)ctx->rdi;
-  uint32_t r = sceAgcDcbSetShRegistersIndirectGetSize(a0);
+  uint32_t r = aps5_rt_sceAgcDcbSetShRegistersIndirectGetSize(a0);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcDcbSetShRegistersIndirectGetSize");
   SHIM_RETURN();
@@ -1968,7 +1968,7 @@ void shim_aps5_sceAgcDcbSetUcRegistersIndirect(GuestContext *ctx) {
 void shim_aps5_sceAgcDcbSetUcRegistersIndirectGetSize(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcDcbSetUcRegistersIndirectGetSize");
   uint32_t a0 = (uint32_t)ctx->rdi;
-  uint32_t r = sceAgcDcbSetUcRegistersIndirectGetSize(a0);
+  uint32_t r = aps5_rt_sceAgcDcbSetUcRegistersIndirectGetSize(a0);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcDcbSetUcRegistersIndirectGetSize");
   SHIM_RETURN();
@@ -3962,7 +3962,7 @@ void shim_aps5_sceAgcSetCxRegIndirectPatchSetNumRegisters(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcSetCxRegIndirectPatchSetNumRegisters");
   void *a0 = (void *)NPS5_G2H(ctx, ctx->rdi);
   uint32_t a1 = (uint32_t)ctx->rsi;
-  int r = sceAgcSetCxRegIndirectPatchSetNumRegisters(a0, a1);
+  int r = aps5_rt_sceAgcSetCxRegIndirectPatchSetNumRegisters(a0, a1);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcSetCxRegIndirectPatchSetNumRegisters");
   SHIM_RETURN();
@@ -3984,7 +3984,7 @@ void shim_aps5_sceAgcSetPacketPredication(GuestContext *ctx) {
   nps5_anyps5_enter(ctx, "sceAgcSetPacketPredication");
   void *a0 = (void *)NPS5_G2H(ctx, ctx->rdi);
   uint32_t a1 = (uint32_t)ctx->rsi;
-  int r = sceAgcSetPacketPredication(a0, a1);
+  int r = aps5_rt_sceAgcSetPacketPredication(a0, a1);
   ctx->rax = (uint64_t)(int64_t)r;
   nps5_anyps5_leave(ctx, "sceAgcSetPacketPredication");
   SHIM_RETURN();
@@ -16100,15 +16100,12 @@ int nps5_anyps5_bind_exports(void *handle) {
 }
 
 // ---- NPS5_GPU=kyty routes (pkg/thunkgen/kyty.go, nps5_kyty.c) ----
-void * (*aps5_rt_sceAgcDcbPushMarker)(void *, void *, uint32_t) = sceAgcDcbPushMarker;
-static void * kyty_raw_0(void *a0, void *a1, uint32_t a2) {
+static int kyty_raw_0(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  (void)a1;
-  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(0))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+  return ((int (*)(void *))nps5_kyty_entry(0))((void *)(uintptr_t)ctx->rdi);
 }
-void * (*aps5_rt_sceAgcDcbSetShRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetShRegistersIndirect;
+void * (*aps5_rt_sceAgcDcbPushMarker)(void *, void *, uint32_t) = sceAgcDcbPushMarker;
 static void * kyty_raw_1(void *a0, void *a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
@@ -16116,397 +16113,364 @@ static void * kyty_raw_1(void *a0, void *a1, uint32_t a2) {
   void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(1))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcDcbSetIndexSize_0600)(void *, uint8_t, uint8_t, uint8_t) = sceAgcDcbSetIndexSize_0600;
-static void * kyty_raw_2(void *a0, uint8_t a1, uint8_t a2, uint8_t a3) {
+void * (*aps5_rt_sceAgcDcbSetShRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetShRegistersIndirect;
+static void * kyty_raw_2(void *a0, void *a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t))nps5_kyty_entry(2))((void *)(uintptr_t)ctx->rdi, a1, a2, a3);
+  (void)a1;
+  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(2))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbSetIndexSize_0600)(void *, uint8_t, uint8_t, uint8_t) = sceAgcDcbSetIndexSize_0600;
+static void * kyty_raw_3(void *a0, uint8_t a1, uint8_t a2, uint8_t a3) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t))nps5_kyty_entry(3))((void *)(uintptr_t)ctx->rdi, a1, a2, a3);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcAcbDmaData)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t) = sceAgcAcbDmaData;
-static void * kyty_raw_3(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint32_t a7, uint8_t a8, uint8_t a9) {
+static void * kyty_raw_4(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint32_t a7, uint8_t a8, uint8_t a9) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(3))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(4))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8, a9);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcQueueEndOfPipeActionPatchAddress)(void *, void *) = sceAgcQueueEndOfPipeActionPatchAddress;
-static int kyty_raw_4(void *a0, void *a1) {
+static int kyty_raw_5(void *a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
-  return ((int (*)(void *, void *))nps5_kyty_entry(4))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(void *, void *))nps5_kyty_entry(5))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
 }
-static int kyty_raw_5(int a0, void *a1) {
+static int kyty_raw_6(int a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a1;
-  return ((int (*)(int, void *))nps5_kyty_entry(5))(a0, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(int, void *))nps5_kyty_entry(6))(a0, (void *)(uintptr_t)ctx->rsi);
+}
+void * (*aps5_rt_sceAgcDcbDrawIndirect)(void *, uint32_t, uint64_t) = sceAgcDcbDrawIndirect;
+static void * kyty_raw_7(void *a0, uint32_t a1, uint64_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t, uint64_t))nps5_kyty_entry(7))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcDcbCopyData)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t) = sceAgcDcbCopyData;
-static void * kyty_raw_6(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint8_t a7, uint8_t a8) {
+static void * kyty_raw_8(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint8_t a7, uint8_t a8) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t))nps5_kyty_entry(6))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8);
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t))nps5_kyty_entry(8))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcInit_0090)(void *, uint32_t) = sceAgcInit_0090;
-static int kyty_raw_7(void *a0, uint32_t a1) {
+static int kyty_raw_9(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *, uint32_t))nps5_kyty_entry(7))((void *)(uintptr_t)ctx->rdi, a1);
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(9))((void *)(uintptr_t)ctx->rdi, a1);
 }
 void * (*aps5_rt_sceAgcGetRegisterDefaults2)(uint32_t) = sceAgcGetRegisterDefaults2;
-static void * kyty_raw_8(uint32_t a0) {
+static void * kyty_raw_10(uint32_t a0) {
   GuestContext *ctx = nps5_kyty_ctx();
-  void *r = ((void * (*)(uint32_t))nps5_kyty_entry(8))(a0);
+  void *r = ((void * (*)(uint32_t))nps5_kyty_entry(10))(a0);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcWaitRegMemPatchAddress)(void *, void *) = sceAgcWaitRegMemPatchAddress;
-static int kyty_raw_9(void *a0, void *a1) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  return ((int (*)(void *, void *))nps5_kyty_entry(9))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
-}
-void * (*aps5_rt_sceAgcDcbAcquireMem)(void *, uint8_t, uint32_t, uint32_t, void *, uint64_t, uint32_t) = sceAgcDcbAcquireMem;
-static void * kyty_raw_10(void *a0, uint8_t a1, uint32_t a2, uint32_t a3, void *a4, uint64_t a5, uint32_t a6) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a4;
-  void *r = ((void * (*)(void *, uint8_t, uint32_t, uint32_t, void *, uint64_t, uint32_t))nps5_kyty_entry(10))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-int (*aps5_rt_sceAgcSetUcRegIndirectPatchSetAddress)(void *, void *) = sceAgcSetUcRegIndirectPatchSetAddress;
 static int kyty_raw_11(void *a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
   return ((int (*)(void *, void *))nps5_kyty_entry(11))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
 }
-void * (*aps5_rt_sceAgcAcbPopMarker)(void *) = sceAgcAcbPopMarker;
-static void * kyty_raw_12(void *a0) {
+void * (*aps5_rt_sceAgcDcbAcquireMem)(void *, uint8_t, uint32_t, uint32_t, void *, uint64_t, uint32_t) = sceAgcDcbAcquireMem;
+static void * kyty_raw_12(void *a0, uint8_t a1, uint32_t a2, uint32_t a3, void *a4, uint64_t a5, uint32_t a6) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *))nps5_kyty_entry(12))((void *)(uintptr_t)ctx->rdi);
+  (void)a4;
+  void *r = ((void * (*)(void *, uint8_t, uint32_t, uint32_t, void *, uint64_t, uint32_t))nps5_kyty_entry(12))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcDcbSetIndexCount)(void *, uint32_t) = sceAgcDcbSetIndexCount;
-static void * kyty_raw_13(void *a0, uint32_t a1) {
+static int kyty_raw_13(int a0, uint64_t a1, uint64_t a2) {
+  return ((int (*)(int, uint64_t, uint64_t))nps5_kyty_entry(13))(a0, a1, a2);
+}
+int (*aps5_rt_sceAgcSetUcRegIndirectPatchSetAddress)(void *, void *) = sceAgcSetUcRegIndirectPatchSetAddress;
+static int kyty_raw_14(void *a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(13))((void *)(uintptr_t)ctx->rdi, a1);
+  (void)a1;
+  return ((int (*)(void *, void *))nps5_kyty_entry(14))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
+}
+void * (*aps5_rt_sceAgcAcbPopMarker)(void *) = sceAgcAcbPopMarker;
+static void * kyty_raw_15(void *a0) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *))nps5_kyty_entry(15))((void *)(uintptr_t)ctx->rdi);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+int (*aps5_rt_sceAgcBranchPatchSetThenTarget_0300)(void *, uint8_t, void *, uint32_t) = sceAgcBranchPatchSetThenTarget_0300;
+static int kyty_raw_16(void *a0, uint8_t a1, void *a2, uint32_t a3) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a2;
+  return ((int (*)(void *, uint8_t, void *, uint32_t))nps5_kyty_entry(16))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3);
+}
+void * (*aps5_rt_sceAgcDcbSetIndexCount)(void *, uint32_t) = sceAgcDcbSetIndexCount;
+static void * kyty_raw_17(void *a0, uint32_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(17))((void *)(uintptr_t)ctx->rdi, a1);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 uint32_t (*aps5_rt_sceAgcCbDispatchGetSize)(void) = sceAgcCbDispatchGetSize;
-static uint32_t kyty_raw_14(void) {
-  return ((uint32_t (*)(void))nps5_kyty_entry(14))();
+static uint32_t kyty_raw_18(void) {
+  return ((uint32_t (*)(void))nps5_kyty_entry(18))();
 }
 int (*aps5_rt_sceAgcDriverAgrSubmitDcb)(void *) = sceAgcDriverAgrSubmitDcb;
-static int kyty_raw_15(void *a0) {
+static int kyty_raw_19(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *))nps5_kyty_entry(15))((void *)(uintptr_t)ctx->rdi);
+  return ((int (*)(void *))nps5_kyty_entry(19))((void *)(uintptr_t)ctx->rdi);
 }
 void * (*aps5_rt_sceAgcDcbDrawIndexOffset)(void *, uint32_t, uint32_t, uint64_t) = sceAgcDcbDrawIndexOffset;
-static void * kyty_raw_16(void *a0, uint32_t a1, uint32_t a2, uint64_t a3) {
+static void * kyty_raw_20(void *a0, uint32_t a1, uint32_t a2, uint64_t a3) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t, uint64_t))nps5_kyty_entry(16))((void *)(uintptr_t)ctx->rdi, a1, a2, a3);
+  void *r = ((void * (*)(void *, uint32_t, uint32_t, uint64_t))nps5_kyty_entry(20))((void *)(uintptr_t)ctx->rdi, a1, a2, a3);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcGetIsTrinityMode)(void *) = sceAgcGetIsTrinityMode;
-static int kyty_raw_17(void *a0) {
+static int kyty_raw_21(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *))nps5_kyty_entry(17))((void *)(uintptr_t)ctx->rdi);
+  return ((int (*)(void *))nps5_kyty_entry(21))((void *)(uintptr_t)ctx->rdi);
+}
+static int kyty_raw_22(int a0, int a1) {
+  return ((int (*)(int, int))nps5_kyty_entry(22))(a0, a1);
 }
 void * (*aps5_rt_sceAgcDcbDispatchIndirect)(void *, uint32_t, uint32_t) = sceAgcDcbDispatchIndirect;
-static void * kyty_raw_18(void *a0, uint32_t a1, uint32_t a2) {
+static void * kyty_raw_23(void *a0, uint32_t a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(18))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(23))((void *)(uintptr_t)ctx->rdi, a1, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcCreatePrimState)(void *, void *, void *, void *, uint32_t) = sceAgcCreatePrimState;
-static int kyty_raw_19(void *a0, void *a1, void *a2, void *a3, uint32_t a4) {
+static int kyty_raw_24(void *a0, void *a1, void *a2, void *a3, uint32_t a4) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
-  return ((int (*)(void *, void *, void *, void *, uint32_t))nps5_kyty_entry(19))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx, a4);
+  return ((int (*)(void *, void *, void *, void *, uint32_t))nps5_kyty_entry(24))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx, a4);
 }
 int (*aps5_rt_sceAgcDriverDeleteEqEvent)(int64_t, int) = sceAgcDriverDeleteEqEvent;
-static int kyty_raw_20(int64_t a0, int a1) {
-  return ((int (*)(int64_t, int))nps5_kyty_entry(20))(a0, a1);
+static int kyty_raw_25(int64_t a0, int a1) {
+  return ((int (*)(int64_t, int))nps5_kyty_entry(25))(a0, a1);
 }
-static int kyty_raw_21(void *a0, float a1, uint32_t a2) {
+static int kyty_raw_26(void *a0, float a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *, float, uint32_t))nps5_kyty_entry(21))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  return ((int (*)(void *, float, uint32_t))nps5_kyty_entry(26))((void *)(uintptr_t)ctx->rdi, a1, a2);
 }
 void * (*aps5_rt_sceAgcAcbRewind)(void *, uint32_t) = sceAgcAcbRewind;
-static void * kyty_raw_22(void *a0, uint32_t a1) {
+static void * kyty_raw_27(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(22))((void *)(uintptr_t)ctx->rdi, a1);
+  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(27))((void *)(uintptr_t)ctx->rdi, a1);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
+uint32_t (*aps5_rt_sceAgcDcbSetCxRegistersIndirectGetSize)(uint32_t) = sceAgcDcbSetCxRegistersIndirectGetSize;
+static uint32_t kyty_raw_28(uint32_t a0) {
+  return ((uint32_t (*)(uint32_t))nps5_kyty_entry(28))(a0);
+}
 void * (*aps5_rt_sceAgcDcbPopMarker)(void *) = sceAgcDcbPopMarker;
-static void * kyty_raw_23(void *a0) {
+static void * kyty_raw_29(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *))nps5_kyty_entry(23))((void *)(uintptr_t)ctx->rdi);
+  void *r = ((void * (*)(void *))nps5_kyty_entry(29))((void *)(uintptr_t)ctx->rdi);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcCreateInterpolantMapping_0100)(void *, void *, void *) = sceAgcCreateInterpolantMapping_0100;
-static int kyty_raw_24(void *a0, void *a1, void *a2) {
+static int kyty_raw_30(void *a0, void *a1, void *a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
   (void)a2;
-  return ((int (*)(void *, void *, void *))nps5_kyty_entry(24))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
+  return ((int (*)(void *, void *, void *))nps5_kyty_entry(30))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
 }
-static int kyty_raw_25(int64_t a0, int a1, void *a2) {
+static int kyty_raw_31(int64_t a0, int a1, void *a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a2;
-  return ((int (*)(int64_t, int, void *))nps5_kyty_entry(25))(a0, a1, (void *)(uintptr_t)ctx->rdx);
+  return ((int (*)(int64_t, int, void *))nps5_kyty_entry(31))(a0, a1, (void *)(uintptr_t)ctx->rdx);
 }
-static int kyty_raw_26(int a0, int a1, void *a2, void *a3) {
+static int kyty_raw_32(int a0, int a1, void *a2, void *a3) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a2;
   (void)a3;
-  return ((int (*)(int, int, void *, void *))nps5_kyty_entry(26))(a0, a1, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx);
+  return ((int (*)(int, int, void *, void *))nps5_kyty_entry(32))(a0, a1, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx);
 }
 void * (*aps5_rt_sceAgcAcbResetQueue)(void *, uint32_t, uint32_t) = sceAgcAcbResetQueue;
-static void * kyty_raw_27(void *a0, uint32_t a1, uint32_t a2) {
+static void * kyty_raw_33(void *a0, uint32_t a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(27))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(33))((void *)(uintptr_t)ctx->rdi, a1, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcAcbAcquireMem)(void *, uint32_t, void *, uint64_t, uint32_t) = sceAgcAcbAcquireMem;
-static void * kyty_raw_28(void *a0, uint32_t a1, void *a2, uint64_t a3, uint32_t a4) {
+static void * kyty_raw_34(void *a0, uint32_t a1, void *a2, uint64_t a3, uint32_t a4) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a2;
-  void *r = ((void * (*)(void *, uint32_t, void *, uint64_t, uint32_t))nps5_kyty_entry(28))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3, a4);
+  void *r = ((void * (*)(void *, uint32_t, void *, uint64_t, uint32_t))nps5_kyty_entry(34))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3, a4);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcCbNop_nid_postfix)(void *, uint32_t) = sceAgcCbNop_nid_postfix;
-static void * kyty_raw_29(void *a0, uint32_t a1) {
+static void * kyty_raw_35(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(29))((void *)(uintptr_t)ctx->rdi, a1);
+  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(35))((void *)(uintptr_t)ctx->rdi, a1);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+static int kyty_raw_36(int a0, int a1, int a2) {
+  return ((int (*)(int, int, int))nps5_kyty_entry(36))(a0, a1, a2);
 }
 void * (*aps5_rt_sceAgcDcbWaitUntilSafeForRendering)(void *, uint32_t, uint32_t) = sceAgcDcbWaitUntilSafeForRendering;
-static void * kyty_raw_30(void *a0, uint32_t a1, uint32_t a2) {
+static void * kyty_raw_37(void *a0, uint32_t a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(30))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(37))((void *)(uintptr_t)ctx->rdi, a1, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-static void kyty_raw_31(void *a0, uint64_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint64_t a5, uint32_t a6, uint64_t a7) {
+static int kyty_raw_38(int a0, int a1) {
+  return ((int (*)(int, int))nps5_kyty_entry(38))(a0, a1);
+}
+static int kyty_raw_39(int a0, uint64_t a1, void *a2, void *a3, uint64_t a4) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a2;
+  (void)a3;
+  return ((int (*)(int, uint64_t, void *, void *, uint64_t))nps5_kyty_entry(39))(a0, a1, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx, a4);
+}
+static void kyty_raw_40(void *a0, uint64_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint64_t a5, uint32_t a6, uint64_t a7) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  ((void (*)(void *, uint64_t, uint32_t, uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))nps5_kyty_entry(31))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7);
+  ((void (*)(void *, uint64_t, uint32_t, uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))nps5_kyty_entry(40))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7);
 }
 int (*aps5_rt_sceAgcSetShRegIndirectPatchSetAddress)(void *, void *) = sceAgcSetShRegIndirectPatchSetAddress;
-static int kyty_raw_32(void *a0, void *a1) {
+static int kyty_raw_41(void *a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
-  return ((int (*)(void *, void *))nps5_kyty_entry(32))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(void *, void *))nps5_kyty_entry(41))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
 }
 void * (*aps5_rt_sceAgcDcbSetBaseIndirectArgs)(void *, uint32_t, void *) = sceAgcDcbSetBaseIndirectArgs;
-static void * kyty_raw_33(void *a0, uint32_t a1, void *a2) {
+static void * kyty_raw_42(void *a0, uint32_t a1, void *a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a2;
-  void *r = ((void * (*)(void *, uint32_t, void *))nps5_kyty_entry(33))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
+  void *r = ((void * (*)(void *, uint32_t, void *))nps5_kyty_entry(42))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+static int kyty_raw_43(int a0, void *a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a1;
+  return ((int (*)(int, void *))nps5_kyty_entry(43))(a0, (void *)(uintptr_t)ctx->rsi);
+}
+static int kyty_raw_44(int a0) {
+  return ((int (*)(int))nps5_kyty_entry(44))(a0);
 }
 int (*aps5_rt_sceAgcDebugRaiseException)(uint32_t) = sceAgcDebugRaiseException;
-static int kyty_raw_34(uint32_t a0) {
-  return ((int (*)(uint32_t))nps5_kyty_entry(34))(a0);
+static int kyty_raw_45(uint32_t a0) {
+  return ((int (*)(uint32_t))nps5_kyty_entry(45))(a0);
 }
 void * (*aps5_rt_sceAgcDcbResetQueue)(void *, uint32_t, uint32_t) = sceAgcDcbResetQueue;
-static void * kyty_raw_35(void *a0, uint32_t a1, uint32_t a2) {
+static void * kyty_raw_46(void *a0, uint32_t a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(35))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  void *r = ((void * (*)(void *, uint32_t, uint32_t))nps5_kyty_entry(46))((void *)(uintptr_t)ctx->rdi, a1, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcCbSetShRegistersDirect)(void *, void *, uint32_t) = sceAgcCbSetShRegistersDirect;
-static void * kyty_raw_36(void *a0, void *a1, uint32_t a2) {
+static int kyty_raw_47(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  (void)a1;
-  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(36))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+  return ((int (*)(void *))nps5_kyty_entry(47))((void *)(uintptr_t)ctx->rdi);
 }
-int (*aps5_rt_sceAgcDriverSubmitDcb)(void *) = sceAgcDriverSubmitDcb;
-static int kyty_raw_37(void *a0) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  return ((int (*)(void *))nps5_kyty_entry(37))((void *)(uintptr_t)ctx->rdi);
-}
-static int kyty_raw_38(int a0, int a1, int a2, void *a3) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a3;
-  return ((int (*)(int, int, int, void *))nps5_kyty_entry(38))(a0, a1, a2, (void *)(uintptr_t)ctx->rcx);
-}
-int (*aps5_rt_sceAgcGetDataPacketPayloadAddress_0090)(void *, void *, int) = sceAgcGetDataPacketPayloadAddress_0090;
-static int kyty_raw_39(void *a0, void *a1, int a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  return ((int (*)(void *, void *, int))nps5_kyty_entry(39))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-}
-void * (*aps5_rt_sceAgcDcbWaitRegMem)(void *, uint8_t, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t) = sceAgcDcbWaitRegMem;
-static void * kyty_raw_40(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, uint8_t a4, void *a5, uint64_t a6, uint64_t a7, uint32_t a8) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a5;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t))nps5_kyty_entry(40))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, (void *)(uintptr_t)ctx->r9, a6, a7, a8);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-int (*aps5_rt_sceAgcDriverRegisterResource)(void *, uint32_t, uint64_t, size_t, void *, uint32_t, uint64_t) = sceAgcDriverRegisterResource;
-static int kyty_raw_41(void *a0, uint32_t a1, uint64_t a2, size_t a3, void *a4, uint32_t a5, uint64_t a6) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a4;
-  return ((int (*)(void *, uint32_t, uint64_t, size_t, void *, uint32_t, uint64_t))nps5_kyty_entry(41))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6);
-}
-void * (*aps5_rt_sceAgcDcbDmaData)(void *, uint8_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t, uint8_t) = sceAgcDcbDmaData;
-static void * kyty_raw_42(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, uint64_t a4, uint8_t a5, uint8_t a6, uint64_t a7, uint32_t a8, uint8_t a9, uint8_t a10, uint8_t a11) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t, uint8_t))nps5_kyty_entry(42))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-int (*aps5_rt_sceAgcDriverRegisterOwner)(void *, void *) = sceAgcDriverRegisterOwner;
-static int kyty_raw_43(void *a0, void *a1) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  return ((int (*)(void *, void *))nps5_kyty_entry(43))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
-}
-void * (*aps5_rt_sceAgcDcbSetFlip)(void *, uint32_t, int32_t, uint32_t, int64_t) = sceAgcDcbSetFlip;
-static void * kyty_raw_44(void *a0, uint32_t a1, int32_t a2, uint32_t a3, int64_t a4) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, int32_t, uint32_t, int64_t))nps5_kyty_entry(44))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcDcbDrawIndexAuto)(void *, uint32_t, uint64_t) = sceAgcDcbDrawIndexAuto;
-static void * kyty_raw_45(void *a0, uint32_t a1, uint64_t a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint64_t))nps5_kyty_entry(45))((void *)(uintptr_t)ctx->rdi, a1, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcDcbSetCxRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetCxRegistersIndirect;
-static void * kyty_raw_46(void *a0, void *a1, uint32_t a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(46))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcDcbEventWrite)(void *, uint8_t, void *) = sceAgcDcbEventWrite;
-static void * kyty_raw_47(void *a0, uint8_t a1, void *a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a2;
-  void *r = ((void * (*)(void *, uint8_t, void *))nps5_kyty_entry(47))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-uint32_t (*aps5_rt_sceAgcCbSetShRegisterRangeDirectGetSize)(uint32_t) = sceAgcCbSetShRegisterRangeDirectGetSize;
+uint32_t (*aps5_rt_sceAgcDcbSetUcRegistersIndirectGetSize)(uint32_t) = sceAgcDcbSetUcRegistersIndirectGetSize;
 static uint32_t kyty_raw_48(uint32_t a0) {
   return ((uint32_t (*)(uint32_t))nps5_kyty_entry(48))(a0);
 }
-void * (*aps5_rt_sceAgcAcbEventWrite)(void *, uint8_t, void *) = sceAgcAcbEventWrite;
-static void * kyty_raw_49(void *a0, uint8_t a1, void *a2) {
+void * (*aps5_rt_sceAgcCbSetShRegistersDirect)(void *, void *, uint32_t) = sceAgcCbSetShRegistersDirect;
+static void * kyty_raw_49(void *a0, void *a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  (void)a2;
-  void *r = ((void * (*)(void *, uint8_t, void *))nps5_kyty_entry(49))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
+  (void)a1;
+  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(49))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcAcbPushMarker)(void *, void *, uint32_t) = sceAgcAcbPushMarker;
-static void * kyty_raw_50(void *a0, void *a1, uint32_t a2) {
+int (*aps5_rt_sceAgcDriverSubmitDcb)(void *) = sceAgcDriverSubmitDcb;
+static int kyty_raw_50(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  (void)a1;
-  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(50))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+  return ((int (*)(void *))nps5_kyty_entry(50))((void *)(uintptr_t)ctx->rdi);
 }
-int (*aps5_rt_sceAgcSetCxRegIndirectPatchAddRegisters)(void *, uint32_t) = sceAgcSetCxRegIndirectPatchAddRegisters;
-static int kyty_raw_51(void *a0, uint32_t a1) {
+static int kyty_raw_51(int a0, int a1, int a2, void *a3) {
   GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  return ((int (*)(void *, uint32_t))nps5_kyty_entry(51))((void *)(uintptr_t)ctx->rdi, a1);
-}
-int (*aps5_rt_sceAgcGetFusedShaderSize_0080)(void *, void *, void *) = sceAgcGetFusedShaderSize_0080;
-static int kyty_raw_52(void *a0, void *a1, void *a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  return ((int (*)(void *, void *, void *))nps5_kyty_entry(52))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
-}
-void * (*aps5_rt_sceAgcAcbWriteData)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t) = sceAgcAcbWriteData;
-static void * kyty_raw_53(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, void *a4, uint32_t a5, uint8_t a6, uint8_t a7) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a4;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(53))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-int (*aps5_rt_sceAgcCreateShader)(void *, void *, void *) = sceAgcCreateShader;
-static int kyty_raw_54(void *a0, void *a1, void *a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  return ((int (*)(void *, void *, void *))nps5_kyty_entry(54))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
-}
-int (*aps5_rt_sceAgcWriteDataPatchSetAddressOrOffset)(void *, uint64_t) = sceAgcWriteDataPatchSetAddressOrOffset;
-static int kyty_raw_55(void *a0, uint64_t a1) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  return ((int (*)(void *, uint64_t))nps5_kyty_entry(55))((void *)(uintptr_t)ctx->rdi, a1);
-}
-int (*aps5_rt_sceAgcFuseShaderHalves_0200)(void *, void *, void *, void *) = sceAgcFuseShaderHalves_0200;
-static int kyty_raw_56(void *a0, void *a1, void *a2, void *a3) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  (void)a2;
   (void)a3;
-  return ((int (*)(void *, void *, void *, void *))nps5_kyty_entry(56))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx);
+  return ((int (*)(int, int, int, void *))nps5_kyty_entry(51))(a0, a1, a2, (void *)(uintptr_t)ctx->rcx);
 }
-int (*aps5_rt_sceAgcDriverSubmitAcb)(uint32_t, void *) = sceAgcDriverSubmitAcb;
-static int kyty_raw_57(uint32_t a0, void *a1) {
+int (*aps5_rt_sceAgcGetDataPacketPayloadAddress_0090)(void *, void *, int) = sceAgcGetDataPacketPayloadAddress_0090;
+static int kyty_raw_52(void *a0, void *a1, int a2) {
   GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
   (void)a1;
-  return ((int (*)(uint32_t, void *))nps5_kyty_entry(57))(a0, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(void *, void *, int))nps5_kyty_entry(52))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
 }
-int (*aps5_rt_sceAgcSuspendPoint)(void) = sceAgcSuspendPoint;
-static int kyty_raw_58(void) {
-  return ((int (*)(void))nps5_kyty_entry(58))();
+void * (*aps5_rt_sceAgcDcbWaitRegMem)(void *, uint8_t, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t) = sceAgcDcbWaitRegMem;
+static void * kyty_raw_53(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, uint8_t a4, void *a5, uint64_t a6, uint64_t a7, uint32_t a8) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a5;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t))nps5_kyty_entry(53))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, (void *)(uintptr_t)ctx->r9, a6, a7, a8);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcAcbWaitRegMem)(void *, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t) = sceAgcAcbWaitRegMem;
-static void * kyty_raw_59(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, void *a4, uint64_t a5, uint64_t a6, uint32_t a7) {
+int (*aps5_rt_sceAgcDriverRegisterResource)(void *, uint32_t, uint64_t, size_t, void *, uint32_t, uint64_t) = sceAgcDriverRegisterResource;
+static int kyty_raw_54(void *a0, uint32_t a1, uint64_t a2, size_t a3, void *a4, uint32_t a5, uint64_t a6) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a4;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t))nps5_kyty_entry(59))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
+  return ((int (*)(void *, uint32_t, uint64_t, size_t, void *, uint32_t, uint64_t))nps5_kyty_entry(54))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6);
+}
+void * (*aps5_rt_sceAgcDcbDmaData)(void *, uint8_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t, uint8_t) = sceAgcDcbDmaData;
+static void * kyty_raw_55(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, uint64_t a4, uint8_t a5, uint8_t a6, uint64_t a7, uint32_t a8, uint8_t a9, uint8_t a10, uint8_t a11) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint32_t, uint8_t, uint8_t, uint8_t))nps5_kyty_entry(55))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcDcbSetUcRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetUcRegistersIndirect;
+int (*aps5_rt_sceAgcDriverRegisterOwner)(void *, void *) = sceAgcDriverRegisterOwner;
+static int kyty_raw_56(void *a0, void *a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  return ((int (*)(void *, void *))nps5_kyty_entry(56))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
+}
+static int kyty_raw_57(int64_t a0, int a1, void *a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a2;
+  return ((int (*)(int64_t, int, void *))nps5_kyty_entry(57))(a0, a1, (void *)(uintptr_t)ctx->rdx);
+}
+void * (*aps5_rt_sceAgcDcbSetFlip)(void *, uint32_t, int32_t, uint32_t, int64_t) = sceAgcDcbSetFlip;
+static void * kyty_raw_58(void *a0, uint32_t a1, int32_t a2, uint32_t a3, int64_t a4) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t, int32_t, uint32_t, int64_t))nps5_kyty_entry(58))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbDrawIndexAuto)(void *, uint32_t, uint64_t) = sceAgcDcbDrawIndexAuto;
+static void * kyty_raw_59(void *a0, uint32_t a1, uint64_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t, uint64_t))nps5_kyty_entry(59))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbSetCxRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetCxRegistersIndirect;
 static void * kyty_raw_60(void *a0, void *a1, uint32_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
@@ -16514,238 +16478,443 @@ static void * kyty_raw_60(void *a0, void *a1, uint32_t a2) {
   void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(60))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-void * (*aps5_rt_sceAgcDcbWriteData)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t) = sceAgcDcbWriteData;
-static void * kyty_raw_61(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, void *a4, uint32_t a5, uint8_t a6, uint8_t a7) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a4;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(61))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcAcbDispatchIndirect)(void *, void *, uint32_t) = sceAgcAcbDispatchIndirect;
-static void * kyty_raw_62(void *a0, void *a1, uint32_t a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  (void)a1;
-  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(62))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcCbDispatch)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = sceAgcCbDispatch;
-static void * kyty_raw_63(void *a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint32_t, uint32_t, uint32_t))nps5_kyty_entry(63))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcDcbSetIndexBuffer)(void *, uint64_t) = sceAgcDcbSetIndexBuffer;
-static void * kyty_raw_64(void *a0, uint64_t a1) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a0;
-  void *r = ((void * (*)(void *, uint64_t))nps5_kyty_entry(64))((void *)(uintptr_t)ctx->rdi, a1);
-  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
-}
-void * (*aps5_rt_sceAgcCbSetShRegisterRangeDirect)(void *, uint32_t, void *, uint32_t) = sceAgcCbSetShRegisterRangeDirect;
-static void * kyty_raw_65(void *a0, uint32_t a1, void *a2, uint32_t a3) {
+void * (*aps5_rt_sceAgcDcbEventWrite)(void *, uint8_t, void *) = sceAgcDcbEventWrite;
+static void * kyty_raw_61(void *a0, uint8_t a1, void *a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a2;
-  void *r = ((void * (*)(void *, uint32_t, void *, uint32_t))nps5_kyty_entry(65))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3);
+  void *r = ((void * (*)(void *, uint8_t, void *))nps5_kyty_entry(61))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-static int kyty_raw_66(int a0, void *a1, uint32_t a2) {
-  GuestContext *ctx = nps5_kyty_ctx();
-  (void)a1;
-  return ((int (*)(int, void *, uint32_t))nps5_kyty_entry(66))(a0, (void *)(uintptr_t)ctx->rsi, a2);
-}
-void * (*aps5_rt_sceAgcDcbContextStateOp_0100)(void *, uint32_t) = sceAgcDcbContextStateOp_0100;
-static void * kyty_raw_67(void *a0, uint32_t a1) {
+void * (*aps5_rt_sceAgcDcbSetPredication)(void *, uint8_t, uint8_t, uint8_t, void *, uint32_t) = sceAgcDcbSetPredication;
+static void * kyty_raw_62(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, void *a4, uint32_t a5) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(67))((void *)(uintptr_t)ctx->rdi, a1);
+  (void)a4;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, void *, uint32_t))nps5_kyty_entry(62))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+uint32_t (*aps5_rt_sceAgcCbSetShRegisterRangeDirectGetSize)(uint32_t) = sceAgcCbSetShRegisterRangeDirectGetSize;
+static uint32_t kyty_raw_63(uint32_t a0) {
+  return ((uint32_t (*)(uint32_t))nps5_kyty_entry(63))(a0);
+}
+void * (*aps5_rt_sceAgcAcbEventWrite)(void *, uint8_t, void *) = sceAgcAcbEventWrite;
+static void * kyty_raw_64(void *a0, uint8_t a1, void *a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a2;
+  void *r = ((void * (*)(void *, uint8_t, void *))nps5_kyty_entry(64))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcAcbPushMarker)(void *, void *, uint32_t) = sceAgcAcbPushMarker;
+static void * kyty_raw_65(void *a0, void *a1, uint32_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(65))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+uint32_t (*aps5_rt_sceAgcDcbDrawIndirectGetSize)(void) = sceAgcDcbDrawIndirectGetSize;
+static uint32_t kyty_raw_66(void) {
+  return ((uint32_t (*)(void))nps5_kyty_entry(66))();
+}
+int (*aps5_rt_sceAgcSetCxRegIndirectPatchAddRegisters)(void *, uint32_t) = sceAgcSetCxRegIndirectPatchAddRegisters;
+static int kyty_raw_67(void *a0, uint32_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(67))((void *)(uintptr_t)ctx->rdi, a1);
+}
+int (*aps5_rt_sceAgcCreateInterpolantMapping_10000)(void *, void *, void *) = sceAgcCreateInterpolantMapping_10000;
+static int kyty_raw_68(void *a0, void *a1, void *a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  return ((int (*)(void *, void *, void *))nps5_kyty_entry(68))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
+}
+int (*aps5_rt_sceAgcGetFusedShaderSize_0080)(void *, void *, void *) = sceAgcGetFusedShaderSize_0080;
+static int kyty_raw_69(void *a0, void *a1, void *a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  return ((int (*)(void *, void *, void *))nps5_kyty_entry(69))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
+}
+void * (*aps5_rt_sceAgcAcbWriteData)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t) = sceAgcAcbWriteData;
+static void * kyty_raw_70(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, void *a4, uint32_t a5, uint8_t a6, uint8_t a7) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a4;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(70))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+int (*aps5_rt_sceAgcCreateShader)(void *, void *, void *) = sceAgcCreateShader;
+static int kyty_raw_71(void *a0, void *a1, void *a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  return ((int (*)(void *, void *, void *))nps5_kyty_entry(71))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx);
+}
+int (*aps5_rt_sceAgcWriteDataPatchSetAddressOrOffset)(void *, uint64_t) = sceAgcWriteDataPatchSetAddressOrOffset;
+static int kyty_raw_72(void *a0, uint64_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  return ((int (*)(void *, uint64_t))nps5_kyty_entry(72))((void *)(uintptr_t)ctx->rdi, a1);
+}
+int (*aps5_rt_sceAgcFuseShaderHalves_0200)(void *, void *, void *, void *) = sceAgcFuseShaderHalves_0200;
+static int kyty_raw_73(void *a0, void *a1, void *a2, void *a3) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  (void)a3;
+  return ((int (*)(void *, void *, void *, void *))nps5_kyty_entry(73))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx);
+}
+int (*aps5_rt_sceAgcDriverSubmitAcb)(uint32_t, void *) = sceAgcDriverSubmitAcb;
+static int kyty_raw_74(uint32_t a0, void *a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a1;
+  return ((int (*)(uint32_t, void *))nps5_kyty_entry(74))(a0, (void *)(uintptr_t)ctx->rsi);
+}
+int (*aps5_rt_sceAgcSuspendPoint)(void) = sceAgcSuspendPoint;
+static int kyty_raw_75(void) {
+  return ((int (*)(void))nps5_kyty_entry(75))();
+}
+void * (*aps5_rt_sceAgcAcbWaitRegMem)(void *, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t) = sceAgcAcbWaitRegMem;
+static void * kyty_raw_76(void *a0, uint8_t a1, uint8_t a2, uint8_t a3, void *a4, uint64_t a5, uint64_t a6, uint32_t a7) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a4;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint32_t))nps5_kyty_entry(76))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbSetUcRegistersIndirect)(void *, void *, uint32_t) = sceAgcDcbSetUcRegistersIndirect;
+static void * kyty_raw_77(void *a0, void *a1, uint32_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(77))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbWriteData)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t) = sceAgcDcbWriteData;
+static void * kyty_raw_78(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, void *a4, uint32_t a5, uint8_t a6, uint8_t a7) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a4;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, void *, uint32_t, uint8_t, uint8_t))nps5_kyty_entry(78))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6, a7);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcAcbDispatchIndirect)(void *, void *, uint32_t) = sceAgcAcbDispatchIndirect;
+static void * kyty_raw_79(void *a0, void *a1, uint32_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a1;
+  void *r = ((void * (*)(void *, void *, uint32_t))nps5_kyty_entry(79))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi, a2);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+static int kyty_raw_80(int a0) {
+  return ((int (*)(int))nps5_kyty_entry(80))(a0);
+}
+void * (*aps5_rt_sceAgcCbDispatch)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = sceAgcCbDispatch;
+static void * kyty_raw_81(void *a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t, uint32_t, uint32_t, uint32_t))nps5_kyty_entry(81))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbSetIndexBuffer)(void *, uint64_t) = sceAgcDcbSetIndexBuffer;
+static void * kyty_raw_82(void *a0, uint64_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint64_t))nps5_kyty_entry(82))((void *)(uintptr_t)ctx->rdi, a1);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcCbSetShRegisterRangeDirect)(void *, uint32_t, void *, uint32_t) = sceAgcCbSetShRegisterRangeDirect;
+static void * kyty_raw_83(void *a0, uint32_t a1, void *a2, uint32_t a3) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a2;
+  void *r = ((void * (*)(void *, uint32_t, void *, uint32_t))nps5_kyty_entry(83))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+uint32_t (*aps5_rt_sceAgcDcbSetShRegistersIndirectGetSize)(uint32_t) = sceAgcDcbSetShRegistersIndirectGetSize;
+static uint32_t kyty_raw_84(uint32_t a0) {
+  return ((uint32_t (*)(uint32_t))nps5_kyty_entry(84))(a0);
+}
+static int kyty_raw_85(int a0, void *a1, uint32_t a2) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a1;
+  return ((int (*)(int, void *, uint32_t))nps5_kyty_entry(85))(a0, (void *)(uintptr_t)ctx->rsi, a2);
+}
+void * (*aps5_rt_sceAgcDcbContextStateOp_0100)(void *, uint32_t) = sceAgcDcbContextStateOp_0100;
+static void * kyty_raw_86(void *a0, uint32_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(86))((void *)(uintptr_t)ctx->rdi, a1);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcAcbCopyData)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t) = sceAgcAcbCopyData;
-static void * kyty_raw_68(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint8_t a7, uint8_t a8) {
+static void * kyty_raw_87(void *a0, uint8_t a1, uint8_t a2, uint64_t a3, uint8_t a4, uint8_t a5, uint64_t a6, uint8_t a7, uint8_t a8) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t))nps5_kyty_entry(68))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8);
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t, uint64_t, uint8_t, uint8_t))nps5_kyty_entry(87))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, a5, a6, a7, a8);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-static int kyty_raw_69(int a0, int a1, int a2, void *a3, int a4, void *a5, int a6, void *a7) {
+static int kyty_raw_88(int a0, int a1, int a2, void *a3, int a4, void *a5, int a6, void *a7) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a3;
   (void)a5;
   (void)a7;
-  return ((int (*)(int, int, int, void *, int, void *, int, void *))nps5_kyty_entry(69))(a0, a1, a2, (void *)(uintptr_t)ctx->rcx, a4, (void *)(uintptr_t)ctx->r9, a6, (void *)(uintptr_t)NPS5_GUEST_STACK_ARG(ctx, 1));
+  return ((int (*)(int, int, int, void *, int, void *, int, void *))nps5_kyty_entry(88))(a0, a1, a2, (void *)(uintptr_t)ctx->rcx, a4, (void *)(uintptr_t)ctx->r9, a6, (void *)(uintptr_t)NPS5_GUEST_STACK_ARG(ctx, 1));
 }
 void * (*aps5_rt_sceAgcDcbDrawIndexIndirect)(void *, uint32_t, uint64_t) = sceAgcDcbDrawIndexIndirect;
-static void * kyty_raw_70(void *a0, uint32_t a1, uint64_t a2) {
+static void * kyty_raw_89(void *a0, uint32_t a1, uint64_t a2) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t, uint64_t))nps5_kyty_entry(70))((void *)(uintptr_t)ctx->rdi, a1, a2);
+  void *r = ((void * (*)(void *, uint32_t, uint64_t))nps5_kyty_entry(89))((void *)(uintptr_t)ctx->rdi, a1, a2);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 uint32_t (*aps5_rt_sceAgcCbNopGetSize)(uint32_t) = sceAgcCbNopGetSize;
-static uint32_t kyty_raw_71(uint32_t a0) {
-  return ((uint32_t (*)(uint32_t))nps5_kyty_entry(71))(a0);
+static uint32_t kyty_raw_90(uint32_t a0) {
+  return ((uint32_t (*)(uint32_t))nps5_kyty_entry(90))(a0);
 }
 void * (*aps5_rt_sceAgcDcbSetNumInstances)(void *, uint32_t) = sceAgcDcbSetNumInstances;
-static void * kyty_raw_72(void *a0, uint32_t a1) {
+static void * kyty_raw_91(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(72))((void *)(uintptr_t)ctx->rdi, a1);
+  void *r = ((void * (*)(void *, uint32_t))nps5_kyty_entry(91))((void *)(uintptr_t)ctx->rdi, a1);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 void * (*aps5_rt_sceAgcDcbStallCommandBufferParser)(void *) = sceAgcDcbStallCommandBufferParser;
-static void * kyty_raw_73(void *a0) {
+static void * kyty_raw_92(void *a0) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  void *r = ((void * (*)(void *))nps5_kyty_entry(73))((void *)(uintptr_t)ctx->rdi);
+  void *r = ((void * (*)(void *))nps5_kyty_entry(92))((void *)(uintptr_t)ctx->rdi);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
-static int kyty_raw_74(int a0) {
-  return ((int (*)(int))nps5_kyty_entry(74))(a0);
+uint32_t (*aps5_rt_sceAgcCbBranchGetSize)(void) = sceAgcCbBranchGetSize;
+static uint32_t kyty_raw_93(void) {
+  return ((uint32_t (*)(void))nps5_kyty_entry(93))();
 }
-static int kyty_raw_75(int a0, void *a1) {
+static int kyty_raw_94(int a0) {
+  return ((int (*)(int))nps5_kyty_entry(94))(a0);
+}
+static int kyty_raw_95(int a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a1;
-  return ((int (*)(int, void *))nps5_kyty_entry(75))(a0, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(int, void *))nps5_kyty_entry(95))(a0, (void *)(uintptr_t)ctx->rsi);
 }
 int (*aps5_rt_sceAgcSetUcRegIndirectPatchAddRegisters)(void *, uint32_t) = sceAgcSetUcRegIndirectPatchAddRegisters;
-static int kyty_raw_76(void *a0, uint32_t a1) {
+static int kyty_raw_96(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *, uint32_t))nps5_kyty_entry(76))((void *)(uintptr_t)ctx->rdi, a1);
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(96))((void *)(uintptr_t)ctx->rdi, a1);
 }
 int (*aps5_rt_sceAgcSetCxRegIndirectPatchSetAddress)(void *, void *) = sceAgcSetCxRegIndirectPatchSetAddress;
-static int kyty_raw_77(void *a0, void *a1) {
+static int kyty_raw_97(void *a0, void *a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a1;
-  return ((int (*)(void *, void *))nps5_kyty_entry(77))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
+  return ((int (*)(void *, void *))nps5_kyty_entry(97))((void *)(uintptr_t)ctx->rdi, (void *)(uintptr_t)ctx->rsi);
 }
 void * (*aps5_rt_sceAgcDcbGetLodStats)(void *, uint8_t, void *, uint32_t, uint32_t, uint8_t, uint8_t, uint32_t) = sceAgcDcbGetLodStats;
-static void * kyty_raw_78(void *a0, uint8_t a1, void *a2, uint32_t a3, uint32_t a4, uint8_t a5, uint8_t a6, uint32_t a7) {
+static void * kyty_raw_98(void *a0, uint8_t a1, void *a2, uint32_t a3, uint32_t a4, uint8_t a5, uint8_t a6, uint32_t a7) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a2;
-  void *r = ((void * (*)(void *, uint8_t, void *, uint32_t, uint32_t, uint8_t, uint8_t, uint32_t))nps5_kyty_entry(78))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3, a4, a5, a6, a7);
+  void *r = ((void * (*)(void *, uint8_t, void *, uint32_t, uint32_t, uint8_t, uint8_t, uint32_t))nps5_kyty_entry(98))((void *)(uintptr_t)ctx->rdi, a1, (void *)(uintptr_t)ctx->rdx, a3, a4, a5, a6, a7);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+static int kyty_raw_99(int a0, uint64_t a1, void *a2, void *a3, uint64_t a4) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a2;
+  (void)a3;
+  return ((int (*)(int, uint64_t, void *, void *, uint64_t))nps5_kyty_entry(99))(a0, a1, (void *)(uintptr_t)ctx->rdx, (void *)(uintptr_t)ctx->rcx, a4);
+}
+void * (*aps5_rt_sceAgcCbBranch)(void *, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint8_t, void *, uint32_t, uint8_t, void *, uint32_t) = sceAgcCbBranch;
+static void * kyty_raw_100(void *a0, uint8_t a1, uint8_t a2, void *a3, uint64_t a4, uint64_t a5, uint8_t a6, void *a7, uint32_t a8, uint8_t a9, void *a10, uint32_t a11) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a3;
+  (void)a7;
+  (void)a10;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, void *, uint64_t, uint64_t, uint8_t, void *, uint32_t, uint8_t, void *, uint32_t))nps5_kyty_entry(100))((void *)(uintptr_t)ctx->rdi, a1, a2, (void *)(uintptr_t)ctx->rcx, a4, a5, a6, (void *)(uintptr_t)NPS5_GUEST_STACK_ARG(ctx, 1), a8, a9, (void *)(uintptr_t)NPS5_GUEST_STACK_ARG(ctx, 4), a11);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcDriverAddEqEvent)(int64_t, int, uint64_t) = sceAgcDriverAddEqEvent;
-static int kyty_raw_79(int64_t a0, int a1, uint64_t a2) {
-  return ((int (*)(int64_t, int, uint64_t))nps5_kyty_entry(79))(a0, a1, a2);
+static int kyty_raw_101(int64_t a0, int a1, uint64_t a2) {
+  return ((int (*)(int64_t, int, uint64_t))nps5_kyty_entry(101))(a0, a1, a2);
+}
+int (*aps5_rt_sceAgcSetPacketPredication)(void *, uint32_t) = sceAgcSetPacketPredication;
+static int kyty_raw_102(void *a0, uint32_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(102))((void *)(uintptr_t)ctx->rdi, a1);
+}
+uint32_t (*aps5_rt_sceAgcDcbDispatchIndirectGetSize)(void) = sceAgcDcbDispatchIndirectGetSize;
+static uint32_t kyty_raw_103(void) {
+  return ((uint32_t (*)(void))nps5_kyty_entry(103))();
 }
 void * (*aps5_rt_sceAgcGetRegisterDefaults2Internal)(uint32_t) = sceAgcGetRegisterDefaults2Internal;
-static void * kyty_raw_80(uint32_t a0) {
+static void * kyty_raw_104(uint32_t a0) {
   GuestContext *ctx = nps5_kyty_ctx();
-  void *r = ((void * (*)(uint32_t))nps5_kyty_entry(80))(a0);
+  void *r = ((void * (*)(uint32_t))nps5_kyty_entry(104))(a0);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
+int (*aps5_rt_sceAgcSetCxRegIndirectPatchSetNumRegisters)(void *, uint32_t) = sceAgcSetCxRegIndirectPatchSetNumRegisters;
+static int kyty_raw_105(void *a0, uint32_t a1) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(105))((void *)(uintptr_t)ctx->rdi, a1);
+}
 void * (*aps5_rt_sceAgcCbReleaseMem)(void *, uint8_t, uint16_t, uint8_t, uint8_t, void *, uint8_t, uint64_t, uint16_t, uint16_t, uint8_t, uint32_t) = sceAgcCbReleaseMem;
-static void * kyty_raw_81(void *a0, uint8_t a1, uint16_t a2, uint8_t a3, uint8_t a4, void *a5, uint8_t a6, uint64_t a7, uint16_t a8, uint16_t a9, uint8_t a10, uint32_t a11) {
+static void * kyty_raw_106(void *a0, uint8_t a1, uint16_t a2, uint8_t a3, uint8_t a4, void *a5, uint8_t a6, uint64_t a7, uint16_t a8, uint16_t a9, uint8_t a10, uint32_t a11) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
   (void)a5;
-  void *r = ((void * (*)(void *, uint8_t, uint16_t, uint8_t, uint8_t, void *, uint8_t, uint64_t, uint16_t, uint16_t, uint8_t, uint32_t))nps5_kyty_entry(81))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, (void *)(uintptr_t)ctx->r9, a6, a7, a8, a9, a10, a11);
+  void *r = ((void * (*)(void *, uint8_t, uint16_t, uint8_t, uint8_t, void *, uint8_t, uint64_t, uint16_t, uint16_t, uint8_t, uint32_t))nps5_kyty_entry(106))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, a4, (void *)(uintptr_t)ctx->r9, a6, a7, a8, a9, a10, a11);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbJump)(void *, uint8_t, uint8_t, void *, uint32_t) = sceAgcDcbJump;
+static void * kyty_raw_107(void *a0, uint8_t a1, uint8_t a2, void *a3, uint32_t a4) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a3;
+  void *r = ((void * (*)(void *, uint8_t, uint8_t, void *, uint32_t))nps5_kyty_entry(107))((void *)(uintptr_t)ctx->rdi, a1, a2, (void *)(uintptr_t)ctx->rcx, a4);
+  return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
+}
+void * (*aps5_rt_sceAgcDcbDrawIndexIndirectMulti)(void *, uint32_t, uint32_t, uint32_t, void *, uint32_t, uint64_t) = sceAgcDcbDrawIndexIndirectMulti;
+static void * kyty_raw_108(void *a0, uint32_t a1, uint32_t a2, uint32_t a3, void *a4, uint32_t a5, uint64_t a6) {
+  GuestContext *ctx = nps5_kyty_ctx();
+  (void)a0;
+  (void)a4;
+  void *r = ((void * (*)(void *, uint32_t, uint32_t, uint32_t, void *, uint32_t, uint64_t))nps5_kyty_entry(108))((void *)(uintptr_t)ctx->rdi, a1, a2, a3, (void *)(uintptr_t)ctx->r8, a5, a6);
   return r ? (void *)(ctx->mem_base + (uintptr_t)r) : NULL;
 }
 int (*aps5_rt_sceAgcSetShRegIndirectPatchAddRegisters)(void *, uint32_t) = sceAgcSetShRegIndirectPatchAddRegisters;
-static int kyty_raw_82(void *a0, uint32_t a1) {
+static int kyty_raw_109(void *a0, uint32_t a1) {
   GuestContext *ctx = nps5_kyty_ctx();
   (void)a0;
-  return ((int (*)(void *, uint32_t))nps5_kyty_entry(82))((void *)(uintptr_t)ctx->rdi, a1);
+  return ((int (*)(void *, uint32_t))nps5_kyty_entry(109))((void *)(uintptr_t)ctx->rdi, a1);
 }
-static int kyty_raw_83(int a0) {
-  return ((int (*)(int))nps5_kyty_entry(83))(a0);
+static int kyty_raw_110(int a0) {
+  return ((int (*)(int))nps5_kyty_entry(110))(a0);
 }
 
 const Nps5KytyRoute nps5_kyty_routes[] = {
-  {"+kSrjIVxKFE", "sceAgcDcbPushMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbPushMarker, (void *)kyty_raw_0},
-  {"-HOOCn0JY48", "sceAgcDcbSetShRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetShRegistersIndirect, (void *)kyty_raw_1},
-  {"-KRzWekV120", "sceAgcDcbSetIndexSize_0600", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexSize_0600, (void *)kyty_raw_2},
-  {"-RnpfpxIhec", "sceAgcAcbDmaData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbDmaData, (void *)kyty_raw_3},
-  {"0fWWK5uG9rQ", "sceAgcQueueEndOfPipeActionPatchAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcQueueEndOfPipeActionPatchAddress, (void *)kyty_raw_4},
-  {"1FZBKy8HeNU", "sceVideoOutGetVblankStatus", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetVblankStatus, (void *)kyty_raw_5},
-  {"1rZSWUv1IRc", "sceAgcDcbCopyData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbCopyData, (void *)kyty_raw_6},
-  {"23LRUSvYu1M", "sceAgcInit_0090", "libSceAgc.prx", (void **)&aps5_rt_sceAgcInit_0090, (void *)kyty_raw_7},
-  {"2JtWUUiYBXs", "sceAgcGetRegisterDefaults2", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetRegisterDefaults2, (void *)kyty_raw_8},
-  {"3KDcnM3lrcU", "sceAgcWaitRegMemPatchAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcWaitRegMemPatchAddress, (void *)kyty_raw_9},
-  {"57labkp+rSQ", "sceAgcDcbAcquireMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbAcquireMem, (void *)kyty_raw_10},
-  {"6lNcCp+fxi4", "sceAgcSetUcRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetUcRegIndirectPatchSetAddress, (void *)kyty_raw_11},
-  {"6mFxkVqdmbQ", "sceAgcAcbPopMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbPopMarker, (void *)kyty_raw_12},
-  {"8N2tmT3jmC8", "sceAgcDcbSetIndexCount", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexCount, (void *)kyty_raw_13},
-  {"Abendgtz+3o", "sceAgcCbDispatchGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbDispatchGetSize, (void *)kyty_raw_14},
-  {"AhGvpITrf4M", "sceAgcDriverAgrSubmitDcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverAgrSubmitDcb, (void *)kyty_raw_15},
-  {"B+aG9DUnTKA", "sceAgcDcbDrawIndexOffset", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexOffset, (void *)kyty_raw_16},
-  {"BfBDZGbti7A", "sceAgcGetIsTrinityMode", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetIsTrinityMode, (void *)kyty_raw_17},
-  {"CtB+A9-VxO0", "sceAgcDcbDispatchIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDispatchIndirect, (void *)kyty_raw_18},
-  {"D9sr1xGUriE", "sceAgcCreatePrimState", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreatePrimState, (void *)kyty_raw_19},
-  {"DL2RXaXOy88", "sceAgcDriverDeleteEqEvent", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverDeleteEqEvent, (void *)kyty_raw_20},
-  {"DYhhWbJSeRg", "sceVideoOutColorSettingsSetGamma_", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutColorSettingsSetGamma_, (void *)kyty_raw_21},
-  {"DwICrVxerkY", "sceAgcAcbRewind", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbRewind, (void *)kyty_raw_22},
-  {"H7uZqCoNuWk", "sceAgcDcbPopMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbPopMarker, (void *)kyty_raw_23},
-  {"HV4j+E0MBHE", "sceAgcCreateInterpolantMapping_0100", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreateInterpolantMapping_0100, (void *)kyty_raw_24},
-  {"HXzjK9yI30k", "sceVideoOutAddFlipEvent", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutAddFlipEvent, (void *)kyty_raw_25},
-  {"HuViW4HnrOw", "sceVideoOutSubmitChangeBufferAttribute2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSubmitChangeBufferAttribute2, (void *)kyty_raw_26},
-  {"JrtiDtKeS38", "sceAgcAcbResetQueue", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbResetQueue, (void *)kyty_raw_27},
-  {"KT-hTp-Ch14", "sceAgcAcbAcquireMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbAcquireMem, (void *)kyty_raw_28},
-  {"LtTouSCZjHM", "sceAgcCbNop_nid_postfix", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbNop_nid_postfix, (void *)kyty_raw_29},
-  {"MWiElSNE8j8", "sceAgcDcbWaitUntilSafeForRendering", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWaitUntilSafeForRendering, (void *)kyty_raw_30},
-  {"PjS5uASwcV8", "sceVideoOutSetBufferAttribute2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSetBufferAttribute2, (void *)kyty_raw_31},
-  {"Qrj4c+61z4A", "sceAgcSetShRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetShRegIndirectPatchSetAddress, (void *)kyty_raw_32},
-  {"RmaJwLtc8rY", "sceAgcDcbSetBaseIndirectArgs", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetBaseIndirectArgs, (void *)kyty_raw_33},
-  {"T6xuVw0KUJo", "sceAgcDebugRaiseException", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDebugRaiseException, (void *)kyty_raw_34},
-  {"TRO721eVt4g", "sceAgcDcbResetQueue", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbResetQueue, (void *)kyty_raw_35},
-  {"UZbQjYAwwXM", "sceAgcCbSetShRegistersDirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegistersDirect, (void *)kyty_raw_36},
-  {"UglJIZjGssM", "sceAgcDriverSubmitDcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverSubmitDcb, (void *)kyty_raw_37},
-  {"Up36PTk687E", "sceVideoOutOpen", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutOpen, (void *)kyty_raw_38},
-  {"V++UgBtQhn0", "sceAgcGetDataPacketPayloadAddress_0090", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetDataPacketPayloadAddress_0090, (void *)kyty_raw_39},
-  {"VmW0Tdpy420", "sceAgcDcbWaitRegMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWaitRegMem, (void *)kyty_raw_40},
-  {"W5z4eZrjEas", "sceAgcDriverRegisterResource", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverRegisterResource, (void *)kyty_raw_41},
-  {"WmAc2MEj6Io", "sceAgcDcbDmaData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDmaData, (void *)kyty_raw_42},
-  {"X-Nm5KLREeg", "sceAgcDriverRegisterOwner", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverRegisterOwner, (void *)kyty_raw_43},
-  {"YUeqkyT7mEQ", "sceAgcDcbSetFlip", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetFlip, (void *)kyty_raw_44},
-  {"Yw0jKSqop+E", "sceAgcDcbDrawIndexAuto", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexAuto, (void *)kyty_raw_45},
-  {"ZvwO9euwYzc", "sceAgcDcbSetCxRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetCxRegistersIndirect, (void *)kyty_raw_46},
-  {"aJf+j5yntiU", "sceAgcDcbEventWrite", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbEventWrite, (void *)kyty_raw_47},
-  {"bxGoVxpdSPQ", "sceAgcCbSetShRegisterRangeDirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegisterRangeDirectGetSize, (void *)kyty_raw_48},
-  {"cFazmnXpJOE", "sceAgcAcbEventWrite", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbEventWrite, (void *)kyty_raw_49},
-  {"cpCILPya5Zk", "sceAgcAcbPushMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbPushMarker, (void *)kyty_raw_50},
-  {"d-6uF9sZDIU", "sceAgcSetCxRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetCxRegIndirectPatchAddRegisters, (void *)kyty_raw_51},
-  {"dolOmWH+huQ", "sceAgcGetFusedShaderSize_0080", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetFusedShaderSize_0080, (void *)kyty_raw_52},
-  {"eZ4+17OQz4Q", "sceAgcAcbWriteData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbWriteData, (void *)kyty_raw_53},
-  {"f3dg2CSgRKY", "sceAgcCreateShader", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreateShader, (void *)kyty_raw_54},
-  {"fPSCdQxgpSw", "sceAgcWriteDataPatchSetAddressOrOffset", "libSceAgc.prx", (void **)&aps5_rt_sceAgcWriteDataPatchSetAddressOrOffset, (void *)kyty_raw_55},
-  {"fd5Bp5tGTgo", "sceAgcFuseShaderHalves_0200", "libSceAgc.prx", (void **)&aps5_rt_sceAgcFuseShaderHalves_0200, (void *)kyty_raw_56},
-  {"gSRnr79F8tQ", "sceAgcDriverSubmitAcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverSubmitAcb, (void *)kyty_raw_57},
-  {"h9z6+0hEydk", "sceAgcSuspendPoint", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSuspendPoint, (void *)kyty_raw_58},
-  {"htn36gPnBk4", "sceAgcAcbWaitRegMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbWaitRegMem, (void *)kyty_raw_59},
-  {"hvUfkUIQcOE", "sceAgcDcbSetUcRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetUcRegistersIndirect, (void *)kyty_raw_60},
-  {"i1jyy49AjXU", "sceAgcDcbWriteData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWriteData, (void *)kyty_raw_61},
-  {"j3EtxFkSIhQ", "sceAgcAcbDispatchIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbDispatchIndirect, (void *)kyty_raw_62},
-  {"k3GhuSNmBLU", "sceAgcCbDispatch", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbDispatch, (void *)kyty_raw_63},
-  {"l4fM9K-Lyks", "sceAgcDcbSetIndexBuffer", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexBuffer, (void *)kyty_raw_64},
-  {"n2fD4A+pb+g", "sceAgcCbSetShRegisterRangeDirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegisterRangeDirect, (void *)kyty_raw_65},
-  {"pv9CI5VC+R0", "sceVideoOutAdjustColor_", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutAdjustColor_, (void *)kyty_raw_66},
-  {"qj7QZpgr9Uw", "sceAgcDcbContextStateOp_0100", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbContextStateOp_0100, (void *)kyty_raw_67},
-  {"qzMN2XKGA4k", "sceAgcAcbCopyData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbCopyData, (void *)kyty_raw_68},
-  {"rKBUtgRrtbk", "sceVideoOutRegisterBuffers2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutRegisterBuffers2, (void *)kyty_raw_69},
-  {"t1vNu082-jM", "sceAgcDcbDrawIndexIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexIndirect, (void *)kyty_raw_70},
-  {"t7PlZ9nt5Lc", "sceAgcCbNopGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbNopGetSize, (void *)kyty_raw_71},
-  {"tSBxhAPyytQ", "sceAgcDcbSetNumInstances", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetNumInstances, (void *)kyty_raw_72},
-  {"u2T2DiA5hRI", "sceAgcDcbStallCommandBufferParser", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbStallCommandBufferParser, (void *)kyty_raw_73},
-  {"uquVH4-Du78", "sceVideoOutClose", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutClose, (void *)kyty_raw_74},
-  {"utPrVdxio-8", "sceVideoOutGetOutputStatus", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetOutputStatus, (void *)kyty_raw_75},
-  {"vRoArM9zaIk", "sceAgcSetUcRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetUcRegIndirectPatchAddRegisters, (void *)kyty_raw_76},
-  {"vcmNN+AAXnY", "sceAgcSetCxRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetCxRegIndirectPatchSetAddress, (void *)kyty_raw_77},
-  {"vuSXe69VILM", "sceAgcDcbGetLodStats", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbGetLodStats, (void *)kyty_raw_78},
-  {"w2rJhmD+dsE", "sceAgcDriverAddEqEvent", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverAddEqEvent, (void *)kyty_raw_79},
-  {"wRbq6ZjNop4", "sceAgcGetRegisterDefaults2Internal", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetRegisterDefaults2Internal, (void *)kyty_raw_80},
-  {"wr23dPKyWc0", "sceAgcCbReleaseMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbReleaseMem, (void *)kyty_raw_81},
-  {"z2duB-hHQSM", "sceAgcSetShRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetShRegIndirectPatchAddRegisters, (void *)kyty_raw_82},
-  {"zgXifHT9ErY", "sceVideoOutIsFlipPending", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutIsFlipPending, (void *)kyty_raw_83},
+  {"+I4K03i3EL0", "sceVideoOutInitializeOutputOptions", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutInitializeOutputOptions, (void *)kyty_raw_0},
+  {"+kSrjIVxKFE", "sceAgcDcbPushMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbPushMarker, (void *)kyty_raw_1},
+  {"-HOOCn0JY48", "sceAgcDcbSetShRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetShRegistersIndirect, (void *)kyty_raw_2},
+  {"-KRzWekV120", "sceAgcDcbSetIndexSize_0600", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexSize_0600, (void *)kyty_raw_3},
+  {"-RnpfpxIhec", "sceAgcAcbDmaData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbDmaData, (void *)kyty_raw_4},
+  {"0fWWK5uG9rQ", "sceAgcQueueEndOfPipeActionPatchAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcQueueEndOfPipeActionPatchAddress, (void *)kyty_raw_5},
+  {"1FZBKy8HeNU", "sceVideoOutGetVblankStatus", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetVblankStatus, (void *)kyty_raw_6},
+  {"1q1titRBL6o", "sceAgcDcbDrawIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndirect, (void *)kyty_raw_7},
+  {"1rZSWUv1IRc", "sceAgcDcbCopyData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbCopyData, (void *)kyty_raw_8},
+  {"23LRUSvYu1M", "sceAgcInit_0090", "libSceAgc.prx", (void **)&aps5_rt_sceAgcInit_0090, (void *)kyty_raw_9},
+  {"2JtWUUiYBXs", "sceAgcGetRegisterDefaults2", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetRegisterDefaults2, (void *)kyty_raw_10},
+  {"3KDcnM3lrcU", "sceAgcWaitRegMemPatchAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcWaitRegMemPatchAddress, (void *)kyty_raw_11},
+  {"57labkp+rSQ", "sceAgcDcbAcquireMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbAcquireMem, (void *)kyty_raw_12},
+  {"5tRaBjtdTzY", "sceVideoOutVrrPegToFixedRate", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutVrrPegToFixedRate, (void *)kyty_raw_13},
+  {"6lNcCp+fxi4", "sceAgcSetUcRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetUcRegIndirectPatchSetAddress, (void *)kyty_raw_14},
+  {"6mFxkVqdmbQ", "sceAgcAcbPopMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbPopMarker, (void *)kyty_raw_15},
+  {"7Wa3aeJgeVU", "sceAgcBranchPatchSetThenTarget_0300", "libSceAgc.prx", (void **)&aps5_rt_sceAgcBranchPatchSetThenTarget_0300, (void *)kyty_raw_16},
+  {"8N2tmT3jmC8", "sceAgcDcbSetIndexCount", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexCount, (void *)kyty_raw_17},
+  {"Abendgtz+3o", "sceAgcCbDispatchGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbDispatchGetSize, (void *)kyty_raw_18},
+  {"AhGvpITrf4M", "sceAgcDriverAgrSubmitDcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverAgrSubmitDcb, (void *)kyty_raw_19},
+  {"B+aG9DUnTKA", "sceAgcDcbDrawIndexOffset", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexOffset, (void *)kyty_raw_20},
+  {"BfBDZGbti7A", "sceAgcGetIsTrinityMode", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetIsTrinityMode, (void *)kyty_raw_21},
+  {"CBiu4mCE1DA", "sceVideoOutSetFlipRate", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSetFlipRate, (void *)kyty_raw_22},
+  {"CtB+A9-VxO0", "sceAgcDcbDispatchIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDispatchIndirect, (void *)kyty_raw_23},
+  {"D9sr1xGUriE", "sceAgcCreatePrimState", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreatePrimState, (void *)kyty_raw_24},
+  {"DL2RXaXOy88", "sceAgcDriverDeleteEqEvent", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverDeleteEqEvent, (void *)kyty_raw_25},
+  {"DYhhWbJSeRg", "sceVideoOutColorSettingsSetGamma_", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutColorSettingsSetGamma_, (void *)kyty_raw_26},
+  {"DwICrVxerkY", "sceAgcAcbRewind", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbRewind, (void *)kyty_raw_27},
+  {"GBCh3zCihoU", "sceAgcDcbSetCxRegistersIndirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetCxRegistersIndirectGetSize, (void *)kyty_raw_28},
+  {"H7uZqCoNuWk", "sceAgcDcbPopMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbPopMarker, (void *)kyty_raw_29},
+  {"HV4j+E0MBHE", "sceAgcCreateInterpolantMapping_0100", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreateInterpolantMapping_0100, (void *)kyty_raw_30},
+  {"HXzjK9yI30k", "sceVideoOutAddFlipEvent", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutAddFlipEvent, (void *)kyty_raw_31},
+  {"HuViW4HnrOw", "sceVideoOutSubmitChangeBufferAttribute2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSubmitChangeBufferAttribute2, (void *)kyty_raw_32},
+  {"JrtiDtKeS38", "sceAgcAcbResetQueue", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbResetQueue, (void *)kyty_raw_33},
+  {"KT-hTp-Ch14", "sceAgcAcbAcquireMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbAcquireMem, (void *)kyty_raw_34},
+  {"LtTouSCZjHM", "sceAgcCbNop_nid_postfix", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbNop_nid_postfix, (void *)kyty_raw_35},
+  {"MTxxrOCeSig", "sceVideoOutSetWindowModeMargins", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSetWindowModeMargins, (void *)kyty_raw_36},
+  {"MWiElSNE8j8", "sceAgcDcbWaitUntilSafeForRendering", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWaitUntilSafeForRendering, (void *)kyty_raw_37},
+  {"N5KDtkIjjJ4", "sceVideoOutUnregisterBuffers", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutUnregisterBuffers, (void *)kyty_raw_38},
+  {"Nv8c-Kb+DUM", "sceVideoOutIsOutputSupported", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutIsOutputSupported, (void *)kyty_raw_39},
+  {"PjS5uASwcV8", "sceVideoOutSetBufferAttribute2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutSetBufferAttribute2, (void *)kyty_raw_40},
+  {"Qrj4c+61z4A", "sceAgcSetShRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetShRegIndirectPatchSetAddress, (void *)kyty_raw_41},
+  {"RmaJwLtc8rY", "sceAgcDcbSetBaseIndirectArgs", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetBaseIndirectArgs, (void *)kyty_raw_42},
+  {"SbU3dwp80lQ", "sceVideoOutGetFlipStatus", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetFlipStatus, (void *)kyty_raw_43},
+  {"T4ucGB8CsnM", "sceVideoOutVrrUnpegFromFixedRate", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutVrrUnpegFromFixedRate, (void *)kyty_raw_44},
+  {"T6xuVw0KUJo", "sceAgcDebugRaiseException", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDebugRaiseException, (void *)kyty_raw_45},
+  {"TRO721eVt4g", "sceAgcDcbResetQueue", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbResetQueue, (void *)kyty_raw_46},
+  {"U2JJtSqNKZI", "sceVideoOutGetEventId", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetEventId, (void *)kyty_raw_47},
+  {"UQGTw4xRlcM", "sceAgcDcbSetUcRegistersIndirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetUcRegistersIndirectGetSize, (void *)kyty_raw_48},
+  {"UZbQjYAwwXM", "sceAgcCbSetShRegistersDirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegistersDirect, (void *)kyty_raw_49},
+  {"UglJIZjGssM", "sceAgcDriverSubmitDcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverSubmitDcb, (void *)kyty_raw_50},
+  {"Up36PTk687E", "sceVideoOutOpen", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutOpen, (void *)kyty_raw_51},
+  {"V++UgBtQhn0", "sceAgcGetDataPacketPayloadAddress_0090", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetDataPacketPayloadAddress_0090, (void *)kyty_raw_52},
+  {"VmW0Tdpy420", "sceAgcDcbWaitRegMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWaitRegMem, (void *)kyty_raw_53},
+  {"W5z4eZrjEas", "sceAgcDriverRegisterResource", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverRegisterResource, (void *)kyty_raw_54},
+  {"WmAc2MEj6Io", "sceAgcDcbDmaData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDmaData, (void *)kyty_raw_55},
+  {"X-Nm5KLREeg", "sceAgcDriverRegisterOwner", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverRegisterOwner, (void *)kyty_raw_56},
+  {"Xru92wHJRmg", "sceVideoOutAddVblankEvent", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutAddVblankEvent, (void *)kyty_raw_57},
+  {"YUeqkyT7mEQ", "sceAgcDcbSetFlip", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetFlip, (void *)kyty_raw_58},
+  {"Yw0jKSqop+E", "sceAgcDcbDrawIndexAuto", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexAuto, (void *)kyty_raw_59},
+  {"ZvwO9euwYzc", "sceAgcDcbSetCxRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetCxRegistersIndirect, (void *)kyty_raw_60},
+  {"aJf+j5yntiU", "sceAgcDcbEventWrite", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbEventWrite, (void *)kyty_raw_61},
+  {"bbFueFP+J4k", "sceAgcDcbSetPredication", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetPredication, (void *)kyty_raw_62},
+  {"bxGoVxpdSPQ", "sceAgcCbSetShRegisterRangeDirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegisterRangeDirectGetSize, (void *)kyty_raw_63},
+  {"cFazmnXpJOE", "sceAgcAcbEventWrite", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbEventWrite, (void *)kyty_raw_64},
+  {"cpCILPya5Zk", "sceAgcAcbPushMarker", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbPushMarker, (void *)kyty_raw_65},
+  {"cxPZ4Wgvdj8", "sceAgcDcbDrawIndirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndirectGetSize, (void *)kyty_raw_66},
+  {"d-6uF9sZDIU", "sceAgcSetCxRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetCxRegIndirectPatchAddRegisters, (void *)kyty_raw_67},
+  {"dbOlWdppb4o", "sceAgcCreateInterpolantMapping_10000", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreateInterpolantMapping_10000, (void *)kyty_raw_68},
+  {"dolOmWH+huQ", "sceAgcGetFusedShaderSize_0080", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetFusedShaderSize_0080, (void *)kyty_raw_69},
+  {"eZ4+17OQz4Q", "sceAgcAcbWriteData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbWriteData, (void *)kyty_raw_70},
+  {"f3dg2CSgRKY", "sceAgcCreateShader", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCreateShader, (void *)kyty_raw_71},
+  {"fPSCdQxgpSw", "sceAgcWriteDataPatchSetAddressOrOffset", "libSceAgc.prx", (void **)&aps5_rt_sceAgcWriteDataPatchSetAddressOrOffset, (void *)kyty_raw_72},
+  {"fd5Bp5tGTgo", "sceAgcFuseShaderHalves_0200", "libSceAgc.prx", (void **)&aps5_rt_sceAgcFuseShaderHalves_0200, (void *)kyty_raw_73},
+  {"gSRnr79F8tQ", "sceAgcDriverSubmitAcb", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverSubmitAcb, (void *)kyty_raw_74},
+  {"h9z6+0hEydk", "sceAgcSuspendPoint", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSuspendPoint, (void *)kyty_raw_75},
+  {"htn36gPnBk4", "sceAgcAcbWaitRegMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbWaitRegMem, (void *)kyty_raw_76},
+  {"hvUfkUIQcOE", "sceAgcDcbSetUcRegistersIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetUcRegistersIndirect, (void *)kyty_raw_77},
+  {"i1jyy49AjXU", "sceAgcDcbWriteData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbWriteData, (void *)kyty_raw_78},
+  {"j3EtxFkSIhQ", "sceAgcAcbDispatchIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbDispatchIndirect, (void *)kyty_raw_79},
+  {"j6RaAUlaLv0", "sceVideoOutWaitVblank", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutWaitVblank, (void *)kyty_raw_80},
+  {"k3GhuSNmBLU", "sceAgcCbDispatch", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbDispatch, (void *)kyty_raw_81},
+  {"l4fM9K-Lyks", "sceAgcDcbSetIndexBuffer", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetIndexBuffer, (void *)kyty_raw_82},
+  {"n2fD4A+pb+g", "sceAgcCbSetShRegisterRangeDirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbSetShRegisterRangeDirect, (void *)kyty_raw_83},
+  {"nNlUtdDDvZ0", "sceAgcDcbSetShRegistersIndirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetShRegistersIndirectGetSize, (void *)kyty_raw_84},
+  {"pv9CI5VC+R0", "sceVideoOutAdjustColor_", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutAdjustColor_, (void *)kyty_raw_85},
+  {"qj7QZpgr9Uw", "sceAgcDcbContextStateOp_0100", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbContextStateOp_0100, (void *)kyty_raw_86},
+  {"qzMN2XKGA4k", "sceAgcAcbCopyData", "libSceAgc.prx", (void **)&aps5_rt_sceAgcAcbCopyData, (void *)kyty_raw_87},
+  {"rKBUtgRrtbk", "sceVideoOutRegisterBuffers2", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutRegisterBuffers2, (void *)kyty_raw_88},
+  {"t1vNu082-jM", "sceAgcDcbDrawIndexIndirect", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexIndirect, (void *)kyty_raw_89},
+  {"t7PlZ9nt5Lc", "sceAgcCbNopGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbNopGetSize, (void *)kyty_raw_90},
+  {"tSBxhAPyytQ", "sceAgcDcbSetNumInstances", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbSetNumInstances, (void *)kyty_raw_91},
+  {"u2T2DiA5hRI", "sceAgcDcbStallCommandBufferParser", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbStallCommandBufferParser, (void *)kyty_raw_92},
+  {"uZW-mqsxkrM", "sceAgcCbBranchGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbBranchGetSize, (void *)kyty_raw_93},
+  {"uquVH4-Du78", "sceVideoOutClose", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutClose, (void *)kyty_raw_94},
+  {"utPrVdxio-8", "sceVideoOutGetOutputStatus", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutGetOutputStatus, (void *)kyty_raw_95},
+  {"vRoArM9zaIk", "sceAgcSetUcRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetUcRegIndirectPatchAddRegisters, (void *)kyty_raw_96},
+  {"vcmNN+AAXnY", "sceAgcSetCxRegIndirectPatchSetAddress", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetCxRegIndirectPatchSetAddress, (void *)kyty_raw_97},
+  {"vuSXe69VILM", "sceAgcDcbGetLodStats", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbGetLodStats, (void *)kyty_raw_98},
+  {"w0hLuNarQxY", "sceVideoOutConfigureOutput", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutConfigureOutput, (void *)kyty_raw_99},
+  {"w1KFAHVqpaU", "sceAgcCbBranch", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbBranch, (void *)kyty_raw_100},
+  {"w2rJhmD+dsE", "sceAgcDriverAddEqEvent", "libSceAgcDriver.prx", (void **)&aps5_rt_sceAgcDriverAddEqEvent, (void *)kyty_raw_101},
+  {"w6Dj1VJt5qY", "sceAgcSetPacketPredication", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetPacketPredication, (void *)kyty_raw_102},
+  {"w8HVkEeXPv8", "sceAgcDcbDispatchIndirectGetSize", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDispatchIndirectGetSize, (void *)kyty_raw_103},
+  {"wRbq6ZjNop4", "sceAgcGetRegisterDefaults2Internal", "libSceAgc.prx", (void **)&aps5_rt_sceAgcGetRegisterDefaults2Internal, (void *)kyty_raw_104},
+  {"whb1RL7K4Ss", "sceAgcSetCxRegIndirectPatchSetNumRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetCxRegIndirectPatchSetNumRegisters, (void *)kyty_raw_105},
+  {"wr23dPKyWc0", "sceAgcCbReleaseMem", "libSceAgc.prx", (void **)&aps5_rt_sceAgcCbReleaseMem, (void *)kyty_raw_106},
+  {"xSAR0LTcRKM", "sceAgcDcbJump", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbJump, (void *)kyty_raw_107},
+  {"ypVBz4uPKcQ", "sceAgcDcbDrawIndexIndirectMulti", "libSceAgc.prx", (void **)&aps5_rt_sceAgcDcbDrawIndexIndirectMulti, (void *)kyty_raw_108},
+  {"z2duB-hHQSM", "sceAgcSetShRegIndirectPatchAddRegisters", "libSceAgc.prx", (void **)&aps5_rt_sceAgcSetShRegIndirectPatchAddRegisters, (void *)kyty_raw_109},
+  {"zgXifHT9ErY", "sceVideoOutIsFlipPending", "libSceVideoOut.prx", (void **)&aps5_fp_sceVideoOutIsFlipPending, (void *)kyty_raw_110},
 };
-const unsigned nps5_kyty_route_count = 84;
+const unsigned nps5_kyty_route_count = 111;
 
 #endif // NPS5_HAVE_ANYPS5_AGC
