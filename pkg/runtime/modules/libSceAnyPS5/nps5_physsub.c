@@ -29,6 +29,14 @@
 //       after the frame they report velocity 0 although the object moved (ASTRO BOT: the walking character sinks into floors).
 //       With the frame dt once, the velocity is the frame's and the n sub-steps together move the body by the frame's change.
 //       Calls outside a split world step run unchanged.
+//       NPS5_PHYS_SUBSTEP_INNER=1 (opt-in, needs the wraps nps5_physsub_sim_step / nps5_physsub_pcollide_step): a world step
+//       that needs n > 1 steps is called ONCE with the frame dt, and only the engine step inside it is split: the
+//       simulation call (ASTRO BOT 0xe7b3b0: one hknp world step + its event dispatch; sets world+0x240 dt) and the particle
+//       collide call (0xed6c40) each run n times with dt / n. Everything else the world step does per call (request queues,
+//       attaching update, dynamic mesh rebuild with its prev/cur vertex swap and dt, previous body velocities, the
+//       accumulator swap at its start, trigger / contact point updates, the world lock release) runs once per frame with the
+//       frame dt, as unsplit. The world lock is released once (no relock / hold needed). dtfix is applied right after the
+//       last inner simulation step, so the rest of the world step already sees the frame dt.
 //       Every split world step also counts the times another thread took the world lock between two sub-steps (log line
 //       "world lock taken by another thread between sub-steps").
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
@@ -77,6 +85,10 @@ static _Atomic uint64_t g_ps_attach_ran, g_ps_attach_skipped;
 // the split world step this thread is in: sub-step i of n (n = 0: none), frame dt
 static _Thread_local int t_ps_sub_i, t_ps_sub_n;
 static _Thread_local float t_ps_frame_dt; // last other owner id seen holding the lock when the shim re-took it
+// inner split: switch; this thread is inside a world step that splits its engine step (1) and inside an inner wrap (depth)
+static int g_ps_inner = 0;
+static _Thread_local int t_ps_inner, t_ps_inner_depth;
+static _Atomic uint64_t g_ps_inner_frames, g_ps_inner_sim, g_ps_inner_sim_steps, g_ps_inner_pc, g_ps_inner_pc_steps;
 
 // kernel/sync/ps4_sync.c
 uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
@@ -123,6 +135,20 @@ static void ps_init(void) {
             fprintf(stderr, "[physsub] attach once: the attaching update runs once per split frame (first sub-step, frame dt)%s\n",
                     nps5_repl_wrap_body("nps5_physsub_attach_step", &(uint64_t){0}) ? ""
                                                                                     : " (W: no nps5_physsub_attach_step wrap: no effect)");
+    }
+    {
+        double v = 0;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_INNER"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_INNER: 0|1\n");
+        const int sim = nps5_repl_wrap_body("nps5_physsub_sim_step", &(uint64_t){0}) != NULL;
+        const int pc = nps5_repl_wrap_body("nps5_physsub_pcollide_step", &(uint64_t){0}) != NULL;
+        g_ps_inner = v == 1.0 && sim;
+        if (v == 1.0)
+            fprintf(stderr,
+                    "[physsub] inner split %s: the world step runs once per frame with the frame dt, only its engine step "
+                    "(simulation%s) is split%s\n",
+                    g_ps_inner ? "on" : "NOT on", pc ? " + particle collide" : ", no particle-collide wrap",
+                    sim ? "" : " (W: no nps5_physsub_sim_step wrap in this build: whole-step split kept)");
     }
     {
         double v = 1;
@@ -243,14 +269,16 @@ static void ps_log(void) {
             "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
             "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
             "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx) | attach: %llu frame-dt calls, "
-            "%llu skipped\n",
+            "%llu skipped | inner: %llu frames, sim %llu calls -> %llu steps, particle collide %llu calls -> %llu steps\n",
             (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
             (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
             (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
             (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail, (unsigned long long)g_ps_holds,
             (unsigned long long)g_ps_gaps_taken, (unsigned long long)g_ps_gaps, (unsigned long long)g_ps_gap_locks,
             (unsigned long long)g_ps_gap_owner, (unsigned long long)g_ps_attach_ran,
-            (unsigned long long)g_ps_attach_skipped);
+            (unsigned long long)g_ps_attach_skipped, (unsigned long long)g_ps_inner_frames,
+            (unsigned long long)g_ps_inner_sim, (unsigned long long)g_ps_inner_sim_steps, (unsigned long long)g_ps_inner_pc,
+            (unsigned long long)g_ps_inner_pc_steps);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
@@ -294,6 +322,12 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     const int n = g_ps.on && g_ps.world ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
     if (n == 1) {
         ps_call(ctx, &g_w_world, &a, dt);
+    } else if (g_ps_inner && t_ps_inner == 0) {
+        // inner split: one world step with the frame dt; the wraps below split only its engine step
+        atomic_fetch_add_explicit(&g_ps_inner_frames, 1, memory_order_relaxed);
+        t_ps_inner = 1;
+        ps_call(ctx, &g_w_world, &a, dt);
+        t_ps_inner = 0;
     } else {
         const float sub = dt / (float)n;
         const uint64_t lv = g_ps_relock || g_ps_hold || (g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var)
@@ -377,6 +411,47 @@ void nps5_physsub_attach_step(GuestContext *ctx) {
     t_ps_attach_depth++;
     ps_call(ctx, &g_w_attach, &a, dt);
     t_ps_attach_depth--;
+    SHIM_RETURN();
+}
+
+// Inner split (NPS5_PHYS_SUBSTEP_INNER=1): the engine step calls inside one world step. void f(this, a1, a2, float dt).
+// Inside an inner-mode world step (this thread, not nested) a call is split into n calls of dt / n; anywhere else it runs once.
+static PsWrap g_w_sim = {.shim = "nps5_physsub_sim_step"};
+static PsWrap g_w_pcollide = {.shim = "nps5_physsub_pcollide_step"};
+static void ps_inner_split(GuestContext *ctx, PsWrap *w, int fix_dt, _Atomic uint64_t *calls, _Atomic uint64_t *steps) {
+    pthread_once(&g_ps_once, ps_init);
+    PsArgs a;
+    ps_save(ctx, &a);
+    const float dt = a.xmm[0].f32[0];
+    const int n = t_ps_inner && t_ps_inner_depth == 0 ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
+    t_ps_inner_depth++;
+    if (n == 1) {
+        ps_call(ctx, w, &a, dt);
+    } else {
+        const float sub = dt / (float)n;
+        for (int i = 0; i < n; i++)
+            ps_call(ctx, w, &a, sub);
+        atomic_fetch_add_explicit(calls, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(steps, (uint64_t)n, memory_order_relaxed);
+        if (fix_dt && g_ps_dtfix) {
+            // the simulation wrote dt / n, n / dt as the step values; the rest of the world step and per-frame readers see the frame's
+            float *wv = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
+            float *e = NULL;
+            if (g_ps_engine_ptr && g_ps_engine_dt) {
+                const uint64_t eng = *(const uint64_t *)NPS5_G2H(ctx, a.rdi + g_ps_engine_ptr - 1);
+                if (eng && eng < ctx->mem_size) e = (float *)NPS5_G2H(ctx, eng + g_ps_engine_dt - 1);
+            }
+            nps5_ps_frame_dt(dt, wv, e);
+        }
+    }
+    t_ps_inner_depth--;
+}
+void nps5_physsub_sim_step(GuestContext *ctx) {
+    ps_inner_split(ctx, &g_w_sim, 1, &g_ps_inner_sim, &g_ps_inner_sim_steps);
+    SHIM_RETURN();
+}
+void nps5_physsub_pcollide_step(GuestContext *ctx) {
+    ps_inner_split(ctx, &g_w_pcollide, 0, &g_ps_inner_pc, &g_ps_inner_pc_steps);
     SHIM_RETURN();
 }
 

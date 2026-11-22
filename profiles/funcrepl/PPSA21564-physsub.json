@@ -48,6 +48,22 @@
             "sha256": "b621fd5a800fd9459521387bae43877bcbab73ab047343124efd0970d4e41bf5",
             "shim": "nps5_astro_texname_guard",
             "wrap": true
+        },
+        {
+            "name": "PhysicsWorldImplHavok simulation (one hknp world step)",
+            "addr": "0xa7b3b0",
+            "size": 2804,
+            "sha256": "b82e9fa47c8764e689f5c73601434fec987fda1ace6d5418389c0f9dfe929ffb",
+            "shim": "nps5_physsub_sim_step",
+            "wrap": true
+        },
+        {
+            "name": "HavokParticlesColliderManager collide (particle step)",
+            "addr": "0xad6c40",
+            "size": 800,
+            "sha256": "3998eb90b6edf0de5ab2adc0896a4d10f375362a8660dac543bd82ecbb64910b",
+            "shim": "nps5_physsub_pcollide_step",
+            "wrap": true
         }
     ],
     "params": [

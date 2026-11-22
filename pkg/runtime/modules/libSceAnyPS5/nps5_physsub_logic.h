@@ -32,6 +32,12 @@
 //   NPS5_PHYS_SUBSTEP_ATTACH_ONCE=0  1 = the attaching update (wrap nps5_physsub_attach_step; bodies driven to game objects with
 //                                 velocity = change / dt) runs once per split frame, first sub-step, frame dt, instead of in every
 //                                 sub-step with dt / n (which leaves those bodies with velocity 0 after a moving frame). Opt-in experiment.
+//   NPS5_PHYS_SUBSTEP_INNER=0     1 = a world step that needs n > 1 steps runs ONCE with the frame dt and only the engine step inside
+//                                 it (wraps nps5_physsub_sim_step / nps5_physsub_pcollide_step) is split into n steps of dt / n: the
+//                                 game-side per-call work of the world step (attaching, dynamic mesh rebuild, previous velocities,
+//                                 contact / trigger point updates, lock release) runs once per frame, as unsplit (ASTRO BOT: the
+//                                 walking character sinks into the Sky Garden planks with the whole-step split). Overrides HOLD /
+//                                 ATTACH_ONCE / RELOCK (nothing to do: one world step). Opt-in.
 #pragma once
 #include <math.h>
 #include <stdint.h>
