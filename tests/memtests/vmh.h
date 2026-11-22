@@ -10,6 +10,7 @@
 #include "nps5_thunk.h"
 #include "recomp_runtime.h"
 #include "nps5_diag.h"
+#include "ps4_direct_mem.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -162,6 +163,15 @@ static uint32_t sys_reserve(uint64_t *addr, uint64_t len, int flags, uint64_t al
   ctx->rdi = arg_slot; ctx->rsi = len; ctx->rdx = (uint64_t)flags; ctx->rcx = align;
   shim_sceKernelReserveVirtualRange(ctx);
   *addr = *(uint64_t *)P(arg_slot);
+  return (uint32_t)ctx->rax;
+}
+// sceKernelVirtualQuery(addr, flags, &info, sizeof info): returns the SCE code; *info gets the record.
+static uint32_t sys_vquery(uint64_t addr, int flags, OrbisKernelVirtualQueryInfo *info) {
+  setrsp();
+  memset(P(arg_slot), 0, sizeof *info);
+  ctx->rdi = addr; ctx->rsi = (uint64_t)flags; ctx->rdx = arg_slot; ctx->rcx = sizeof *info;
+  shim_sceKernelVirtualQuery(ctx);
+  memcpy(info, P(arg_slot), sizeof *info);
   return (uint32_t)ctx->rax;
 }
 static uint32_t sys_dm_alloc(int64_t start, int64_t end, uint64_t len, uint64_t align, int type, int64_t *phys) {

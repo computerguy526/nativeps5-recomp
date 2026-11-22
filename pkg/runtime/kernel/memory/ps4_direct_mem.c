@@ -690,7 +690,18 @@ int sceKernelVirtualQuery(GuestContext *ctx, const void *addr, int flags, OrbisK
     info->end = (void *)(extent->addr + extent->size);
     info->prot = extent->prot ? extent->prot : (PROT_READ | PROT_WRITE);
     info->flags = extent->flags;
-    info->isCommitted = extent->is_free ? 0 : 1;
+    // A reservation (sceKernelReserveVirtualRange) holds address space only: no pages, not committed
+    // (shadPS4 VirtualQuery: is_committed = vma.IsMapped(), false for Free and Reserved). Allocators
+    // read this bit to choose between mprotect (committed) and allocate + MAP_FIXED map (not committed);
+    // the Unity PS5 player's virtual-memory commit does exactly that on its reserved ranges.
+    // NPS5_VQ_RESERVED_UNCOMMITTED=1 (profiles/engines/unity-ps5.json) until the titles that ran with
+    // the old answer (reservations reported committed) have been regression-tested with it.
+    static int reserved_uncommitted = -1;
+    if (reserved_uncommitted < 0) {
+        const char *e = getenv("NPS5_VQ_RESERVED_UNCOMMITTED");
+        reserved_uncommitted = (e && e[0] == '1') ? 1 : 0;
+    }
+    info->isCommitted = (extent->is_free || (reserved_uncommitted && extent->kind == NPS5_EXT_RESERVED)) ? 0 : 1;
     info->isFlexibleMemory = (extent->kind == NPS5_EXT_FLEXIBLE) ? 1 : 0;
     info->isDirectMemory = (extent->kind == NPS5_EXT_DIRECT) ? 1 : 0;
     info->isPooledMemory = (extent->kind == NPS5_EXT_POOL) ? 1 : 0;
