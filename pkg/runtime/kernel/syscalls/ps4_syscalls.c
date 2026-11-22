@@ -2,6 +2,7 @@
 #include "ps4_syscalls.h"
 #include "ps4_hitch.h"
 #include "ps4_vfs.h"
+#include "nps5_segfile.h"
 #include "recomp_runtime.h"
 #include "nps5_thunk.h"
 #include "nps5_libkernel_hle.h"
@@ -397,8 +398,9 @@ void shim_readv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
-  if (ret > 0) ps4_vfs_readlog_note(fd, -1, ret);
+  const bool vfd = ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
+  ssize_t ret = vfd ? ps4_vfs_readv_virtual(fd, host_iov, iovcnt, -1) : nps5_kreadv(fd, host_iov, iovcnt);
+  if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
     set_guest_errno(ctx, errno);
   }
@@ -445,8 +447,9 @@ void shim_sceKernelReadv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  ssize_t ret = nps5_kreadv(fd, host_iov, iovcnt);
-  if (ret > 0) ps4_vfs_readlog_note(fd, -1, ret);
+  const bool vfd = ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
+  ssize_t ret = vfd ? ps4_vfs_readv_virtual(fd, host_iov, iovcnt, -1) : nps5_kreadv(fd, host_iov, iovcnt);
+  if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
@@ -501,8 +504,10 @@ void shim_sceKernelPreadv(GuestContext *ctx) {
   }
 
   ssize_t ret;
-  PS4_HITCH_TIMED(PS4_HITCH_IO, ret = nps5_kpreadv(fd, host_iov, iovcnt, offset));
-  if (ret > 0) ps4_vfs_readlog_note(fd, (long long)offset, ret);
+  const bool vfd = ps4_vfs_is_virtual_fd(fd);
+  PS4_HITCH_TIMED(PS4_HITCH_IO, ret = vfd ? (offset < 0 ? (errno = EINVAL, -1) : ps4_vfs_readv_virtual(fd, host_iov, iovcnt, offset))
+                                          : nps5_kpreadv(fd, host_iov, iovcnt, offset));
+  if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, (long long)offset, ret);
   if (ret < 0) {
     int err = errno;
     set_guest_errno(ctx, err);
@@ -1270,7 +1275,11 @@ static GuestDirCache *guest_dir_cache_get(int fd) {
     uint8_t dtype =
         ps4_vfs_resolve_dirent_type(dirfd(d), e->d_name, e->d_type, NULL); // dirfix: symlinks report the target's type
     if (dtype == 0xFF) continue; // dangling link: hidden
-    slot->names[slot->count] = strdup(e->d_name);
+    char segname[256];
+    const int seg = nps5_segfile_dirent(dirfd(d), e->d_name, dtype, segname, sizeof segname); // gamepack <file>.nps5seg/
+    if (seg < 0) continue;
+    if (seg > 0) dtype = 8; // DT_REG: listed as the original file
+    slot->names[slot->count] = strdup(seg > 0 ? segname : e->d_name);
     slot->inos[slot->count] =
         (uint32_t)e->d_ino ? (uint32_t)e->d_ino : (uint32_t)(slot->count + 1);
     slot->types[slot->count] = dtype; // DT_* values match FreeBSD

@@ -18,7 +18,7 @@ cat > "$OUT.pakhelper.c" <<EOF
 #include "$ROOT/$R/kernel/vfs/ps4_pak.c"
 void nps5_test_pak_insert(const char *path) { hash_table_insert_file(fnv1a_64_lower(path), -1, 0, 1, 0); g_entry_count = g_entry_count ? g_entry_count : 1; }
 EOF
-SRC="tests/kernelfs/kernelfs_unit.c $OUT.pakhelper.c $R/kernel/syscalls/ps4_syscalls.c $R/kernel/vfs/ps4_vfs.c $R/core/ps4_sfo.c $R/modules/libSceAppContent/ps4_app_content.c"
+SRC="tests/kernelfs/kernelfs_unit.c $OUT.pakhelper.c $R/kernel/syscalls/ps4_syscalls.c $R/kernel/vfs/ps4_vfs.c $R/kernel/vfs/nps5_segfile.c $R/core/ps4_sfo.c $R/modules/libSceAppContent/ps4_app_content.c"
 clang $FL $SRC -o "$OUT" 2> "$OUT.err"; rc=$?
 if [ $rc -ne 0 ]; then
   grep '^  "_' "$OUT.err" | sort -u | sed -E 's/^  "_([^"]+)".*/\1/' | awk '/^g_/{print "long long " $1 "[64];"; next} {print "long long " $1 "(void){return 0;}"}' > "$OUT.stubs.c"

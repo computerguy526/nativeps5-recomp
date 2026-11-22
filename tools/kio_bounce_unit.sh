@@ -9,7 +9,7 @@ R=pkg/runtime
 OUT="${TMPDIR:-/tmp}/kio_bounce_unit.$$"
 INC=$(find $R -type d | sed 's/^/-I/' | tr '\n' ' ')
 FL="-O1 -g -Wno-everything -DRECOMP_ARM64_ASM=1 $INC"
-SRC="tests/kio/kio_bounce_unit.c $R/kernel/vfs/ps4_vfs.c"
+SRC="tests/kio/kio_bounce_unit.c $R/kernel/vfs/ps4_vfs.c $R/kernel/vfs/nps5_segfile.c"
 clang $FL $SRC -o "$OUT" 2> "$OUT.err"; rc=$?
 if [ $rc -ne 0 ]; then
   grep '^  "_' "$OUT.err" | sort -u | sed -E 's/^  "_([^"]+)".*/\1/' | awk '/^g_/{print "long long " $1 "[64];"; next} {print "long long " $1 "(void){return 0;}"}' > "$OUT.stubs.c"

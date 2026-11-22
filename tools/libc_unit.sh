@@ -9,7 +9,7 @@ R="$ROOT/pkg/runtime"
 OUT="${TMPDIR:-/tmp}/libc_unit.$$"
 INC=$(find "$R" -type d | sed 's/^/-I/' | tr '\n' ' ')
 FL="-O1 -g -Wall -Wno-unused-function $INC"
-SRC="$ROOT/tests/libc/libc_unit.c $R/kernel/vfs/ps4_vfs.c $R/kernel/vfs/ps4_pak.c $R/core/ps4_sfo.c $R/modules/libc/*.c"
+SRC="$ROOT/tests/libc/libc_unit.c $R/kernel/vfs/ps4_vfs.c $R/kernel/vfs/nps5_segfile.c $R/kernel/vfs/ps4_pak.c $R/core/ps4_sfo.c $R/modules/libc/*.c"
 clang $FL $SRC -o "$OUT" 2> "$OUT.err"; rc=$?
 if [ $rc -ne 0 ]; then
   grep '^  "_' "$OUT.err" | sort -u | sed -E 's/^  "_([^"]+)".*/\1/' | awk '/^g_/{print "long long " $1 "[64];"; next} {print "long long " $1 "(void){return 0;}"}' > "$OUT.stubs.c"

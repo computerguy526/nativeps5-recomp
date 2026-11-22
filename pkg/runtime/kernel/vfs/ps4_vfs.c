@@ -2,6 +2,7 @@
 #include "ps4_vfs.h"
 #include "nps5_mem.h"
 #include "ps4_pak.h"
+#include "nps5_segfile.h"
 #include "nps5_diag.h"
 #include "ps4_sfo.h"
 #include <ctype.h>
@@ -21,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/xattr.h>
 #include <sys/param.h>
 #include <unistd.h>
@@ -43,6 +45,7 @@ typedef struct {
   uint64_t data_offset;
   uint64_t file_size;
   off_t cur_offset;
+  nps5_segfile *seg; // non-NULL: a gamepack segmented file (nps5_segfile.h); pak_fd/data_offset unused
   char path[512];
 } VirtualPakFile;
 
@@ -1602,6 +1605,43 @@ void ps4_vfs_readlog_note_path(const char *path, int fd, long long off, long lon
     pthread_mutex_unlock(&g_rl_mu);
 }
 
+// A virtual fd for a pak entry (pak_fd, data_offset) or a segmented file (seg), size bytes long.
+static int vfs_open_virtual(const char *guest_path, int pak_fd, uint64_t data_offset, uint64_t size, nps5_segfile *seg) {
+  pthread_mutex_lock(&g_vfile_mutex);
+  int slot = -1;
+  for (int i = 0; i < MAX_VIRTUAL_FILES; i++) {
+    if (!g_vfiles[i].active) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    pthread_mutex_unlock(&g_vfile_mutex);
+    errno = ENFILE;
+    return -1;
+  }
+  g_vfiles[slot].active = 1;
+  g_vfiles[slot].pak_fd = pak_fd;
+  g_vfiles[slot].data_offset = data_offset;
+  g_vfiles[slot].file_size = size;
+  g_vfiles[slot].cur_offset = 0;
+  g_vfiles[slot].seg = seg;
+  strncpy(g_vfiles[slot].path, guest_path, sizeof(g_vfiles[slot].path) - 1);
+  g_vfiles[slot].path[sizeof(g_vfiles[slot].path) - 1] = '\0';
+  pthread_mutex_unlock(&g_vfile_mutex);
+  const int vfd = PS4_VFS_VIRTUAL_FD_BASE + slot;
+  PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual open: '%s' -> vfd=%d (%s, offset=0x%llx, size=%llu)\n", guest_path, vfd,
+           seg ? "segfile" : "pak", (unsigned long long)data_offset, (unsigned long long)size);
+  return vfd;
+}
+
+// pread of a virtual file at logical offset off: one host pread (pak) or one segment piece (segfile; a read across a
+// segment boundary comes back short and the caller's loop continues). Same contract as pread(2).
+static ssize_t vfile_pread(const VirtualPakFile *vf, void *buf, size_t n, uint64_t off) {
+  if (vf->seg) return nps5_segfile_pread_piece(vf->seg, buf, n, off);
+  return pread(vf->pak_fd, buf, n, (off_t)(vf->data_offset + off));
+}
+
 static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode);
 int ps4_vfs_open(const char *guest_path, int host_flags, mode_t mode) {
   const int fd = ps4_vfs_open_impl(guest_path, host_flags, mode);
@@ -1636,6 +1676,8 @@ static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode
       if (getenv("NPS5_VFS_TRACE_INI")) { size_t n = strlen(guest_path); if (n > 4 && !strcasecmp(guest_path + n - 4, ".ini")) fprintf(stderr, "[ps4-vfs] ini open: %s -> fd %d\n", guest_path, hfd); }
       return hfd;
     }
+    nps5_segfile *sf = nps5_segfile_lookup(resolved); // gamepack: <file>.nps5seg/ stands in for a missing <file>
+    if (sf) return vfs_open_virtual(guest_path, -1, 0, nps5_segfile_size(sf), sf);
   }
 
   // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
@@ -1666,35 +1708,7 @@ static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode
         return -1;
       }
 
-      pthread_mutex_lock(&g_vfile_mutex);
-      int slot = -1;
-      for (int i = 0; i < MAX_VIRTUAL_FILES; i++) {
-        if (!g_vfiles[i].active) {
-          slot = i;
-          break;
-        }
-      }
-
-      if (slot < 0) {
-        pthread_mutex_unlock(&g_vfile_mutex);
-        errno = ENFILE;
-        return -1;
-      }
-
-      g_vfiles[slot].active = 1;
-      g_vfiles[slot].pak_fd = entry.pak_fd;
-      g_vfiles[slot].data_offset = entry.data_offset;
-      g_vfiles[slot].file_size = entry.size;
-      g_vfiles[slot].cur_offset = 0;
-      strncpy(g_vfiles[slot].path, guest_path, sizeof(g_vfiles[slot].path) - 1);
-      pthread_mutex_unlock(&g_vfile_mutex);
-
-      int vfd = PS4_VFS_VIRTUAL_FD_BASE + slot;
-      PS4_LOGF(NPS5_S_KERNEL, NPS5_L_DEBUG, "ps4-vfs", "Virtual open: '%s' -> vfd=%d (pak_offset=0x%llx, "
-             "size=%llu)\n",
-             guest_path, vfd, (unsigned long long)entry.data_offset,
-             (unsigned long long)entry.size);
-      return vfd;
+      return vfs_open_virtual(guest_path, entry.pak_fd, entry.data_offset, entry.size, NULL);
     }
   }
 
@@ -1759,24 +1773,26 @@ static void vfs_note_short(int fd, size_t got, size_t want, int err) {
 }
 // The rest of a read whose kernel copy kept failing with EFAULT: pread into a host buffer, then user-mode stores.
 // Returns the bytes stored, or -1 (errno set) when nothing could be read.
-static ssize_t vfs_bounce_pread(int hfd, int fd, char *dst, size_t n, off_t off) {
-    kio_exit_hook_once();
-    const size_t chunk = (size_t)4 << 20;
-    char *tmp = malloc(n < chunk ? (n ? n : 1) : chunk);
-    if (!tmp) {
-        errno = ENOMEM;
-        return -1;
+static ssize_t vfile_pread(const VirtualPakFile *vf, void *buf, size_t n, uint64_t off);
+// vf != NULL: a virtual file, off is its logical offset (hfd unused).
+static ssize_t vfs_bounce_pread(const VirtualPakFile *vf, int hfd, int fd, char *dst, size_t n, off_t off) {
+  kio_exit_hook_once();
+  const size_t chunk = (size_t)4 << 20;
+  char *tmp = malloc(n < chunk ? (n ? n : 1) : chunk);
+  if (!tmp) {
+    errno = ENOMEM;
+    return -1;
+  }
+  size_t got = 0;
+  int err = 0;
+  while (got < n) {
+    const size_t want = n - got < chunk ? n - got : chunk;
+    const ssize_t r = vf ? vfile_pread(vf, tmp, want, (uint64_t)off + got) : pread(hfd, tmp, want, off + (off_t)got);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      err = errno;
+      break;
     }
-    size_t got = 0;
-    int err = 0;
-    while (got < n) {
-        const size_t want = n - got < chunk ? n - got : chunk;
-        const ssize_t r = pread(hfd, tmp, want, off + (off_t)got);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            err = errno;
-            break;
-        }
         if (r == 0) break;
         memcpy(dst + got, tmp, (size_t)r); // user-mode stores: a closed page faults into the watch and is opened there
         got += (size_t)r;
@@ -1819,9 +1835,14 @@ static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
       errno = EBADF;
       return -1;
     }
-    VirtualPakFile *vf = &g_vfiles[slot];
+    // A pak entry is read under the lock (as before); a segmented file from a snapshot without it (its handle lives
+    // for the whole run), so concurrent readers of the big containers do not serialize. The position moves after.
+    const VirtualPakFile snap = g_vfiles[slot];
+    const VirtualPakFile *vf = &snap;
+    const int locked = snap.seg == NULL;
+    if (!locked) pthread_mutex_unlock(&g_vfile_mutex);
     if ((uint64_t)vf->cur_offset >= vf->file_size) {
-      pthread_mutex_unlock(&g_vfile_mutex);
+      if (locked) pthread_mutex_unlock(&g_vfile_mutex);
       return 0; // EOF
     }
 
@@ -1833,33 +1854,37 @@ static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
     size_t total = 0;
     char *p = (char *)buf;
     while (total < to_read) {
-      ssize_t ret = pread(vf->pak_fd, p + total, to_read - total,
-                          (off_t)(vf->data_offset + (uint64_t)vf->cur_offset + total));
+      ssize_t ret = vfile_pread(vf, p + total, to_read - total, (uint64_t)vf->cur_offset + total);
       if (ret < 0) {
         if (errno == EINTR)
           continue;
         if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
           continue; // a page of the destination was closed again before the kernel copied: opened again, repeat
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-            const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
-                                               (off_t)(vf->data_offset + (uint64_t)vf->cur_offset + total));
-            if (b > 0) {
-                total += (size_t)b;
-                continue;
-            }
+          const ssize_t b = vfs_bounce_pread(vf, -1, fd, p + total, to_read - total, (off_t)((uint64_t)vf->cur_offset + total));
+          if (b > 0) {
+            total += (size_t)b;
+            continue;
+          }
         }
         if (total > 0) {
             vfs_note_short(fd, total, to_read, errno);
             break;
         }
-        pthread_mutex_unlock(&g_vfile_mutex);
+        if (locked) pthread_mutex_unlock(&g_vfile_mutex);
         return -1;
       }
       if (ret == 0)
         break;
       total += (size_t)ret;
     }
-    vf->cur_offset += (off_t)total;
+    if (vf->seg) nps5_segfile_trace(vf->seg, (uint64_t)vf->cur_offset, p, total);
+    if (!locked) {
+      pthread_mutex_lock(&g_vfile_mutex);
+      if (g_vfiles[slot].active && g_vfiles[slot].seg == vf->seg) g_vfiles[slot].cur_offset = vf->cur_offset + (off_t)total;
+    } else {
+      g_vfiles[slot].cur_offset += (off_t)total;
+    }
     pthread_mutex_unlock(&g_vfile_mutex);
     return (ssize_t)total;
   }
@@ -1879,13 +1904,12 @@ static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
           continue;
         }
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && pos >= 0 && kio_bounce_on()) {
-            const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, pos + (off_t)total);
-            if (b > 0) {
-                total += (size_t)b;
-                lseek(fd, pos + (off_t)total,
-                      SEEK_SET); // pread does not move the position: put it after the bytes read
-                continue;
-            }
+          const ssize_t b = vfs_bounce_pread(NULL, fd, fd, p + total, count - total, pos + (off_t)total);
+          if (b > 0) {
+            total += (size_t)b;
+            lseek(fd, pos + (off_t)total, SEEK_SET); // pread does not move the position: put it after the bytes read
+            continue;
+          }
         }
         if (total > 0) {
             vfs_note_short(fd, total, count, errno);
@@ -1915,6 +1939,30 @@ ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset) {
   return r;
 }
 
+ssize_t ps4_vfs_readv_virtual(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
+  if (!ps4_vfs_is_virtual_fd(fd)) {
+    errno = EBADF;
+    return -1;
+  }
+  if (iovcnt < 0 || (iovcnt > 0 && !iov)) {
+    errno = EINVAL;
+    return -1;
+  }
+  size_t total = 0;
+  for (int i = 0; i < iovcnt; i++) {
+    if (!iov[i].iov_len) continue;
+    const ssize_t r = offset < 0 ? ps4_vfs_read(fd, iov[i].iov_base, iov[i].iov_len)
+                                 : ps4_vfs_pread(fd, iov[i].iov_base, iov[i].iov_len, offset + (off_t)total);
+    if (r < 0) {
+      if (total) break;
+      return -1;
+    }
+    total += (size_t)r;
+    if ((size_t)r < iov[i].iov_len) break; // EOF
+  }
+  return (ssize_t)total;
+}
+
 static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
   // offset + count must be representable: no signed overflow below, whatever the guest passes
   if (offset < 0) {
@@ -1932,9 +1980,12 @@ static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
       errno = EBADF;
       return -1;
     }
-    VirtualPakFile *vf = &g_vfiles[slot];
+    const VirtualPakFile snap = g_vfiles[slot]; // see vfs_read_inner: segmented files are read without the lock
+    const VirtualPakFile *vf = &snap;
+    const int locked = snap.seg == NULL;
+    if (!locked) pthread_mutex_unlock(&g_vfile_mutex);
     if (offset < 0 || (uint64_t)offset >= vf->file_size) {
-      pthread_mutex_unlock(&g_vfile_mutex);
+      if (locked) pthread_mutex_unlock(&g_vfile_mutex);
       return 0;
     }
 
@@ -1946,33 +1997,32 @@ static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
     size_t total = 0;
     char *p = (char *)buf;
     while (total < to_read) {
-      ssize_t ret = pread(vf->pak_fd, p + total, to_read - total,
-                          (off_t)(vf->data_offset + (uint64_t)offset + total));
+      ssize_t ret = vfile_pread(vf, p + total, to_read - total, (uint64_t)offset + total);
       if (ret < 0) {
         if (errno == EINTR)
           continue;
         if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
           continue;
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-            const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
-                                               (off_t)(vf->data_offset + (uint64_t)offset + total));
-            if (b > 0) {
-                total += (size_t)b;
-                continue;
-            }
+          const ssize_t b = vfs_bounce_pread(vf, -1, fd, p + total, to_read - total, (off_t)((uint64_t)offset + total));
+          if (b > 0) {
+            total += (size_t)b;
+            continue;
+          }
         }
         if (total > 0) {
             vfs_note_short(fd, total, to_read, errno);
             break;
         }
-        pthread_mutex_unlock(&g_vfile_mutex);
+        if (locked) pthread_mutex_unlock(&g_vfile_mutex);
         return -1;
       }
       if (ret == 0)
         break;
       total += (size_t)ret;
     }
-    pthread_mutex_unlock(&g_vfile_mutex);
+    if (locked) pthread_mutex_unlock(&g_vfile_mutex);
+    if (vf->seg) nps5_segfile_trace(vf->seg, (uint64_t)offset, p, total);
     return (ssize_t)total;
   }
 
@@ -1988,11 +2038,11 @@ static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
         if (errno == EFAULT && nps5_host_write_refault(p + total, count - total, &refault))
           continue;
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-            const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, offset + (off_t)total);
-            if (b > 0) {
-                total += (size_t)b;
-                continue;
-            }
+          const ssize_t b = vfs_bounce_pread(NULL, fd, fd, p + total, count - total, offset + (off_t)total);
+          if (b > 0) {
+            total += (size_t)b;
+            continue;
+          }
         }
         if (total > 0) {
             vfs_note_short(fd, total, count, errno);
@@ -2088,6 +2138,18 @@ int ps4_vfs_stat(const char *guest_path, struct stat *st) {
     if (stat(resolved, st) == 0) {
       return 0;
     }
+    nps5_segfile *sf = nps5_segfile_lookup(resolved); // gamepack segmented file: the size of the original
+    if (sf) {
+      char segdir[1100];
+      snprintf(segdir, sizeof segdir, "%s.nps5seg", resolved);
+      if (stat(segdir, st) != 0) memset(st, 0, sizeof(*st)); // times and ids of the segment directory (case may differ)
+      st->st_mode = S_IFREG | 0444;
+      st->st_nlink = 1;
+      st->st_size = (off_t)nps5_segfile_size(sf);
+      st->st_blksize = 4096;
+      st->st_blocks = (off_t)((nps5_segfile_size(sf) + 511) / 512);
+      return 0;
+    }
   }
 
   // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
@@ -2147,6 +2209,13 @@ int ps4_vfs_access(const char *guest_path, int mode) {
     if (access(resolved, mode) == 0) {
       return 0;
     }
+    if (nps5_segfile_lookup(resolved)) { // gamepack segmented file: read-only
+      if (mode & W_OK) {
+        errno = EACCES;
+        return -1;
+      }
+      return 0;
+    }
   }
 
   // Physical disk locale fallback for .res resource bundles (NPS5_PAK_LOCALE_FALLBACK=1 only, like the pak one)
@@ -2203,8 +2272,12 @@ void *ps4_vfs_mmap(void *addr, size_t len, int prot, int flags, int fd,
       if ((uint64_t)offset + to_read > vf->file_size) {
         to_read = (size_t)(vf->file_size - (uint64_t)offset);
       }
-      pread(vf->pak_fd, mem, to_read,
-            (off_t)(vf->data_offset + (uint64_t)offset));
+      for (size_t got = 0; got < to_read;) { // a segmented file comes back one segment piece at a time
+        const ssize_t r = vfile_pread(vf, (char *)mem + got, to_read - got, (uint64_t)offset + got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+      }
     }
     pthread_mutex_unlock(&g_vfile_mutex);
     mprotect(mem, len, prot);

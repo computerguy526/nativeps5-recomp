@@ -14,3 +14,4 @@ bash tools/haptics_unit.sh
 bash tools/avsync_unit.sh
 bash tools/avloop_unit.sh
 bash tools/kio_bounce_unit.sh
+bash tools/segfile_unit.sh

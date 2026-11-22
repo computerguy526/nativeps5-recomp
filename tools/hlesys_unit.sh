@@ -13,7 +13,7 @@ clang -O1 -g -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused
   "$R/modules/libSceAudioOut/nps5_audioout2.c" "$R/modules/libSceAudioOut/nps5_haptics.c" "$R/modules/libSceAudioOut/nps5_audio_capture.c" "$R/modules/libSceAmpr/nps5_ampr.c" "$R/modules/libSceAstroStubs/nps5_astro_stubs.c" "$R/modules/libSceJson2/ps4_json2.c" \
   "$R/modules/libSceHlesys/nps5_hlesys.c" \
   "$R/modules/libkernel/ps4_sysmodule.c" \
-  "$R/kernel/vfs/ps4_vfs.c" "$R/kernel/vfs/ps4_pak.c" "$R/core/ps4_sfo.c" "$R/core/ps4_log.c" \
+  "$R/kernel/vfs/ps4_vfs.c" "$R/kernel/vfs/nps5_segfile.c" "$R/kernel/vfs/ps4_pak.c" "$R/core/ps4_sfo.c" "$R/core/ps4_log.c" \
   "$R/kernel/equeue/ps4_equeue.c" \
   -framework AudioToolbox -framework CoreFoundation -o "$OUT"
 NPS5_AUDIO_NULL=1 "$OUT"; rc=$?; rm -f "$OUT"; exit $rc

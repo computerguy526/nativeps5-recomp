@@ -36,6 +36,10 @@ int ps4_vfs_resolve(const char *guest_path, char *host_path, size_t host_path_sz
 
 // Check if an fd is a virtual file descriptor managed by VFS (e.g. backed by PAK)
 bool ps4_vfs_is_virtual_fd(int fd);
+// readv (offset < 0, moves the position) / preadv (offset >= 0) on a virtual fd (pak entry or gamepack segmented
+// file): each buffer filled in turn through ps4_vfs_read / ps4_vfs_pread; stops at the first short one.
+struct iovec;
+ssize_t ps4_vfs_readv_virtual(int fd, const struct iovec *iov, int iovcnt, off_t offset);
 // True for a guest path in the read-only application image (/app0, /hostapp, a relative path): mutating calls fail with EROFS.
 bool ps4_vfs_is_readonly(const char *guest_path);
 
