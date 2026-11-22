@@ -29,6 +29,9 @@
 //                                 sub-steps 1..n-1 is balanced by one extra lock level), so threads that wait for the lock see the
 //                                 frame's physics only when the whole frame is simulated, as with one unsplit step (ASTRO BOT: the
 //                                 walking character sinks into floors with plain split; opt-in experiment). Needs the lock params.
+//   NPS5_PHYS_SUBSTEP_ATTACH_ONCE=0  1 = the attaching update (wrap nps5_physsub_attach_step; bodies driven to game objects with
+//                                 velocity = change / dt) runs once per split frame, first sub-step, frame dt, instead of in every
+//                                 sub-step with dt / n (which leaves those bodies with velocity 0 after a moving frame). Opt-in experiment.
 #pragma once
 #include <math.h>
 #include <stdint.h>

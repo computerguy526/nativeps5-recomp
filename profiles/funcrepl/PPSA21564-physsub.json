@@ -34,6 +34,14 @@
             "wrap": true
         },
         {
+            "name": "PhysicsWorldImplHavok attaching update",
+            "addr": "0xa002f0",
+            "size": 10576,
+            "sha256": "65d6dffe3d608bd9608bc5bed48dd98ca322e5655637ac62ea2c67dd4ccc4a61",
+            "shim": "nps5_physsub_attach_step",
+            "wrap": true
+        },
+        {
             "name": "model texture lookup std::function invoker (texture-name guard)",
             "addr": "0x70587f0",
             "size": 26,

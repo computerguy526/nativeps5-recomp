@@ -22,6 +22,13 @@
 //       to the last one, as one unsplit step holds it: before each sub-step but the last it takes the lock once more, so
 //       the step's own release leaves the caller's depth. Other threads that wait for the lock (the game waits for the
 //       frame's physics this way) then get it only after the whole frame's simulation, not between sub-steps.
+//       NPS5_PHYS_SUBSTEP_ATTACH_ONCE=1 (opt-in): the game's attaching update, called by the world step with its dt
+//       (nps5_physsub_attach_step, ASTRO BOT 0xe002f0: drives bodies attached to game objects to the objects' transforms,
+//       velocity = position change * 1/dt), runs once per split frame, in the first sub-step, with the frame dt. Split, it
+//       otherwise runs in every sub-step with dt / n: sub-step 1 gives those bodies n times their velocity, the later ones 0, so
+//       after the frame they report velocity 0 although the object moved (ASTRO BOT: the walking character sinks into floors).
+//       With the frame dt once, the velocity is the frame's and the n sub-steps together move the body by the frame's change.
+//       Calls outside a split world step run unchanged.
 //       Every split world step also counts the times another thread took the world lock between two sub-steps (log line
 //       "world lock taken by another thread between sub-steps").
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
@@ -63,7 +70,13 @@ static _Atomic uint64_t g_ps_relocks, g_ps_relock_fail, g_ps_holds;
 // gaps between sub-steps (lock released by the step until the shim has it again): how many, how many saw another thread take
 // the world lock, and how many first-level acquisitions by others in total
 static _Atomic uint64_t g_ps_gaps, g_ps_gaps_taken, g_ps_gap_locks;
-static _Atomic uint64_t g_ps_gap_owner; // last other owner id seen holding the lock when the shim re-took it
+static _Atomic uint64_t g_ps_gap_owner;
+// attach once: switch, wrapped calls run with the frame dt / skipped
+static int g_ps_attach_once = 0;
+static _Atomic uint64_t g_ps_attach_ran, g_ps_attach_skipped;
+// the split world step this thread is in: sub-step i of n (n = 0: none), frame dt
+static _Thread_local int t_ps_sub_i, t_ps_sub_n;
+static _Thread_local float t_ps_frame_dt; // last other owner id seen holding the lock when the shim re-took it
 
 // kernel/sync/ps4_sync.c
 uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
@@ -100,6 +113,16 @@ static void ps_init(void) {
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD: 0|1\n");
         g_ps_hold = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
         if (v == 1.0 && !g_ps_hold) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
+    }
+    {
+        double v = 0;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_ATTACH_ONCE"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_ATTACH_ONCE: 0|1\n");
+        g_ps_attach_once = v == 1.0;
+        if (g_ps_attach_once)
+            fprintf(stderr, "[physsub] attach once: the attaching update runs once per split frame (first sub-step, frame dt)%s\n",
+                    nps5_repl_wrap_body("nps5_physsub_attach_step", &(uint64_t){0}) ? ""
+                                                                                    : " (W: no nps5_physsub_attach_step wrap: no effect)");
     }
     {
         double v = 1;
@@ -219,13 +242,15 @@ static void ps_log(void) {
     fprintf(stderr,
             "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
             "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
-            "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx)\n",
+            "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx) | attach: %llu frame-dt calls, "
+            "%llu skipped\n",
             (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
             (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
             (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
             (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail, (unsigned long long)g_ps_holds,
             (unsigned long long)g_ps_gaps_taken, (unsigned long long)g_ps_gaps, (unsigned long long)g_ps_gap_locks,
-            (unsigned long long)g_ps_gap_owner);
+            (unsigned long long)g_ps_gap_owner, (unsigned long long)g_ps_attach_ran,
+            (unsigned long long)g_ps_attach_skipped);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
@@ -277,8 +302,11 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         const uint32_t depth0 = lv ? ps4_sync_guest_mutex_depth(ctx, lv) : 0;
         const int hold = g_ps_hold && depth0;
         const uint64_t me = depth0 ? ps4_sync_guest_owner_id(ctx) : 0;
+        t_ps_sub_n = n;
+        t_ps_frame_dt = dt;
         for (int i = 0; i < n; i++) {
             const int last = i == n - 1;
+            t_ps_sub_i = i;
             // hold: one more level before each sub-step but the last; the step's release then leaves depth0 held
             if (hold && !last && ps4_sync_guest_mutex_lock(ctx, lv) == 0)
                 atomic_fetch_add_explicit(&g_ps_holds, 1, memory_order_relaxed);
@@ -308,6 +336,7 @@ void nps5_physsub_world_step(GuestContext *ctx) {
                 }
             }
         }
+        t_ps_sub_n = 0;
         if (g_ps_dtfix) {
             // the last sub-step left dt / n and n / dt as the step values; per-frame readers must see the frame's
             float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
@@ -326,6 +355,28 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_note_dt(0, dt);
         if (g_ps.log) ps_log();
     }
+    SHIM_RETURN();
+}
+
+// The game's attaching update, void f(this, float dt), dt = xmm0[0] (see NPS5_PHYS_SUBSTEP_ATTACH_ONCE above).
+static PsWrap g_w_attach = {.shim = "nps5_physsub_attach_step"};
+static _Thread_local int t_ps_attach_depth;
+void nps5_physsub_attach_step(GuestContext *ctx) {
+    pthread_once(&g_ps_once, ps_init);
+    PsArgs a;
+    ps_save(ctx, &a);
+    float dt = a.xmm[0].f32[0];
+    if (g_ps_attach_once && t_ps_sub_n > 1 && t_ps_attach_depth == 0) {
+        if (t_ps_sub_i != 0) {
+            atomic_fetch_add_explicit(&g_ps_attach_skipped, 1, memory_order_relaxed);
+            SHIM_RETURN();
+        }
+        dt = t_ps_frame_dt;
+        atomic_fetch_add_explicit(&g_ps_attach_ran, 1, memory_order_relaxed);
+    }
+    t_ps_attach_depth++;
+    ps_call(ctx, &g_w_attach, &a, dt);
+    t_ps_attach_depth--;
     SHIM_RETURN();
 }
 
