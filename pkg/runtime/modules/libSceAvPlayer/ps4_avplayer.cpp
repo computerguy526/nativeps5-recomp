@@ -526,6 +526,43 @@ public:
         return true;
     }
 
+    // The Ex record of a stream: the video fields the decoded frames will carry (16-aligned size, pitch, crops of the
+    // padding, 8-bit planes, range), the frame rate in frames per second.
+    bool get_stream_info_ex(uint32_t stream_index, AvPlayerStreamInfoEx *info) const {
+        if (!info || stream_index >= m_streams.size()) return false;
+        const StreamDesc &d = m_streams[stream_index];
+        memset(info, 0, sizeof(*info));
+        info->type = (uint32_t)d.info.type;
+        info->duration = d.info.duration;
+        info->start_time = d.info.start_time;
+        const AVStream *st = m_fmt_ctx ? m_fmt_ctx->streams[d.ffmpeg_index] : nullptr;
+        if (d.info.type == AVPLAYER_STREAM_TYPE_VIDEO) {
+            AvPlayerVideoEx &v = info->details.video;
+            v.width = d.info.details.video.width;
+            v.height = d.info.details.video.height;
+            v.aspect_ratio = d.info.details.video.aspect_ratio;
+            memcpy(v.language_code, d.info.details.video.language_code, 4);
+            if (st) {
+                const uint32_t w = (uint32_t)st->codecpar->width, h = (uint32_t)st->codecpar->height;
+                v.pitch = video_pitch(w);
+                v.crop_right_offset = v.pitch - w;
+                v.crop_bottom_offset = v.height > h ? v.height - h : 0;
+                const AVRational fr = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+                v.framerate = fr.den > 0 ? (uint32_t)((fr.num + fr.den / 2) / fr.den) : 0;
+                v.video_full_range_flag = st->codecpar->color_range == AVCOL_RANGE_JPEG;
+            }
+            v.luma_bit_depth = 8;
+            v.chroma_bit_depth = 8;
+        } else if (d.info.type == AVPLAYER_STREAM_TYPE_AUDIO) {
+            AvPlayerAudioEx &a = info->details.audio;
+            a.channel_count = d.info.details.audio.channel_count;
+            a.sample_rate = d.info.details.audio.sample_rate;
+            a.size = d.info.details.audio.size;
+            memcpy(a.language_code, d.info.details.audio.language_code, 4);
+        }
+        return true;
+    }
+
     bool enable_stream(uint32_t stream_index) {
         if (stream_index >= m_streams.size()) return false;
         const auto &s = m_streams[stream_index];
@@ -1461,6 +1498,31 @@ void shim_sceAvPlayerGetStreamInfo(GuestContext *ctx) {
     } else {
         ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
     }
+    SHIM_RETURN();
+}
+
+// int32_t sceAvPlayerGetStreamInfoEx(SceAvPlayerHandle, uint32_t streamID, SceAvPlayerStreamInfoEx *info): the Unity PS5
+// player (VideoPlayer) asks for this record of every stream before it enables one (PPSA28997's intro video).
+void shim_sceAvPlayerGetStreamInfoEx(GuestContext *ctx) {
+    AvPlayer *player = (AvPlayer *)ctx->rdi;
+    uint32_t stream_id = (uint32_t)ctx->rsi;
+    AvPlayerStreamInfoEx *info = (AvPlayerStreamInfoEx *)recomp_guest_to_host(ctx, ctx->rdx);
+    if (!player || !info) {
+        ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+        SHIM_RETURN();
+    }
+    AvPlayerStreamInfoEx local;
+    if (!player->get_stream_info_ex(stream_id, &local)) {
+        ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
+        SHIM_RETURN();
+    }
+    if (nps5_guest_is_ps5()) { // stream type numbers as in shim_sceAvPlayerGetStreamInfo
+        if (local.type == AVPLAYER_STREAM_TYPE_VIDEO) local.type = 1;
+        else if (local.type == AVPLAYER_STREAM_TYPE_AUDIO) local.type = 2;
+        else local.type = 3;
+    }
+    memcpy(info, &local, sizeof(local));
+    ctx->rax = 0;
     SHIM_RETURN();
 }
 

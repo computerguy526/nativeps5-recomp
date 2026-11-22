@@ -144,6 +144,20 @@ typedef union AvPlayerStreamDetailsEx {
     uint8_t reserved1[80];
 } AvPlayerStreamDetailsEx;
 
+// SceAvPlayerStreamInfoEx (PS5 SDK): 104 bytes {type, reserved[4], details (Ex union, 80), duration, startTime}.
+typedef struct AvPlayerStreamInfoEx {
+    uint32_t type;
+    uint8_t reserved[4];
+    AvPlayerStreamDetailsEx details;
+    uint64_t duration;
+    uint64_t start_time;
+} AvPlayerStreamInfoEx;
+#ifdef __cplusplus
+static_assert(sizeof(AvPlayerStreamInfoEx) == 104, "SceAvPlayerStreamInfoEx is 104 bytes");
+#else
+_Static_assert(sizeof(AvPlayerStreamInfoEx) == 104, "SceAvPlayerStreamInfoEx is 104 bytes");
+#endif
+
 typedef struct AvPlayerFrameInfoEx {
     uint64_t p_data; // void* guest ptr
     uint8_t reserved[4];
@@ -258,6 +272,7 @@ void shim_sceAvPlayerAddSource(GuestContext *ctx);
 void shim_sceAvPlayerAddSourceEx(GuestContext *ctx);
 void shim_sceAvPlayerStreamCount(GuestContext *ctx);
 void shim_sceAvPlayerGetStreamInfo(GuestContext *ctx);
+void shim_sceAvPlayerGetStreamInfoEx(GuestContext *ctx);
 void shim_sceAvPlayerEnableStream(GuestContext *ctx);
 void shim_sceAvPlayerDisableStream(GuestContext *ctx);
 void shim_sceAvPlayerChangeStream(GuestContext *ctx);

@@ -105,6 +105,7 @@ var shimAliases = map[string]string{
 	"HD1YKVU26-M": "shim_sceAvPlayerPostInit",
 	"KMcEa+rHsIo": "shim_sceAvPlayerAddSource",
 	"x8uvuFOPZhU": "shim_sceAvPlayerAddSourceEx",
+	"ctTAcF5DiKQ": "shim_sceAvPlayerGetStreamInfoEx",
 	"hdTyRzCXQeQ": "shim_sceAvPlayerStreamCount",
 	"d8FcbzfAdQw": "shim_sceAvPlayerGetStreamInfo",
 	"ODJK2sn9w4A": "shim_sceAvPlayerEnableStream",
