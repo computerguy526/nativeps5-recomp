@@ -38,7 +38,15 @@ type Cvar struct {
 	Slot     int    `json:"slot"` // IConsoleManager vtable byte offset of the registration call
 	Site     uint64 `json:"site"` // VA of the lea that loads the name
 	DefaultV uint64 `json:"default_bits,omitempty"`
+	Ctor     uint64 `json:"ctor,omitempty"` // direct-call registration (UE5.5 inlined TAutoConsoleVariable ctor): callee VA
 }
+
+// SlotDirect marks a registration through a direct constructor call (UE5.5 builds such as SAROS):
+// TAutoConsoleVariable<T>(this=rdi global, name=rsi, &default=rdx, help=rcx, flags=r8d), or
+// FAutoConsoleVariableRef(this=rdi, name=rsi, &global=rdx, help=rcx, flags=r8d) when rdx is a
+// RIP-relative global. The value type is not established statically: "int" unless the default was
+// seen stored as a float; callers set the type per title when it matters.
+const SlotDirect = -2
 
 // slotInfo maps the IConsoleManager vtable offset of the registration call to (type, kind).
 // Offsets 0..0x18 register a variable the manager owns (TAutoConsoleVariable<T>); the others
@@ -211,6 +219,11 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 	c := Cvar{Name: name, Site: site, Slot: -1}
 	registered := false
 	var retInRsi bool
+	// stackPtr: the register is a pointer into the frame (not a RIP global); stored: the dword last
+	// stored through it (the default a direct constructor reads through rdx).
+	var stackPtr [16]bool
+	stored := map[int]val{}
+	copyOf := map[int]int{} // dst <- src of the last mov reg,reg (a store through src after the copy still counts)
 	steps := 0
 	for ; steps < 60; steps++ {
 		buf := m.Bytes(p, 16)
@@ -242,9 +255,32 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 				if regs[rsi].k != 2 || regs[rsi].v != nameAddr {
 					return c, false
 				}
+				if rel, isRel := in.Args[0].(x86asm.Rel); isRel {
+					// direct call: an inlined/outlined TAutoConsoleVariable or FAutoConsoleVariableRef constructor
+					if regs[rdi].k != 2 {
+						return c, false
+					}
+					c.Slot, c.Ctor, c.Flags = SlotDirect, uint64(int64(next)+int64(rel)), uint32(regs[r8].v)
+					c.Type = "int"
+					if regs[rdx].k == 2 && !stackPtr[rdx] {
+						c.Kind, c.Storage = KindRef, regs[rdx].v
+					} else {
+						c.Kind, c.Storage, c.Default = KindTACV, regs[rdi].v, "?"
+						src := rdx
+						if cs, ok := copyOf[rdx]; ok {
+							src = cs
+						}
+						if st, ok := stored[src]; ok && stackPtr[src] {
+							c.DefaultV, c.Default = st.v, itoa(int32(st.v))
+							if st.k == 3 {
+								c.Type, c.Default = "float", fmtFloat(uint32(st.v))
+							}
+						}
+					}
+					return c, true
+				}
 				mem, isMem := in.Args[0].(x86asm.Mem)
 				if !isMem {
-					// direct call: a TAutoConsoleVariable constructor taking (this, name, default,...) is not modelled
 					return c, false
 				}
 				slot := int(mem.Disp)
@@ -294,6 +330,26 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 			}
 			return c, true
 		}
+		// stores through a frame pointer register: mov dword [reg], imm / reg
+		if in.Op == x86asm.MOV {
+			if dm, ok := in.Args[0].(x86asm.Mem); ok && dm.Index == 0 && dm.Disp == 0 && regIdx(dm.Base) >= 0 {
+				bi := regIdx(dm.Base)
+				switch sv := in.Args[1].(type) {
+				case x86asm.Imm:
+					stored[bi] = val{1, uint64(int64(sv)) & 0xffffffff}
+				case x86asm.Reg:
+					if regIdx(sv) >= 0 {
+						stored[bi] = val{1, regs[regIdx(sv)].v & 0xffffffff}
+					} else if sv >= x86asm.X0 && sv <= x86asm.X15 {
+						stored[bi] = val{3, xmm0.v}
+					}
+				}
+				stackPtr[bi] = true
+				if rr := regs[bi]; rr.k == 2 {
+					stackPtr[bi] = false
+				}
+			}
+		}
 		// register tracking
 		switch in.Op {
 		case x86asm.LEA:
@@ -318,6 +374,11 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 			case x86asm.Reg:
 				if regIdx(s) >= 0 {
 					regs[regIdx(dst)] = regs[regIdx(s)]
+					stackPtr[regIdx(dst)] = stackPtr[regIdx(s)]
+					copyOf[regIdx(dst)] = regIdx(s)
+					if st, ok := stored[regIdx(s)]; ok {
+						stored[regIdx(dst)] = st
+					}
 					if regIdx(s) == rax && regs[rax].k == 4 && regIdx(dst) == rsi {
 						retInRsi = true
 					}
