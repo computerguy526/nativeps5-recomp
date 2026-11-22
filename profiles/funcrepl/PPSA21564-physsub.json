@@ -118,6 +118,42 @@
         {
             "key": "physsub.engine.solver_dt",
             "value": "0x560"
+        },
+        {
+            "key": "physsub.inner.trigger_fn",
+            "value": "0xf18fd0"
+        },
+        {
+            "key": "physsub.inner.contact_fn",
+            "value": "0xf19700"
+        },
+        {
+            "key": "physsub.inner.contacts",
+            "value": "0x220"
+        },
+        {
+            "key": "physsub.inner.pinfo_fn",
+            "value": "0xed7470"
+        },
+        {
+            "key": "physsub.inner.particles",
+            "value": "0x88"
+        },
+        {
+            "key": "physsub.inner.pinfo_obj",
+            "value": "0x8"
+        },
+        {
+            "key": "physsub.inner.pinfo_flag",
+            "value": "0x5e0"
+        },
+        {
+            "key": "physsub.inner.cfg",
+            "value": "0x18"
+        },
+        {
+            "key": "physsub.inner.cfg_pcollide",
+            "value": "0xc7"
         }
     ]
 }
