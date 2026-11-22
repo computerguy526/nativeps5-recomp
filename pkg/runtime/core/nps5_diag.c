@@ -310,6 +310,57 @@ static const char *hle_name(void *fn, char *buf, size_t cap) {
   return buf;
 }
 
+// NPS5_TRACE_HLE_DUMP=<shim name>:<rdi|rsi|rdx|rcx>:<bytes> (diagnosis): after each call of that shim, the
+// guest buffer the register pointed to at entry is printed with the result whenever its contents differ from the
+// last print (a per-frame read shows only its changes).
+static char g_dump_name[96];
+static int g_dump_reg = -1, g_dump_len = 0;
+static _Atomic(void *) g_dump_fn;
+static _Thread_local uint64_t t_dump_ptr;
+static _Thread_local int t_dump_armed;
+static unsigned char g_dump_last[256];
+static int g_dump_have_last;
+static pthread_mutex_t g_dump_mu = PTHREAD_MUTEX_INITIALIZER;
+static void hle_dump_exit(void *vctx, void *fn) {
+  if (!t_dump_armed || fn != atomic_load(&g_dump_fn)) return;
+  t_dump_armed = 0;
+  GuestContext *c = (GuestContext *)vctx;
+  if (!t_dump_ptr) return;
+  const unsigned char *p = (const unsigned char *)(uintptr_t)(c->mem_base + t_dump_ptr);
+  pthread_mutex_lock(&g_dump_mu);
+  if (!g_dump_have_last || memcmp(g_dump_last, p, (size_t)g_dump_len) != 0) {
+    memcpy(g_dump_last, p, (size_t)g_dump_len);
+    g_dump_have_last = 1;
+    char hex[3 * 256 + 1];
+    int o = 0;
+    for (int i = 0; i < g_dump_len; i++) o += snprintf(hex + o, sizeof hex - (size_t)o, "%02x%s", p[i], (i % 4 == 3) ? " " : "");
+    fprintf(stderr, "[hle-dump] %s rax=0x%llx buf@0x%llx: %s\n", g_dump_name, (unsigned long long)c->rax, (unsigned long long)t_dump_ptr, hex);
+  }
+  pthread_mutex_unlock(&g_dump_mu);
+}
+static void hle_dump_init(void) {
+  const char *e = getenv("NPS5_TRACE_HLE_DUMP");
+  if (!e || !*e) return;
+  char reg[8] = {0};
+  int len = 0;
+  if (sscanf(e, "%95[^:]:%7[^:]:%d", g_dump_name, reg, &len) != 3 || len <= 0) return;
+  g_dump_len = len > 256 ? 256 : len;
+  g_dump_reg = !strcmp(reg, "rdi") ? 0 : !strcmp(reg, "rsi") ? 1 : !strcmp(reg, "rdx") ? 2 : !strcmp(reg, "rcx") ? 3 : -1;
+  if (g_dump_reg < 0) return;
+  if (!g_nps5_hle_exit_hook) g_nps5_hle_exit_hook = hle_dump_exit;
+  nps5_lean_require_hooks();
+}
+static void hle_dump_enter(void *vctx, void *fn, const char *nm) {
+  GuestContext *c = (GuestContext *)vctx;
+  if (!atomic_load(&g_dump_fn)) {
+    if (strcmp(nm, g_dump_name) != 0) return;
+    atomic_store(&g_dump_fn, fn);
+  }
+  if (fn != atomic_load(&g_dump_fn)) return;
+  t_dump_ptr = g_dump_reg == 0 ? c->rdi : g_dump_reg == 1 ? c->rsi : g_dump_reg == 2 ? c->rdx : c->rcx;
+  t_dump_armed = 1;
+}
+
 static int g_trace_hle_first = -1; // NPS5_TRACE_HLE_FIRST=1: one line the first time each shim is called (order of first use)
 static void hle_hook(void *ctx, void *fn) {
   t_hle_current = fn;
@@ -331,6 +382,11 @@ static void hle_hook(void *ctx, void *fn) {
       slot = s;
       break;
     }
+  }
+  if (g_dump_len > 0) {
+    void *df = atomic_load_explicit(&g_dump_fn, memory_order_relaxed);
+    if (df == fn) hle_dump_enter(ctx, fn, "");
+    else if (!df && claimed) { char dn[160]; hle_dump_enter(ctx, fn, hle_name(fn, dn, sizeof dn)); }
   }
   if (claimed) {
     if (g_trace_hle_first < 0) { const char *e = getenv("NPS5_TRACE_HLE_FIRST"); g_trace_hle_first = e && e[0] == '1'; }
@@ -1706,6 +1762,7 @@ __attribute__((constructor)) static void nps5_diag_init(void) {
     nps5_lean_require_hooks(); // the trace is a bridge hook: lean calls must run it
   }
   if (getenv("NPS5_TRACE_HLE_FIRST")) nps5_lean_require_hooks(); // same: first calls of lean shims too
+  hle_dump_init();
   make_bundle();
   g_started = 1;
   load_pcmap();
