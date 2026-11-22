@@ -344,6 +344,7 @@ static void apr_read_file(uint32_t id, uint64_t dst, uint64_t size, uint64_t off
     if (n == 0) break;
     got += (uint64_t)n;
   }
+  ps4_vfs_readlog_note_path(path, fd, (long long)off, (long long)got); // NPS5_VFS_RANGELOG / NPS5_VFS_HOLE_CHECK
   if (got < size) memset(out + got, 0, size - got); // past EOF reads as zeros
   close(fd);
   { // NPS5_VFS_TRACE_INI=1: show which *.ini files the title reads (the uecvar overlay, docs/m3/uecvar.md)
