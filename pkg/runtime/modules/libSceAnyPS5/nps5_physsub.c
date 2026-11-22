@@ -84,7 +84,7 @@ static uint64_t g_ps_stepdt, g_ps_engine_ptr, g_ps_engine_dt;
 static int g_ps_dtfix = 1;
 // world lock: offsets + 1 (0 = not given); g_ps_relock = switch
 static uint64_t g_ps_lock_obj, g_ps_lock_field, g_ps_lock_var;
-static int g_ps_relock = 1, g_ps_hold = 0;
+static int g_ps_relock = 1, g_ps_hold = 1;
 static _Atomic uint64_t g_ps_relocks, g_ps_relock_fail, g_ps_holds;
 // gaps between sub-steps (lock released by the step until the shim has it again): how many, how many saw another thread take
 // the world lock, and how many first-level acquisitions by others in total
@@ -124,6 +124,8 @@ static void ps_init(void) {
     const int bad = nps5_ps_config(&g_ps, getenv("NPS5_PHYS_SUBSTEP"), getenv("NPS5_PHYS_SUBSTEP_HZ"),
                                    getenv("NPS5_PHYS_SUBSTEP_MAX"), getenv("NPS5_PHYS_SUBSTEP_CLOTH"),
                                    getenv("NPS5_PHYS_SUBSTEP_WORLD"), getenv("NPS5_PHYS_SUBSTEP_LOG"));
+    if (nps5_ps_config_world_hz(&g_ps, getenv("NPS5_PHYS_SUBSTEP_WORLD_HZ")))
+        fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_WORLD_HZ: 10..240\n");
     uint64_t off = 0;
     if (nps5_repl_param("physsub.cloth.skip_flag", &off)) g_ps_cloth_skip = off + 1;
     if (nps5_repl_param("physsub.world.stepdt", &off)) g_ps_stepdt = off + 1;
@@ -139,11 +141,12 @@ static void ps_init(void) {
         g_ps_relock = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
     }
     {
-        double v = 0;
-        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_HOLD"), 0, 1, &v))
+        double v = 1; // default on (ASTRO BOT: game threads waiting on the world lock otherwise run between sub-steps)
+        const char *e = getenv("NPS5_PHYS_SUBSTEP_HOLD");
+        if (nps5_ps_num(e, 0, 1, &v))
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD: 0|1\n");
         g_ps_hold = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
-        if (v == 1.0 && !g_ps_hold) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
+        if (e && *e && v == 1.0 && !g_ps_hold) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
     }
     {
         double v = 0;
@@ -209,11 +212,12 @@ static void ps_init(void) {
                 : g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var ? "off (NPS5_PHYS_SUBSTEP_RELOCK=0)"
                                                                     : "no params");
     if (g_ps.on)
-        fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s\n",
-                g_ps.world ? "substepped" : "untouched", g_ps.hz, g_ps.max,
+        fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s (1/%.0f s)\n",
+                g_ps.world ? "substepped" : "untouched", g_ps.world_hz, g_ps.max,
                 g_ps.cloth == NPS5_PS_CLOTH_CLAMP     ? "clamped to 1/hz"
                 : g_ps.cloth == NPS5_PS_CLOTH_SUBSTEP ? "substepped"
-                                                      : "untouched");
+                                                      : "untouched",
+                g_ps.hz);
     else
         fprintf(stderr, "[physsub] off (NPS5_PHYS_SUBSTEP=0: wrapped physics steps run unchanged)\n");
 }
@@ -361,9 +365,9 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     ps_save(ctx, &a);
     const float dt = a.xmm[0].f32[0];
     const int clamp = g_ps.on && g_ps.world && g_ps_wclamp;
-    const int n = g_ps.on && g_ps.world && !clamp ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
+    const int n = g_ps.on && g_ps.world && !clamp ? nps5_ps_steps(dt, g_ps.world_hz, g_ps.max) : 1;
     if (clamp) {
-        const float c = nps5_ps_clamp(dt, g_ps.hz);
+        const float c = nps5_ps_clamp(dt, g_ps.world_hz);
         ps_call(ctx, &g_w_world, &a, c);
         if (c != dt) {
             atomic_fetch_add_explicit(&g_ps_wclamped, 1, memory_order_relaxed);
@@ -522,7 +526,7 @@ static void ps_inner_split(GuestContext *ctx, PsWrap *w, int fix_dt, _Atomic uin
     PsArgs a;
     ps_save(ctx, &a);
     const float dt = a.xmm[0].f32[0];
-    const int n = t_ps_inner && t_ps_inner_depth == 0 ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
+    const int n = t_ps_inner && t_ps_inner_depth == 0 ? nps5_ps_steps(dt, g_ps.world_hz, g_ps.max) : 1;
     t_ps_inner_depth++;
     if (n == 1) {
         ps_call(ctx, w, &a, dt);

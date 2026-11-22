@@ -12,7 +12,11 @@
 //
 //   NPS5_PHYS_SUBSTEP=0           off: every shim calls the original once with the unchanged arguments (default on; the
 //                                 shims exist only in a program translated with a physsub table, so other titles are untouched)
-//   NPS5_PHYS_SUBSTEP_HZ=60       the longest step is 1/hz s (10..240)
+//   NPS5_PHYS_SUBSTEP_HZ=60       the longest step is 1/hz s (10..240); when set it is used for the world AND cloth
+//   NPS5_PHYS_SUBSTEP_WORLD_HZ=25 the world's own hz (10..240; default 25 = steps <= 40 ms: ASTRO BOT's world step ran away at the
+//                                 Sky Garden gate with 43-50 ms steps, and splitting frames of normal length (25-40 ms) into n > 1
+//                                 world steps makes the walking character sink into the wooden planks; 40-50 ms frames still split
+//                                 in 2). Set after NPS5_PHYS_SUBSTEP_HZ, so it wins for the world. Cloth keeps NPS5_PHYS_SUBSTEP_HZ.
 //   NPS5_PHYS_SUBSTEP_MAX=4       at most this many steps per call (1..16); a longer dt is split into max equal steps
 //   NPS5_PHYS_SUBSTEP_CLOTH=clamp clamp | substep | off  (off = cloth untouched)
 //   NPS5_PHYS_SUBSTEP_WORLD=1     0 = rigid-body world untouched (cloth only)
@@ -25,7 +29,7 @@
 //                                 physsub.world.lock_obj/.lock_field/.lock_var) gets that lock back before each further sub-step,
 //                                 so every sub-step runs under it and releases it once (ASTRO BOT: without it sub-steps 2..n
 //                                 unlock as a non-owner, EPERM, the game's Mutex.cpp:418 assert, and simulate unlocked). 0 = off.
-//   NPS5_PHYS_SUBSTEP_HOLD=0      1 = keep that world lock held through ALL sub-steps of a split world step (the step's release of
+//   NPS5_PHYS_SUBSTEP_HOLD=1      (default 1) keep that world lock held through ALL sub-steps of a split world step (the step's release of
 //                                 sub-steps 1..n-1 is balanced by one extra lock level), so threads that wait for the lock see the
 //                                 frame's physics only when the whole frame is simulated, as with one unsplit step (ASTRO BOT: the
 //                                 walking character sinks into floors with plain split; opt-in experiment). Needs the lock params.
@@ -50,7 +54,8 @@ enum { NPS5_PS_CLOTH_OFF = 0, NPS5_PS_CLOTH_CLAMP = 1, NPS5_PS_CLOTH_SUBSTEP = 2
 
 typedef struct {
     int on, world, cloth, log;
-    double hz;
+    double hz;       // cloth (and the world when NPS5_PHYS_SUBSTEP_HZ is set)
+    double world_hz; // world step split / clamp
     int max;
 } Nps5PhysCfg;
 
@@ -74,12 +79,17 @@ static inline int nps5_ps_config(Nps5PhysCfg *c, const char *on, const char *hz,
     c->cloth = NPS5_PS_CLOTH_CLAMP;
     c->log = 0;
     c->hz = 60.0;
+    c->world_hz = 25.0;
     c->max = 4;
     v = 1;
     bad += nps5_ps_num(on, 0, 1, &v);
     c->on = v == 1.0;
     v = c->hz;
-    bad += nps5_ps_num(hz, 10, 240, &v);
+    {
+        const int b = nps5_ps_num(hz, 10, 240, &v);
+        bad += b;
+        if (!b && hz && *hz) c->world_hz = v; // an explicit HZ keeps meaning "every step <= 1/hz"
+    }
     c->hz = v;
     v = c->max;
     bad += nps5_ps_num(max, 1, 16, &v);
@@ -101,6 +111,11 @@ static inline int nps5_ps_config(Nps5PhysCfg *c, const char *on, const char *hz,
     bad += nps5_ps_num(log, 0, 1, &v);
     c->log = v == 1.0;
     return bad;
+}
+
+// NPS5_PHYS_SUBSTEP_WORLD_HZ (NULL = not set): the world's own hz. Returns 1 when the text was set but not in 10..240.
+static inline int nps5_ps_config_world_hz(Nps5PhysCfg *c, const char *world_hz) {
+    return nps5_ps_num(world_hz, 10, 240, &c->world_hz);
 }
 
 // How many steps of dt / n a step of dt becomes: the least n with dt / n <= 1 / hz (a dt at most 0.1 % over 1/hz

@@ -29,7 +29,7 @@ d="$B/work"; rm -rf "$d"; mkdir -p "$d"
 grep -q "Function replacements" "$d/translate.log" || { echo "translator did not report the replacements"; exit 1; }
 "$ROOT/tools/m1_native_build.sh" "$d/out" "$d/native" > "$d/build.log" 2>&1 || { echo "BUILD-FAIL ($(tail -1 "$d/build.log" | cut -c1-150))"; exit 1; }
 fail=0
-# expected: off = unchanged; on = world 3 calls of 50 ms -> 3 steps each (+1 short call), cloth clamped to 1/60; substep = cloth 3 steps each
+# expected: off = unchanged; on = world 3 calls of 50 ms -> 2 steps each (world default 25 Hz; +1 short call), cloth clamped to 1/60; substep = cloth 3 steps each
 check() { # mode env expectations...
   local mode="$1" env="$2"; shift 2
   ( cd "$d/out" && NPS5_WORKDIR="$B" NPS5_EXTRA_ENV="$env" "$ROOT/tools/run_sandboxed.sh" "$TMO" "$d/native" > "$d/stdout.$mode" 2> "$d/stderr.$mode" ); local rc=$? bad=""
@@ -42,6 +42,6 @@ check() { # mode env expectations...
   if [ -z "$bad" ]; then echo "$mode: PASS $(grep -m1 '^\[physsub\]' "$d/stderr.$mode" | cut -c1-120)"; else echo "$mode: FAIL$bad $(grep -m1 -E 'FATAL|fault' "$d/stderr.$mode" | cut -c1-160)"; fail=1; fi
 }
 check off  "NPS5_PHYS_SUBSTEP=0" world_calls=4 world_sum_us=~160000 world_max_us=~50000 world_bad=0 cloth_calls=2 cloth_sum_us=~100000 posed_calls=1
-check on   "NPS5_PHYS_SUBSTEP=1" world_calls=10 world_sum_us=~160000 world_max_us=~16667 world_bad=0 cloth_calls=2 cloth_sum_us=~33333 cloth_max_us=~16667 posed_calls=1 posed_sum_us=~50000
+check on   "NPS5_PHYS_SUBSTEP=1" world_calls=7 world_sum_us=~160000 world_max_us=~25000 world_bad=0 cloth_calls=2 cloth_sum_us=~33333 cloth_max_us=~16667 posed_calls=1 posed_sum_us=~50000
 check sub  "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_SUBSTEP_CLOTH=substep NPS5_PHYS_SUBSTEP_HZ=30" world_calls=7 world_sum_us=~160000 world_max_us=~25000 cloth_calls=4 cloth_sum_us=~100000 cloth_max_us=~25000 posed_calls=1
 exit $fail

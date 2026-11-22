@@ -44,13 +44,20 @@ int main(void) {
     // config
     Nps5PhysCfg c;
     CHECK(nps5_ps_config(&c, NULL, NULL, NULL, NULL, NULL, NULL) == 0 && c.on && c.world &&
-              c.cloth == NPS5_PS_CLOTH_CLAMP && c.hz == 60 && c.max == 4 && !c.log,
+              c.cloth == NPS5_PS_CLOTH_CLAMP && c.hz == 60 && c.world_hz == 25 && c.max == 4 && !c.log,
           "defaults");
+    // world default 25 Hz: Sky Garden frames of 25-40 ms are one world step, 40-50 ms two, nothing above 40 ms
+    CHECK(nps5_ps_steps(0.030, c.world_hz, c.max) == 1 && nps5_ps_steps(0.040, c.world_hz, c.max) == 1 &&
+              nps5_ps_steps(0.045, c.world_hz, c.max) == 2 && nps5_ps_steps(0.050, c.world_hz, c.max) == 2,
+          "world 25 Hz steps");
+    CHECK(nps5_ps_config_world_hz(&c, NULL) == 0 && c.world_hz == 25, "WORLD_HZ unset changed it");
+    CHECK(nps5_ps_config_world_hz(&c, "40") == 0 && c.world_hz == 40 && c.hz == 60, "WORLD_HZ 40");
+    CHECK(nps5_ps_config_world_hz(&c, "5") == 1 && c.world_hz == 40, "WORLD_HZ out of range not ignored");
     CHECK(nps5_ps_config(&c, "1", "120", "8", "substep", "0", "1") == 0 && c.on && !c.world &&
-              c.cloth == NPS5_PS_CLOTH_SUBSTEP && c.hz == 120 && c.max == 8 && c.log,
-          "all set");
+              c.cloth == NPS5_PS_CLOTH_SUBSTEP && c.hz == 120 && c.world_hz == 120 && c.max == 8 && c.log,
+          "all set (an explicit HZ also sets the world)");
     CHECK(nps5_ps_config(&c, "1", NULL, NULL, "off", NULL, NULL) == 0 && c.cloth == NPS5_PS_CLOTH_OFF, "cloth off");
-    CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && c.on && c.hz == 60 && c.max == 4 &&
+    CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && c.on && c.hz == 60 && c.world_hz == 25 && c.max == 4 &&
               c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log,
           "bad values not ignored");
     CHECK(nps5_ps_config(&c, "0", NULL, NULL, NULL, NULL, NULL) == 0 && !c.on, "0 = off");
