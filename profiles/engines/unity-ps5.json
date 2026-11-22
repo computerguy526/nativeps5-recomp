@@ -5,11 +5,13 @@
         "Layout: eboot.bin is the Unity player; the C# game code is Media/Modules/Il2cppUserAssemblies.prx, loaded with PS5Util.prx by sceKernelLoadStartModule; plugin prx under Media/Plugins (PSN, CommonDialog, SaveData, fmod, burst...). All are translated as companion modules: the app0 view must have Media/Modules and Media/Plugins as real directories (the companion walk does not follow directory symlinks).",
         "Leave the dumper's ampr_emu.index out of app0; never exclude libSceAmpr (exclusion binds its NIDs to zero stubs).",
         "NPS5_VQ_RESERVED_UNCOMMITTED: Unity's virtual-memory commit reads VirtualQuery isCommitted to choose mprotect vs allocate + MAP_FIXED map on its sceKernelReserveVirtualRange ranges (console semantics; opt-in until ASTRO/SAROS regression runs).",
-        "NPS5_UNRESOLVED_RET0: bring-up only. PSN.prx imports ~1,600 sce::Np::CppWebApi C++ entries the shipped libSceNpCppWebApi.prx does not export (online paths)."
+        "NPS5_UNRESOLVED_RET0: bring-up only. PSN.prx imports ~1,600 sce::Np::CppWebApi C++ entries the shipped libSceNpCppWebApi.prx does not export (online paths).",
+        "NPS5_VFS_DEVLOG: the Unity player writes its player log to /devlog/app/debug.log (dev-kit volume); mounted on <userdata>/devlog/app/debug.log for bring-up."
     ],
     "translate": {},
     "env": {
         "NPS5_VQ_RESERVED_UNCOMMITTED": "1",
-        "NPS5_UNRESOLVED_RET0": "1"
+        "NPS5_UNRESOLVED_RET0": "1",
+        "NPS5_VFS_DEVLOG": "1"
     }
 }

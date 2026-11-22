@@ -190,8 +190,20 @@ static void test_userdata_roots(const char *tmp) {
   char *old_dd = getenv("PS4RECOMP_DATA_DIR") ? strdup(getenv("PS4RECOMP_DATA_DIR")) : NULL;
   unsetenv("NPS5_TITLE_ID");
 
-  // 1. NPS5_USERDATA_DIR: <root>/<kind>.
+  // 0. /devlog is not there by default (retail console): opening a log there fails.
   setenv("NPS5_USERDATA_DIR", ud, 1);
+  unsetenv("NPS5_VFS_DEVLOG");
+  ps4_vfs_init(app);
+  { int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644); CHECK(fd < 0); if (fd >= 0) ps4_vfs_close(fd); }
+  CHECK(!host_exists("%s/devlog/app/debug.log%s", ud, ""));
+  // NPS5_VFS_DEVLOG=1: /devlog is <userdata>/devlog with app/ created (Unity's /devlog/app/debug.log lands there).
+  setenv("NPS5_VFS_DEVLOG", "1", 1);
+  ps4_vfs_init(app);
+  { int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644); CHECK(fd >= 0); if (fd >= 0) ps4_vfs_close(fd); }
+  CHECK(host_exists("%s/devlog/app/debug.log%s", ud, ""));
+  unsetenv("NPS5_VFS_DEVLOG");
+
+  // 1. NPS5_USERDATA_DIR: <root>/<kind>.
   ps4_vfs_init(app);
   CHECK(strcmp(ps4_vfs_title_id(), "PPSA99999") == 0);
   char tp[100]; snprintf(tp, sizeof tp, "%%s/temp/p%d/t.bin%%s", (int)getpid()); // /temp0 is per process
