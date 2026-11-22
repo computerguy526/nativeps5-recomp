@@ -38,6 +38,8 @@
 //                                 contact / trigger point updates, lock release) runs once per frame, as unsplit (ASTRO BOT: the
 //                                 walking character sinks into the Sky Garden planks with the whole-step split). Overrides HOLD /
 //                                 ATTACH_ONCE / RELOCK (nothing to do: one world step). Opt-in.
+//   NPS5_PHYS_SUBSTEP_WORLD_CLAMP=0  1 = never split the world step: one call with min(dt, 1/hz) (physics slower than real time
+//                                 below hz fps; dtfix writes the frame dt back). Opt-in alternative to the split.
 #pragma once
 #include <math.h>
 #include <stdint.h>

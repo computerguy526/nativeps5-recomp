@@ -45,6 +45,9 @@
 //       == 0, else after each particle collide step), then trigger points and contact points (params .trigger_fn /
 //       .contact_fn on *(world + .contacts), skipped when NULL). The last inner step's are left to the world step. Without
 //       all these params the inner split stays off.
+//       NPS5_PHYS_SUBSTEP_WORLD_CLAMP=1 (opt-in): the world step is never split; a dt above 1/hz is clamped to 1/hz (one
+//       call, the engine simulates less than real time below hz fps, as the cloth clamp). dtfix then writes the frame dt
+//       back as after a split. Overrides INNER / HOLD / ATTACH_ONCE (nothing to do: one step). Log "world clamped N".
 //       Every split world step also counts the times another thread took the world lock between two sub-steps (log line
 //       "world lock taken by another thread between sub-steps").
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
@@ -95,6 +98,8 @@ static _Thread_local int t_ps_sub_i, t_ps_sub_n;
 static _Thread_local float t_ps_frame_dt; // last other owner id seen holding the lock when the shim re-took it
 // inner split: switch; this thread is inside a world step that splits its engine step (1) and inside an inner wrap (depth)
 static int g_ps_inner = 0;
+static int g_ps_wclamp = 0;
+static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
 // inner split consumers (guest addresses / offsets from the table params; 0 = not given)
@@ -149,6 +154,14 @@ static void ps_init(void) {
             fprintf(stderr, "[physsub] attach once: the attaching update runs once per split frame (first sub-step, frame dt)%s\n",
                     nps5_repl_wrap_body("nps5_physsub_attach_step", &(uint64_t){0}) ? ""
                                                                                     : " (W: no nps5_physsub_attach_step wrap: no effect)");
+    }
+    {
+        double v = 0;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_WORLD_CLAMP"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_WORLD_CLAMP: 0|1\n");
+        g_ps_wclamp = v == 1.0;
+        if (g_ps_wclamp)
+            fprintf(stderr, "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split)\n");
     }
     {
         double v = 0;
@@ -296,7 +309,7 @@ static void ps_log(void) {
             "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
             "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx) | attach: %llu frame-dt calls, "
             "%llu skipped | inner: %llu frames, sim %llu calls -> %llu steps, particle collide %llu calls -> %llu steps, %llu "
-            "consumer drains\n",
+            "consumer drains | world clamped %llu\n",
             (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
             (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
             (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
@@ -305,7 +318,8 @@ static void ps_log(void) {
             (unsigned long long)g_ps_gap_owner, (unsigned long long)g_ps_attach_ran,
             (unsigned long long)g_ps_attach_skipped, (unsigned long long)g_ps_inner_frames,
             (unsigned long long)g_ps_inner_sim, (unsigned long long)g_ps_inner_sim_steps, (unsigned long long)g_ps_inner_pc,
-            (unsigned long long)g_ps_inner_pc_steps, (unsigned long long)g_ps_inner_drain);
+            (unsigned long long)g_ps_inner_pc_steps, (unsigned long long)g_ps_inner_drain,
+            (unsigned long long)g_ps_wclamped);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
@@ -346,8 +360,24 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     PsArgs a;
     ps_save(ctx, &a);
     const float dt = a.xmm[0].f32[0];
-    const int n = g_ps.on && g_ps.world ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
-    if (n == 1) {
+    const int clamp = g_ps.on && g_ps.world && g_ps_wclamp;
+    const int n = g_ps.on && g_ps.world && !clamp ? nps5_ps_steps(dt, g_ps.hz, g_ps.max) : 1;
+    if (clamp) {
+        const float c = nps5_ps_clamp(dt, g_ps.hz);
+        ps_call(ctx, &g_w_world, &a, c);
+        if (c != dt) {
+            atomic_fetch_add_explicit(&g_ps_wclamped, 1, memory_order_relaxed);
+            if (g_ps_dtfix) { // per-frame readers see the frame dt, as after a split
+                float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
+                float *e = NULL;
+                if (g_ps_engine_ptr && g_ps_engine_dt) {
+                    const uint64_t eng = *(const uint64_t *)NPS5_G2H(ctx, a.rdi + g_ps_engine_ptr - 1);
+                    if (eng && eng < ctx->mem_size) e = (float *)NPS5_G2H(ctx, eng + g_ps_engine_dt - 1);
+                }
+                nps5_ps_frame_dt(dt, w, e);
+            }
+        }
+    } else if (n == 1) {
         ps_call(ctx, &g_w_world, &a, dt);
     } else if (g_ps_inner && t_ps_inner == 0) {
         // inner split: one world step with the frame dt; the wraps below split only its engine step
