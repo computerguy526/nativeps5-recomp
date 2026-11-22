@@ -82,6 +82,10 @@ void ps4_sync_print_stats(int frames);
 // Relocks of a mutex by its owner since start, by mutex type: out[0..4] for types 0..4,
 // out[5] for any other value.
 void ps4_sync_relocks_by_type(uint64_t out[6]);
+// Depth of the calling guest thread's hold on the guest mutex whose handle variable is at guest address var
+// (0 = not held by it), and one more lock of it for that thread (0 or an errno). See ps4_sync.c.
+uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
+int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var);
 
 // C++ ABI guard shims
 void shim_cxa_guard_acquire(GuestContext *ctx);

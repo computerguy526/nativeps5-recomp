@@ -68,6 +68,18 @@
             "value": "0x240"
         },
         {
+            "key": "physsub.world.lock_obj",
+            "value": "0x8"
+        },
+        {
+            "key": "physsub.world.lock_field",
+            "value": "0x608"
+        },
+        {
+            "key": "physsub.world.lock_var",
+            "value": "0x8"
+        },
+        {
             "key": "physsub.world.engine",
             "value": "0x30"
         },

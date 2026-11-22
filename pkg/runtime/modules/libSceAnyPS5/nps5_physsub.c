@@ -12,6 +12,12 @@
 //
 //   nps5_physsub_world_step   rigid-body world step: void step(this, a1, a2, float dt)   dt = xmm0[0]
 //   nps5_physsub_cloth_step   cloth step:            void step(this, float dt)            dt = xmm0[0]
+//       params "physsub.world.lock_obj", ".lock_field", ".lock_var" (optional, all three): the title's world lock, a guest
+//       mutex whose handle variable is at *( *(this + lock_obj) + lock_field ) + lock_var. A step that releases a lock
+//       its caller took (ASTRO BOT: Step unlocks it once) would release it n times when split: n - 1 unlocks by a
+//       non-owner (EPERM; ASTRO BOT asserts in Mutex.cpp:418) and sub-steps 2..n running without the lock. When the
+//       calling thread held it at entry, the shim takes it again before each further sub-step, back to the entry depth.
+//       NPS5_PHYS_SUBSTEP_RELOCK=0 turns that off.
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
 //       simulate (pose-only path) and is called once, unchanged.
 //
@@ -44,6 +50,14 @@ static uint64_t g_ps_cloth_skip; // 0 = none, else byte offset + 1
 // dtfix: world step dt offset + 1, engine pointer offset + 1, engine solver dt offset + 1 (0 = not given); g_ps_dtfix = switch
 static uint64_t g_ps_stepdt, g_ps_engine_ptr, g_ps_engine_dt;
 static int g_ps_dtfix = 1;
+// world lock: offsets + 1 (0 = not given); g_ps_relock = switch
+static uint64_t g_ps_lock_obj, g_ps_lock_field, g_ps_lock_var;
+static int g_ps_relock = 1;
+static _Atomic uint64_t g_ps_relocks, g_ps_relock_fail;
+
+// kernel/sync/ps4_sync.c
+uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
+int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var);
 
 static _Atomic uint64_t g_ps_calls[2], g_ps_steps[2], g_ps_split[2], g_ps_clamped;
 static _Atomic uint32_t g_ps_maxdt_bits[2];
@@ -58,6 +72,15 @@ static void ps_init(void) {
     if (nps5_repl_param("physsub.world.stepdt", &off)) g_ps_stepdt = off + 1;
     if (nps5_repl_param("physsub.world.engine", &off)) g_ps_engine_ptr = off + 1;
     if (nps5_repl_param("physsub.engine.solver_dt", &off)) g_ps_engine_dt = off + 1;
+    if (nps5_repl_param("physsub.world.lock_obj", &off)) g_ps_lock_obj = off + 1;
+    if (nps5_repl_param("physsub.world.lock_field", &off)) g_ps_lock_field = off + 1;
+    if (nps5_repl_param("physsub.world.lock_var", &off)) g_ps_lock_var = off + 1;
+    {
+        double v = 1;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_RELOCK"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_RELOCK: 0|1\n");
+        g_ps_relock = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
+    }
     {
         double v = 1;
         if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_DTFIX"), 0, 1, &v))
@@ -70,8 +93,10 @@ static void ps_init(void) {
                 "clamp|substep|off, WORLD 0|1, LOG 0|1)\n",
                 bad);
     if (g_ps.on && g_ps.world)
-        fprintf(stderr, "[physsub] world dtfix %s (world step dt %s, engine solver dt %s)\n", g_ps_dtfix ? "on" : "off",
-                g_ps_stepdt ? "yes" : "no param", g_ps_engine_ptr && g_ps_engine_dt ? "yes" : "no param");
+        fprintf(stderr, "[physsub] world dtfix %s (world step dt %s, engine solver dt %s), world lock kept per sub-step: %s\n",
+                g_ps_dtfix ? "on" : "off", g_ps_stepdt ? "yes" : "no param",
+                g_ps_engine_ptr && g_ps_engine_dt ? "yes" : "no param",
+                g_ps_relock ? "on" : g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var ? "off (NPS5_PHYS_SUBSTEP_RELOCK=0)" : "no params");
     if (g_ps.on)
         fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s\n",
                 g_ps.world ? "substepped" : "untouched", g_ps.hz, g_ps.max,
@@ -170,14 +195,45 @@ static void ps_log(void) {
     memcpy(&mc, &bc, 4);
     fprintf(stderr,
             "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
-            "split, %llu clamped), max dt %.4f s\n",
+            "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed)\n",
             (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
             (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
-            (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc);
+            (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
+            (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
 static PsWrap g_w_cloth = {.shim = "nps5_physsub_cloth_step"};
+
+// Guest address of the world lock's handle variable for the world `self`, 0 if a pointer on the way is not a guest address.
+static uint64_t ps_world_lock_var(const GuestContext *ctx, uint64_t self) {
+    if (!self || self >= ctx->mem_size) return 0;
+    const uint64_t obj = *(const uint64_t *)NPS5_G2H(ctx, self + g_ps_lock_obj - 1);
+    if (!obj || obj >= ctx->mem_size) return 0;
+    const uint64_t mtx = *(const uint64_t *)NPS5_G2H(ctx, obj + g_ps_lock_field - 1);
+    if (!mtx || mtx >= ctx->mem_size) return 0;
+    return mtx + g_ps_lock_var - 1;
+}
+
+// Before sub-step 2..n: take the world lock again until the thread holds it as deep as at entry.
+static void ps_world_relock(GuestContext *ctx, uint64_t var, uint32_t depth0) {
+    static _Atomic int said;
+    uint32_t d = ps4_sync_guest_mutex_depth(ctx, var);
+    while (d < depth0) {
+        const int r = ps4_sync_guest_mutex_lock(ctx, var);
+        if (r != 0) {
+            atomic_fetch_add_explicit(&g_ps_relock_fail, 1, memory_order_relaxed);
+            fprintf(stderr, "[physsub] W world lock 0x%llx: re-taking it failed (%d)\n", (unsigned long long)var, r);
+            return;
+        }
+        atomic_fetch_add_explicit(&g_ps_relocks, 1, memory_order_relaxed);
+        if (!atomic_exchange(&said, 1))
+            fprintf(stderr, "[physsub] world: the step released the world lock 0x%llx its caller holds (depth %u -> %u): "
+                            "taken again before each further sub-step\n",
+                    (unsigned long long)var, depth0, d);
+        d++;
+    }
+}
 
 void nps5_physsub_world_step(GuestContext *ctx) {
     pthread_once(&g_ps_once, ps_init);
@@ -189,8 +245,12 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_call(ctx, &g_w_world, &a, dt);
     } else {
         const float sub = dt / (float)n;
-        for (int i = 0; i < n; i++)
+        const uint64_t lv = g_ps_relock ? ps_world_lock_var(ctx, a.rdi) : 0;
+        const uint32_t depth0 = lv ? ps4_sync_guest_mutex_depth(ctx, lv) : 0;
+        for (int i = 0; i < n; i++) {
+            if (i > 0 && depth0) ps_world_relock(ctx, lv, depth0);
             ps_call(ctx, &g_w_world, &a, sub);
+        }
         if (g_ps_dtfix) {
             // the last sub-step left dt / n and n / dt as the step values; per-frame readers must see the frame's
             float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;

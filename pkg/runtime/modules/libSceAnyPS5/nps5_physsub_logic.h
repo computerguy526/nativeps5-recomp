@@ -21,6 +21,10 @@
 //                                 frame's in the world (param physsub.world.stepdt) and in the physics engine's solver info (params
 //                                 physsub.world.engine = pointer offset, physsub.engine.solver_dt = {dt x4, 1/dt x4}): per-frame readers
 //                                 then see one step of the frame dt, as without sub-steps (ASTRO BOT: leaves flicker otherwise). 0 = off.
+//   NPS5_PHYS_SUBSTEP_RELOCK=1    a split world step whose original releases the world lock its caller took (params
+//                                 physsub.world.lock_obj/.lock_field/.lock_var) gets that lock back before each further sub-step,
+//                                 so every sub-step runs under it and releases it once (ASTRO BOT: without it sub-steps 2..n
+//                                 unlock as a non-owner, EPERM, the game's Mutex.cpp:418 assert, and simulate unlocked). 0 = off.
 #pragma once
 #include <math.h>
 #include <stdint.h>

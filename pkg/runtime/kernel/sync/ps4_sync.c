@@ -608,6 +608,23 @@ int hle_pthread_mutex_unlock(GuestContext *ctx, void *mutex) {
   return r;
 }
 
+// For HLE code that calls a guest function several times where the guest calls it once (physsub sub-steps): how
+// deep the calling guest thread holds the guest mutex whose handle variable is at guest address var (0 = it does not
+// hold it, or var holds no mutex), and taking it once more for that thread (pthread_mutex_lock semantics).
+uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var) {
+  if (!ctx || !var) return 0;
+  const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
+  if (sync_obj_slot(h) < 0) return 0;
+  GuestMutex *m = get_host_mutex(h);
+  // owner and count change only on the owning thread, so for the caller this read is exact.
+  return GM_OWNER(m) == guest_owner_id(ctx) ? m->count : 0;
+}
+
+int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var) {
+  if (!ctx || !var) return EINVAL;
+  return hle_pthread_mutex_lock(ctx, (void *)(ctx->mem_base + var));
+}
+
 int hle_pthread_mutex_destroy(GuestContext *ctx, void *mutex) {
   uint64_t handle = sync_handle_take(ctx, NPS5_H2G(ctx, mutex));
   const uint64_t id = gm_id(handle);
