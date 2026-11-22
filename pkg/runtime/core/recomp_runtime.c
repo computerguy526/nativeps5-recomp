@@ -116,6 +116,41 @@ static void crash_report_host_registers(const void *ucontext) {
 // (stack overflow), and a fault inside the handler (signal blocked) would spin the thread forever.
 static bool crash_read_u64(uint64_t g, uint64_t *v) { return nps5_guest_safe_read(g, v, sizeof *v); }
 
+// NPS5_CRASH_REGDUMP=1 (saros2, guest heap corruption hunt): for every live guest register that
+// holds a guest address, print its VM extent and the first 16 qwords there; for each of those
+// qwords that is itself a guest address, the 4 qwords it points at. Shows which table/object a
+// garbage value was loaded from (e.g. an allocator page table entry of all ones).
+static void crash_dump_one(const char *tag, uint64_t v, int depth) {
+  if (!g_current_ctx || v < 0x10000 || v >= g_current_ctx->mem_size) return;
+  GuestVMExtent e;
+  const bool have = recomp_vm_query(g_current_ctx, v, &e);
+  const int n = depth ? 4 : 16;
+  fprintf(stderr, "%s%s=0x%llx", depth ? "    " : "  ", tag, (unsigned long long)v);
+  if (have) fprintf(stderr, " [%s kind=%d 0x%llx+0x%llx%s]", e.name, e.kind, (unsigned long long)e.addr,
+                    (unsigned long long)e.size, e.is_free ? " FREE" : "");
+  else fprintf(stderr, " [no extent]");
+  uint64_t q[16];
+  int got = 0;
+  for (; got < n; got++) if (!crash_read_u64(v + (uint64_t)got * 8, &q[got])) break;
+  fprintf(stderr, ":");
+  for (int i = 0; i < got; i++) fprintf(stderr, " %016llx", (unsigned long long)q[i]);
+  fprintf(stderr, "\n");
+  if (!depth)
+    for (int i = 0; i < got; i++) {
+      char t[32];
+      snprintf(t, sizeof t, "+0x%x", i * 8);
+      crash_dump_one(t, q[i], 1);
+    }
+}
+#if defined(__APPLE__) && defined(__arm64__)
+static void crash_dump_regs(const uint64_t *x) {
+  static const char *names[] = {"RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RBP"};
+  static const int idx[] = {19, 20, 21, 22, 23, 24, 8, 9, 10, 11, 12, 13, 14, 15, 25};
+  fprintf(stderr, "Guest register dump (NPS5_CRASH_REGDUMP):\n");
+  for (int r = 0; r < 15; r++) crash_dump_one(names[r], x[idx[r]], 0);
+}
+#endif
+
 static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
   // A shadow stack push into its guard page (flat call model) is handled and retried.
   if ((sig == SIGSEGV || sig == SIGBUS) && si && recomp_shadow_handle_fault(ucontext, (uint64_t)(uintptr_t)si->si_addr)) return;
@@ -213,6 +248,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ucontext) {
         }
         fprintf(stderr, "\n");
       }
+      if (getenv("NPS5_CRASH_REGDUMP")) crash_dump_regs(x);
     }
 #endif
     crash_report_source(sig, si, ucontext);
