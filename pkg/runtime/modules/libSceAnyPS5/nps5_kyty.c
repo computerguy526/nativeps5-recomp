@@ -59,6 +59,8 @@
 
 static const KytyGpuApi *g_api;
 static void *g_lib;
+// The Kyty dylib handle (opened RTLD_LOCAL, so RTLD_DEFAULT lookups miss it); NULL before load.
+void *nps5_kyty_lib_handle(void) { return g_lib; }
 static void **g_entries; // per route
 static bool g_active;
 static int g_trace;

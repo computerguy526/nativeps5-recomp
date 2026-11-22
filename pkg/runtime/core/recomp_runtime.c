@@ -128,7 +128,11 @@ static void crash_journal(uint64_t a, uint64_t len, const char *indent) {
   static int tried;
   if (!tried) {
     tried = 1;
-    fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
+    // kyty_gpu.dylib is opened RTLD_LOCAL (nps5_kyty.c): ask its handle first.
+    extern void *nps5_kyty_lib_handle(void) __attribute__((weak));
+    void *h = nps5_kyty_lib_handle ? nps5_kyty_lib_handle() : NULL;
+    fn = (KytyJournalLookup)(h ? dlsym(h, "kyty_guest_write_journal_lookup") : NULL);
+    if (!fn) fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
   }
   if (!fn) return;
   char buf[2048];
