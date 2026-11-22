@@ -1,0 +1,17 @@
+{
+    "name": "PPSA07631",
+    "translate": {},
+    "env": {
+        "NPS5_UNRESOLVED_RET0": "1",
+        "NPS5_AVPLAYER_CLOSE_CALLER_CTX": "1",
+        "NPS5_KK_IMAGE_INT64": "1",
+        "NPS5_KK_BUFFER_INT64": "1",
+        "NPS5_KK_RESIDENCY_LOCK": "1",
+        "KYTY_SKIP_UNDECODABLE": "1",
+        "KYTY_CP_READ_IMAGE_SYNC": "1",
+        "KYTY_STORE_COMPLETION_FENCE": "1",
+        "KYTY_DISPATCHER_TREE": "1",
+        "KYTY_VRAM_BUDGET_MB": "8000",
+        "KYTY_VRAM_IDLE_FRAMES": "150"
+    }
+}
