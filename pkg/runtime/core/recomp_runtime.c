@@ -120,6 +120,24 @@ static bool crash_read_u64(uint64_t g, uint64_t *v) { return nps5_guest_safe_rea
 // holds a guest address, print its VM extent and the first 16 qwords there; for each of those
 // qwords that is itself a guest address, the 4 qwords it points at. Shows which table/object a
 // garbage value was loaded from (e.g. an allocator page table entry of all ones).
+// Kyty guest-write journal (KYTY_GUEST_WRITE_JOURNAL=1 in the Kyty lib): which Kyty writes into
+// guest memory overlap [a, a+len). Resolved at crash time by name; absent = no output.
+typedef int (*KytyJournalLookup)(uint64_t guest_addr, uint64_t len, char *out, size_t out_len);
+static void crash_journal(uint64_t a, uint64_t len, const char *indent) {
+  static KytyJournalLookup fn;
+  static int tried;
+  if (!tried) {
+    tried = 1;
+    fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
+  }
+  if (!fn) return;
+  char buf[2048];
+  buf[0] = 0;
+  const int n = fn(a, len, buf, sizeof buf);
+  if (n > 0) fprintf(stderr, "%s  Kyty wrote here (%d journal entries, newest first):\n%s%s", indent, n, buf,
+                     (buf[0] && buf[strlen(buf) - 1] != '\n') ? "\n" : "");
+}
+
 static void crash_dump_one(const char *tag, uint64_t v, int depth) {
   if (!g_current_ctx || v < 0x10000 || v >= g_current_ctx->mem_size) return;
   GuestVMExtent e;
@@ -135,6 +153,7 @@ static void crash_dump_one(const char *tag, uint64_t v, int depth) {
   fprintf(stderr, ":");
   for (int i = 0; i < got; i++) fprintf(stderr, " %016llx", (unsigned long long)q[i]);
   fprintf(stderr, "\n");
+  if (got) crash_journal(v, (uint64_t)got * 8, depth ? "    " : "  ");
   if (!depth)
     for (int i = 0; i < got; i++) {
       char t[32];
