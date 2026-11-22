@@ -55,7 +55,9 @@ const RecompModuleUnwindInfo *recomp_module_find_by_addr(uint64_t addr);
 // (modules register before guest code runs), for crash reports and other signal context.
 bool recomp_module_text_contains(uint64_t addr);
 void recomp_register_guest_modules(void);
-void recomp_module_start(GuestContext *ctx, int32_t handle);
+// Runs the module's entry once, as the console's dynamic linker does for sceKernelLoadStartModule:
+// entry(argc, argv, NULL); argv is a guest pointer. *res (may be NULL) receives the entry's result.
+void recomp_module_start(GuestContext *ctx, int32_t handle, uint64_t argc, uint64_t argv, int *res);
 void recomp_modules_start_preloaded(GuestContext *ctx);
 bool recomp_module_has_preloaded_inits(const char *filename);
 uint64_t recomp_resolve_symbol(const char *module_name, const char *symbol);

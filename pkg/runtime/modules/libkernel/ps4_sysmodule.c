@@ -246,7 +246,11 @@ const RecompModuleUnwindInfo *recomp_module_find_by_addr(uint64_t addr) {
     return NULL;
 }
 
-void recomp_module_start(GuestContext *ctx, int32_t handle) {
+// A PRX entry (the CRT _start of the module) runs the module's init_array and then tail-calls its
+// third argument when that is not NULL, or else module_start(argc, argv). The console's dynamic
+// linker passes NULL there; a stale register value made it jump into data (Unity's
+// Il2cppUserAssemblies.prx jumped to a heap pointer left in RDX by the guest's own call).
+void recomp_module_start(GuestContext *ctx, int32_t handle, uint64_t argc, uint64_t argv, int *res) {
     if (!ctx || handle <= 0) {
         return;
     }
@@ -266,7 +270,13 @@ void recomp_module_start(GuestContext *ctx, int32_t handle) {
     pthread_mutex_unlock(&g_sysmodule_mutex);
     for (size_t i = 0; i < count; i++) {
         if (inits[i] != 0) {
+            ctx->rdi = argc;
+            ctx->rsi = argv;
+            ctx->rdx = 0;
             recomp_call_guest(ctx, inits[i]);
+            if (res) {
+                *res = (int)(uint32_t)ctx->rax;
+            }
         }
     }
 }
@@ -535,7 +545,7 @@ void shim_sceKernelLoadStartModule(GuestContext *ctx) {
 
     int32_t ret = sceKernelLoadStartModule(name, argc, argv, flags, opt, res);
     if (ret > 0) {
-        recomp_module_start(ctx, ret);
+        recomp_module_start(ctx, ret, (uint64_t)argc, argvGuest, res);
     }
     ctx->rax = (uint64_t)(int64_t)ret;
     SHIM_RETURN();
