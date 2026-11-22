@@ -130,6 +130,9 @@ var hlesysShims = []string{
 	"sceCoredumpSetUserDataType",
 	"pthread_attr_setsolosched_np",
 
+	// libkernel FreeBSD umtx (Unity PS5 PS5Util.prx)
+	"_umtx_op",
+
 	// libScePad (libSceHlesys)
 	"scePadSetVibrationMode",
 	"scePadGetTriggerEffectState",

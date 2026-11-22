@@ -1189,6 +1189,51 @@ static void test_apr_hardening(void) {
   printf("apr: hardening ok\n");
 }
 
+// _umtx_op (FreeBSD umtx WAIT/WAKE): value mismatch returns at once, timeouts (relative timespec and absolute
+// monotonic _umtx_time), a waiter woken by WAKE, unknown operations EINVAL. Guest errno at fs_base + 0x100.
+SHIM(_umtx_op);
+typedef struct { GuestContext c; uint64_t word; int64_t rc; double secs; } UmtxWaiter;
+static double umtx_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+static int64_t umtx_call(GuestContext *c, uint64_t obj, int op, uint64_t val, uint64_t uaddr, uint64_t uaddr2) {
+  c->rdi = obj; c->rsi = (uint64_t)op; c->rdx = val; c->rcx = uaddr; c->r8 = uaddr2;
+  uint64_t rsp0 = c->rsp; shim__umtx_op(c); assert(c->rsp == rsp0 + 8); c->rsp = rsp0;
+  return (int64_t)c->rax;
+}
+static void *umtx_waiter(void *p) {
+  UmtxWaiter *w = p; double t0 = umtx_now();
+  uint64_t ts = galloc(16); ((int64_t *)H(ts))[0] = 5; ((int64_t *)H(ts))[1] = 0; // safety net: 5 s
+  w->rc = umtx_call(&w->c, w->word, 15, 0, 0, ts);
+  w->secs = umtx_now() - t0;
+  return NULL;
+}
+static void test_umtx(void) {
+  int *err = (int *)H(C->fs_base + 0x100);
+  uint64_t word = galloc(8); *(uint64_t *)H(word) = 7;
+  CHECK(umtx_call(C, word, 2, 6, 0, 0) == 0);                   // value differs: no sleep
+  CHECK(umtx_call(C, word, 11, 8, 0, 0) == 0);
+  uint64_t ts = galloc(16); ((int64_t *)H(ts))[0] = 0; ((int64_t *)H(ts))[1] = 50000000; // 50 ms
+  *err = 0; double t0 = umtx_now();
+  CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 60); // equal: times out
+  CHECK(umtx_now() - t0 >= 0.04);
+  uint64_t ut = galloc(24); struct timespec m; clock_gettime(CLOCK_MONOTONIC, &m);
+  ((int64_t *)H(ut))[0] = m.tv_sec - 1; ((int64_t *)H(ut))[1] = 0; ((uint32_t *)H(ut + 16))[0] = 1; ((uint32_t *)H(ut + 16))[1] = 4;
+  *err = 0; t0 = umtx_now();
+  CHECK(umtx_call(C, word, 15, 7, 24, ut) == -1 && *err == 60 && umtx_now() - t0 < 0.5); // absolute monotonic, past
+  ((int64_t *)H(ts))[1] = 1000000000;
+  *err = 0; CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 22);             // bad timespec
+  *err = 0; CHECK(umtx_call(C, word, 5, 0, 0, 0) == -1 && *err == 22);              // umtx mutex op: not implemented
+  // a waiter on a u_int is woken by WAKE_PRIVATE
+  uint64_t flag = galloc(8); *(uint32_t *)H(flag) = 0;
+  UmtxWaiter *w = calloc(1, sizeof *w); w->c = *C; w->c.rsp = 0x7000; w->word = flag; w->rc = 99;
+  pthread_t th; pthread_create(&th, NULL, umtx_waiter, w);
+  usleep(100000);
+  __atomic_store_n((uint32_t *)H(flag), 1, __ATOMIC_SEQ_CST);
+  CHECK(umtx_call(C, flag, 16, 1, 0, 0) == 0);
+  pthread_join(th, NULL);
+  CHECK(w->rc == 0 && w->secs < 2.0);
+  free(w);
+}
+
 int main(void) {
   char tmp[] = "/tmp/hlesys_unit.XXXXXX";
   if (!mkdtemp(tmp)) return 2;
@@ -1226,6 +1271,7 @@ int main(void) {
   test_level_open();
   test_dirent_types(tmp);
   test_dirent_cache(tmp);
+  test_umtx();
 
   char cmd[700]; snprintf(cmd, sizeof cmd, "rm -rf %s", tmp); system(cmd);
   test_ampr_external_events();
