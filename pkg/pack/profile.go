@@ -13,7 +13,13 @@ import (
 // Profile is the per-title recipe (docs/m3/packaging.md): how to translate the title and which
 // environment its bundle runs with. Every field is optional.
 type Profile struct {
-	Name      string            `json:"name,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Base names a profile this one builds on (an engine family: "unity-ps5" is looked up as
+	// engines/unity-ps5.json in the same directories). The title's own keys win; env maps merge;
+	// exclude_module and args are the base's followed by the title's.
+	Base string `json:"base,omitempty"`
+	// Notes are free text for people (why a switch is set, what it needs); the tools ignore them.
+	Notes     []string          `json:"notes,omitempty"`
 	Translate TranslateProfile  `json:"translate"`
 	Env       map[string]string `json:"env,omitempty"` // added to the launch environment of the bundle
 	// Microphone adds NSMicrophoneUsageDescription to Info.plist.
@@ -67,14 +73,9 @@ func LoadProfile(name, titleID, repo string) (*Profile, string, error) {
 	}
 	p := &Profile{}
 	if path != "" {
-		b, err := os.ReadFile(path)
-		if err != nil {
+		var err error
+		if p, err = readProfile(path, dirs, try, 0); err != nil {
 			return nil, "", err
-		}
-		dec := json.NewDecoder(strings.NewReader(string(b)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(p); err != nil {
-			return nil, "", fmt.Errorf("profile %s: %w", path, err)
 		}
 	}
 	if p.Translate.GPU == "" {
@@ -84,6 +85,80 @@ func LoadProfile(name, titleID, repo string) (*Profile, string, error) {
 		p.Name = name
 	}
 	return p, path, nil
+}
+
+// maxProfileDepth bounds a chain of base profiles (and so a cycle).
+const maxProfileDepth = 4
+
+// readProfile decodes the profile at path and folds in its base chain.
+func readProfile(path string, dirs []string, try func(string) string, depth int) (*Profile, error) {
+	if depth >= maxProfileDepth {
+		return nil, fmt.Errorf("profile %s: base chain deeper than %d (a cycle?)", path, maxProfileDepth)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	p := &Profile{}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(p); err != nil {
+		return nil, fmt.Errorf("profile %s: %w", path, err)
+	}
+	if p.Base == "" {
+		return p, nil
+	}
+	bp := ""
+	for _, d := range dirs {
+		if c := filepath.Join(d, "engines", p.Base+".json"); fileExists(c) {
+			bp = c
+			break
+		}
+	}
+	if bp == "" {
+		bp = try(p.Base)
+	}
+	if bp == "" {
+		return nil, fmt.Errorf("profile %s: base %q not found", path, p.Base)
+	}
+	base, err := readProfile(bp, dirs, try, depth+1)
+	if err != nil {
+		return nil, err
+	}
+	return mergeProfile(base, p), nil
+}
+
+// mergeProfile lays over on top of base: scalar keys of over win when set, env maps merge (over wins),
+// list keys are base's then over's.
+func mergeProfile(base, over *Profile) *Profile {
+	m := *base
+	m.Base = over.Base
+	if over.Name != "" {
+		m.Name = over.Name
+	}
+	m.Notes = append(append([]string(nil), base.Notes...), over.Notes...)
+	m.Microphone = base.Microphone || over.Microphone
+	if len(base.Env)+len(over.Env) > 0 {
+		m.Env = make(map[string]string, len(base.Env)+len(over.Env))
+		for k, v := range base.Env {
+			m.Env[k] = v
+		}
+		for k, v := range over.Env {
+			m.Env[k] = v
+		}
+	}
+	t, o := &m.Translate, over.Translate
+	for _, kv := range []struct {
+		dst *string
+		v   string
+	}{{&t.GPU, o.GPU}, {&t.X87, o.X87}, {&t.CallModel, o.CallModel}, {&t.AddrMode, o.AddrMode}, {&t.HLEMalloc, o.HLEMalloc}} {
+		if kv.v != "" {
+			*kv.dst = kv.v
+		}
+	}
+	t.ExcludeModule = append(append([]string(nil), base.Translate.ExcludeModule...), o.ExcludeModule...)
+	t.Args = append(append([]string(nil), base.Translate.Args...), o.Args...)
+	return &m
 }
 
 // Args are the ps4-recomp flags of the profile; supports reports whether the translator knows a flag

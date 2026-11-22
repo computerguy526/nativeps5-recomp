@@ -1,0 +1,11 @@
+{
+    "name": "PPSA28997",
+    "base": "unity-ps5",
+    "notes": [
+        "God of War Sons of Sparta (Unity PS5). Bring-up log: work/ppsa28997/BOOTLOG.md in the nativeps5 workspace."
+    ],
+    "translate": {},
+    "env": {
+        "NPS5_AVPLAYER_CLOSE_CALLER_CTX": "1"
+    }
+}
