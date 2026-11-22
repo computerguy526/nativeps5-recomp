@@ -32,6 +32,14 @@
             "sha256": "b8749a1dbc0742b92eba3ddf6dea1b78dc443f63a07e495ff8e06752fe8774ba",
             "shim": "nps5_physsub_spring_step_b",
             "wrap": true
+        },
+        {
+            "name": "model texture lookup std::function invoker (texture-name guard)",
+            "addr": "0x70587f0",
+            "size": 26,
+            "sha256": "b621fd5a800fd9459521387bae43877bcbab73ab047343124efd0970d4e41bf5",
+            "shim": "nps5_astro_texname_guard",
+            "wrap": true
         }
     ],
     "params": [

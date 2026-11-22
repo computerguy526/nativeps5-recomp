@@ -493,3 +493,49 @@ void nps5_physsub_spring_step_b(GuestContext *ctx) {
     sp_step(ctx, &g_w_spring_b, 1, "physsub.spring.b.nodes");
     SHIM_RETURN();
 }
+
+// ---- texture-name guard (ASTRO BOT level-transition crash) -----------------------------------------------------------
+// nps5_astro_texname_guard wraps a title's std::function invoker that forwards (this, *fullname, *name, *idx16, *rec) to
+// the texture lookup of a model being loaded (ASTRO BOT 01.007: invoker 0x74587f0 -> 0x746b490). That lookup reads *name
+// unchecked when fullname is NULL; on rare level transitions (about 1 in 20 hub -> Sky Garden) the model loader reaches it
+// with both NULL and the game dies with a read of guest address 0. Both NULL: the shim returns 0xffff, the lookup's own
+// "not found" (the loader then uses its default texture for that entry), and logs the first 20 cases. NPS5_TEXNAME_GUARD=0
+// = call the original anyway (crash as before).
+static PsWrap g_w_texname = {.shim = "nps5_astro_texname_guard"};
+static _Atomic uint64_t g_texname_guarded;
+
+void nps5_astro_texname_guard(GuestContext *ctx) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("NPS5_TEXNAME_GUARD");
+        on = !(e && *e == '0');
+    }
+    PsArgs a;
+    ps_save(ctx, &a);
+    const uint64_t full = a.rdx && a.rdx < ctx->mem_size ? *(const uint64_t *)NPS5_G2H(ctx, a.rdx) : 0;
+    const uint64_t name = a.rcx && a.rcx < ctx->mem_size ? *(const uint64_t *)NPS5_G2H(ctx, a.rcx) : 0;
+    if (on && !full && !name) {
+        const uint64_t n = atomic_fetch_add_explicit(&g_texname_guarded, 1, memory_order_relaxed) + 1;
+        if (n <= 20)
+            fprintf(stderr, "[texname-guard] model texture entry without a name (%llu so far): no texture instead of a crash\n",
+                    (unsigned long long)n);
+        ctx->rax = 0xffff;
+        SHIM_RETURN();
+    }
+    void *body = ps_body(&g_w_texname);
+    ctx->rdi = a.rdi;
+    ctx->rsi = a.rsi;
+    ctx->rdx = a.rdx;
+    ctx->rcx = a.rcx;
+    ctx->r8 = a.r8;
+    ctx->r9 = a.r9;
+    for (int i = 0; i < 8; i++)
+        ctx->xmm[i] = a.xmm[i];
+    uint64_t sp = ((a.rsp - 128) & ~15ULL) - 8;
+    *(uint64_t *)NPS5_G2H(ctx, sp) = 0;
+    ctx->rsp = sp;
+    ctx->rip = g_w_texname.guest;
+    recomp_call_entry(ctx, (recomp_fn_t)body);
+    ctx->rsp = a.rsp;
+    SHIM_RETURN();
+}
