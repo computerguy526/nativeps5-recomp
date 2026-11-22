@@ -123,6 +123,27 @@ void shim_sceNpGetAccountLanguage2(GuestContext *ctx) {
   RET32(ctx, (int32_t)0x80550006u);
 }
 
+// ---- SDK 11 audio / entitlement imports with no shim yet (PPSA07631) ------------------------------------------
+// Behaviour of upstream KytyPS5 (GPL-2.0, libAudio2.cpp / libAudio.cpp / libNpEntitlementAccess.cpp), ported, not
+// copied: mastering is a no-op that succeeds, 3D latency is accepted for outputs 0..2, the propagation path setter
+// and the decoder reset succeed, no entitlement key exists.
+void shim_sceAudioOut2MasteringInit(GuestContext *ctx) { hs_once("sceAudioOut2MasteringInit", "no-op"); RET32(ctx, 0); }
+void shim_sceAudioOut2MasteringSetParam(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudioOut2MasteringTerm(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudioOut2Set3DLatency(GuestContext *ctx) {
+  if ((uint32_t)ctx->rsi > 2) RET32(ctx, (int32_t)0x80268001u); // INVALID_PARAM
+  RET32(ctx, 0);
+}
+void shim_sceAudioPropagationSourceSetAudioPath(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudiodecClearContext(GuestContext *ctx) {
+  if ((int32_t)ctx->rdi <= 0) RET32(ctx, (int32_t)0x807F000Fu); // INVALID_HANDLE
+  RET32(ctx, 0);
+}
+void shim_sceNpEntitlementAccessGetEntitlementKey(GuestContext *ctx) {
+  if (!ctx->rdi || !ctx->rdx) RET32(ctx, (int32_t)0x817D0002u); // PARAMETER
+  RET32(ctx, (int32_t)0x817D0007u);                         // NO_ENTITLEMENT
+}
+
 // ---- libScePad (adaptive triggers / vibration mode) --------------------------------------------
 // Host fallback for a build without a pad backend (`-gpu off`): there is no controller, so there is nothing to drive.
 // With `-gpu anyps5` the four imports below are rebound to AnyPS5's libScePad (shim_aps5_<name>, emitter.EnableAnyPS5Shims),

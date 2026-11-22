@@ -135,6 +135,13 @@ var hlesysShims = []string{
 	"sceNpEntitlementAccessGetGameTrialsFlag",
 	"sceNpGetAccountAge",
 	"sceNpGetAccountLanguage2",
+	"sceAudioOut2MasteringInit",
+	"sceAudioOut2MasteringSetParam",
+	"sceAudioOut2MasteringTerm",
+	"sceAudioOut2Set3DLatency",
+	"sceAudioPropagationSourceSetAudioPath",
+	"sceAudiodecClearContext",
+	"sceNpEntitlementAccessGetEntitlementKey",
 
 	// libScePad (libSceHlesys)
 	"scePadSetVibrationMode",
