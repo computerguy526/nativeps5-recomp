@@ -109,3 +109,13 @@ N5KDtkIjjJ4	libSceVideoOut.prx	VideoOutUnregisterBuffers	KYTY
 5tRaBjtdTzY	libSceVideoOut.prx	VideoOutVrrPegToFixedRate	KYTY
 T4ucGB8CsnM	libSceVideoOut.prx	VideoOutVrrUnpegFromFixedRate	KYTY
 j6RaAUlaLv0	libSceVideoOut.prx	VideoOutWaitVblank	KYTY
+e1DFTg+Sd8U	libSceAgc.prx	AgcAcbJump	KYTY
+03RZmELWWzw	libSceAgc.prx	AgcCbSetUcRegistersDirect	KYTY
+q88lQ+GP5Yk	libSceAgc.prx	AgcDcbDrawIndex	KYTY
+K2mciNVxUCE	libSceAgc.prx	AgcSetNop	KYTY
+GPbUp9jXQa8	libSceAgc.prx	AgcAcbWaitUntilSafeForRendering	KYTY
+Zw7uUVPulbw	libSceAgcDriver.prx	AgcDriverGetEqContextId	KYTY
+MM4IZSEYytQ	libSceAgcDriver.prx	AgcDriverSetHsOffchipParam	KYTY
+XlNp7jzGiPo	libSceAgcDriver.prx	AgcDriverSetTFRing	KYTY
+-Ozn0F1AFRg	libSceVideoOut.prx	VideoOutDeleteFlipEvent	KYTY
+U46NwOiJpys	libSceVideoOut.prx	VideoOutSubmitFlip	KYTY
