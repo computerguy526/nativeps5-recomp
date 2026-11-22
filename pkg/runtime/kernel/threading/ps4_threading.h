@@ -90,6 +90,10 @@ typedef struct RecompThread {
 
   uint64_t stack_base;
   uint64_t stack_size;
+  // The usable stack (no guard page, no TLS/TCB): what scePthreadAttrGet reports as stackaddr/stacksize.
+  // 0 when unknown; then the whole allocation [stack_base, stack_base + stack_size) is reported.
+  uint64_t stack_lo;
+  uint64_t stack_len;
 
   PthreadAttr attr;
 

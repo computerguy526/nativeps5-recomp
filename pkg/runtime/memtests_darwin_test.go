@@ -147,12 +147,15 @@ func hostProgram(t *testing.T, root, prog, mode string, extra ...string) string 
 func TestMemVMAdversarial(t *testing.T) {
 	needHost(t)
 	root := memtestsRoot(t)
-	for _, prog := range []string{"vm_adv", "xlate_adv"} {
+	for _, prog := range []string{"vm_adv", "xlate_adv", "thread_attr_adv"} {
 		for _, mode := range []string{"base", "identity"} {
 			t.Run(prog+"/"+mode, func(t *testing.T) {
 				var extra []string
 				if prog == "xlate_adv" { // the AGC driver configuration hook is compiled in only for this harness
 					extra = append(extra, "-DNPS5_HAVE_ANYPS5_AGC=1")
+				}
+				if prog == "thread_attr_adv" { // the pthread attribute shims
+					extra = append(extra, "pkg/runtime/kernel/threading/ps4_threading.c")
 				}
 				reportCases(t, runHost(t, hostProgram(t, root, prog, mode, extra...), 4*time.Minute))
 			})

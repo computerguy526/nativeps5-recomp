@@ -176,6 +176,8 @@ void recomp_init_main_thread(GuestContext *ctx) {
   g_main_thread_obj.ctx = ctx;
   g_main_thread_obj.stack_base = ctx->stack_base;
   g_main_thread_obj.stack_size = ctx->stack_alloc_size;
+  g_main_thread_obj.stack_lo = ctx->stack_base; // the main stack extent has its guard page below it
+  g_main_thread_obj.stack_len = ctx->stack_alloc_size;
   atomic_store_explicit(&g_main_thread_obj.start_ready, 1, memory_order_relaxed);
   strncpy(g_main_thread_obj.name, "main", sizeof(g_main_thread_obj.name) - 1);
   if (ctx->fs_base && RECOMP_MEM_OK(ctx)) {
@@ -506,6 +508,9 @@ static int do_create_thread(GuestContext *ctx, uint64_t thread_ptr_addr, const P
   t->ctx = child_ctx;
   t->stack_base = child_ctx->stack_base;
   t->stack_size = child_ctx->stack_alloc_size;
+  // recomp_create_thread_context: [guard page][stack, page-rounded][TLS][TCB]
+  t->stack_lo = child_ctx->stack_base + NPS5_PAGE;
+  t->stack_len = (stack_size + NPS5_PAGE_MASK) & ~NPS5_PAGE_MASK;
 
   if (child_ctx->fs_base && RECOMP_MEM_OK(child_ctx)) {
     *(uint64_t *)(child_ctx->mem_base + child_ctx->fs_base + 0x10ULL) = (uint64_t)t;
@@ -1026,12 +1031,33 @@ void shim_scePthreadAttrGetstacksize(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
+// The PthreadAttr behind a guest attribute object (the guest slot holds the host pointer AttrInit stored).
+static PthreadAttr *guest_attr(GuestContext *ctx, uint64_t attr_addr) {
+  if (!attr_addr || attr_addr >= ctx->mem_size) return NULL;
+  return (PthreadAttr *)(uintptr_t)(*(uint64_t *)(ctx->mem_base + attr_addr));
+}
+
+// scePthreadAttrGetstack(attr, void **addr, size_t *size)
 void shim_scePthreadAttrGetstack(GuestContext *ctx) {
+  PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
+  if (!attr || !ctx->rsi || !ctx->rdx) {
+    ctx->rax = 0x80020016ULL; // EINVAL
+    SHIM_RETURN();
+  }
+  *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
+  *(uint64_t *)(ctx->mem_base + ctx->rdx) = attr->stacksize_attr;
   ctx->rax = 0;
   SHIM_RETURN();
 }
 
+// scePthreadAttrGetstackaddr(attr, void **addr)
 void shim_scePthreadAttrGetstackaddr(GuestContext *ctx) {
+  PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
+  if (!attr || !ctx->rsi) {
+    ctx->rax = 0x80020016ULL; // EINVAL
+    SHIM_RETURN();
+  }
+  *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
   ctx->rax = 0;
   SHIM_RETURN();
 }
@@ -1111,7 +1137,33 @@ void shim_scePthreadAttrGetdetachstate(GuestContext *ctx) {
   SHIM_RETURN();
 }
 
+// scePthreadAttrGet(ScePthread thread, ScePthreadAttr *attr) (FreeBSD pthread_attr_get_np): fills an attribute object
+// the caller initialised with the thread's actual attributes, its stack above all: garbage collectors (IL2CPP's Boehm
+// GC in the Unity PS5 player) take the stack bounds of every thread from here; a stub that left the object untouched
+// made the GC skip thread stacks and free live objects.
 void shim_scePthreadAttrGet(GuestContext *ctx) {
+  RecompThread *t = ctx->rdi ? find_thread(ctx->rdi) : g_current_thread;
+  PthreadAttr *attr = guest_attr(ctx, ctx->rsi);
+  if (!attr) {
+    ctx->rax = 0x80020016ULL; // EINVAL
+    SHIM_RETURN();
+  }
+  if (!t) {
+    ctx->rax = 0x80020003ULL; // ESRCH
+    SHIM_RETURN();
+  }
+  void *const cpuset = attr->cpuset; // owned by the attribute object
+  const size_t cpusetsize = attr->cpusetsize;
+  if (t->attr.stacksize_attr || t->attr.sched_policy || t->attr.prio) *attr = t->attr;
+  attr->cpuset = cpuset;
+  attr->cpusetsize = cpusetsize;
+  const uint64_t lo = t->stack_lo ? t->stack_lo : t->stack_base;
+  const uint64_t len = t->stack_lo ? t->stack_len : t->stack_size;
+  attr->stackaddr_attr = (void *)(uintptr_t)lo; // a guest address, as the guest reads it back
+  attr->stacksize_attr = len;
+  attr->guardsize_attr = NPS5_PAGE;
+  if (t->detached) attr->flags |= PTHREAD_ATTR_DETACHED;
+  else attr->flags &= ~(uint32_t)PTHREAD_ATTR_DETACHED;
   ctx->rax = 0;
   SHIM_RETURN();
 }
