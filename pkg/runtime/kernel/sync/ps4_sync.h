@@ -86,6 +86,10 @@ void ps4_sync_relocks_by_type(uint64_t out[6]);
 // (0 = not held by it), and one more lock of it for that thread (0 or an errno). See ps4_sync.c.
 uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
 int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var);
+int ps4_sync_guest_mutex_unlock(GuestContext *ctx, uint64_t var);
+// First-level acquisitions of that mutex by any thread so far, and its owner id now (0 = free); the caller's owner id.
+uint64_t ps4_sync_guest_mutex_acquisitions(GuestContext *ctx, uint64_t var, uint64_t *owner);
+uint64_t ps4_sync_guest_owner_id(GuestContext *ctx);
 
 // C++ ABI guard shims
 void shim_cxa_guard_acquire(GuestContext *ctx);

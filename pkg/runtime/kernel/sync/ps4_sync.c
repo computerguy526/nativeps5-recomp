@@ -625,6 +625,25 @@ int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var) {
   return hle_pthread_mutex_lock(ctx, (void *)(ctx->mem_base + var));
 }
 
+int ps4_sync_guest_mutex_unlock(GuestContext *ctx, uint64_t var) {
+  if (!ctx || !var) return EINVAL;
+  return hle_pthread_mutex_unlock(ctx, (void *)(ctx->mem_base + var));
+}
+
+// First-level acquisitions of that mutex so far (any thread; recursive re-locks by the owner are not counted) and its
+// current owner id (0 = free): for HLE code that wants to know whether other threads took the mutex in a window.
+uint64_t ps4_sync_guest_mutex_acquisitions(GuestContext *ctx, uint64_t var, uint64_t *owner) {
+  if (owner) *owner = 0;
+  if (!ctx || !var) return 0;
+  const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
+  if (sync_obj_slot(h) < 0) return 0;
+  GuestMutex *m = get_host_mutex(h);
+  if (owner) *owner = GM_OWNER(m);
+  return __atomic_load_n(&m->st_locks, __ATOMIC_RELAXED);
+}
+
+uint64_t ps4_sync_guest_owner_id(GuestContext *ctx) { return guest_owner_id(ctx); }
+
 int hle_pthread_mutex_destroy(GuestContext *ctx, void *mutex) {
   uint64_t handle = sync_handle_take(ctx, NPS5_H2G(ctx, mutex));
   const uint64_t id = gm_id(handle);

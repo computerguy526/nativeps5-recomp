@@ -18,6 +18,12 @@
 //       non-owner (EPERM; ASTRO BOT asserts in Mutex.cpp:418) and sub-steps 2..n running without the lock. When the
 //       calling thread held it at entry, the shim takes it again before each further sub-step, back to the entry depth.
 //       NPS5_PHYS_SUBSTEP_RELOCK=0 turns that off.
+//       NPS5_PHYS_SUBSTEP_HOLD=1 (opt-in, needs the same params): the shim instead keeps the lock held from the first sub-step
+//       to the last one, as one unsplit step holds it: before each sub-step but the last it takes the lock once more, so
+//       the step's own release leaves the caller's depth. Other threads that wait for the lock (the game waits for the
+//       frame's physics this way) then get it only after the whole frame's simulation, not between sub-steps.
+//       Every split world step also counts the times another thread took the world lock between two sub-steps (log line
+//       "world lock taken by another thread between sub-steps").
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
 //       simulate (pose-only path) and is called once, unchanged.
 //
@@ -52,12 +58,19 @@ static uint64_t g_ps_stepdt, g_ps_engine_ptr, g_ps_engine_dt;
 static int g_ps_dtfix = 1;
 // world lock: offsets + 1 (0 = not given); g_ps_relock = switch
 static uint64_t g_ps_lock_obj, g_ps_lock_field, g_ps_lock_var;
-static int g_ps_relock = 1;
-static _Atomic uint64_t g_ps_relocks, g_ps_relock_fail;
+static int g_ps_relock = 1, g_ps_hold = 0;
+static _Atomic uint64_t g_ps_relocks, g_ps_relock_fail, g_ps_holds;
+// gaps between sub-steps (lock released by the step until the shim has it again): how many, how many saw another thread take
+// the world lock, and how many first-level acquisitions by others in total
+static _Atomic uint64_t g_ps_gaps, g_ps_gaps_taken, g_ps_gap_locks;
+static _Atomic uint64_t g_ps_gap_owner; // last other owner id seen holding the lock when the shim re-took it
 
 // kernel/sync/ps4_sync.c
 uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var);
 int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var);
+int ps4_sync_guest_mutex_unlock(GuestContext *ctx, uint64_t var);
+uint64_t ps4_sync_guest_mutex_acquisitions(GuestContext *ctx, uint64_t var, uint64_t *owner);
+uint64_t ps4_sync_guest_owner_id(GuestContext *ctx);
 
 static _Atomic uint64_t g_ps_calls[2], g_ps_steps[2], g_ps_split[2], g_ps_clamped;
 static _Atomic uint32_t g_ps_maxdt_bits[2];
@@ -82,6 +95,13 @@ static void ps_init(void) {
         g_ps_relock = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
     }
     {
+        double v = 0;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_HOLD"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD: 0|1\n");
+        g_ps_hold = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
+        if (v == 1.0 && !g_ps_hold) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
+    }
+    {
         double v = 1;
         if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_DTFIX"), 0, 1, &v))
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_DTFIX: 0|1\n");
@@ -96,7 +116,10 @@ static void ps_init(void) {
         fprintf(stderr, "[physsub] world dtfix %s (world step dt %s, engine solver dt %s), world lock kept per sub-step: %s\n",
                 g_ps_dtfix ? "on" : "off", g_ps_stepdt ? "yes" : "no param",
                 g_ps_engine_ptr && g_ps_engine_dt ? "yes" : "no param",
-                g_ps_relock ? "on" : g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var ? "off (NPS5_PHYS_SUBSTEP_RELOCK=0)" : "no params");
+                g_ps_hold     ? "held across all sub-steps (NPS5_PHYS_SUBSTEP_HOLD=1)"
+                : g_ps_relock ? "on"
+                : g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var ? "off (NPS5_PHYS_SUBSTEP_RELOCK=0)"
+                                                                    : "no params");
     if (g_ps.on)
         fprintf(stderr, "[physsub] on: world %s (steps <= 1/%.0f s, at most %d per frame), cloth %s\n",
                 g_ps.world ? "substepped" : "untouched", g_ps.hz, g_ps.max,
@@ -195,11 +218,14 @@ static void ps_log(void) {
     memcpy(&mc, &bc, 4);
     fprintf(stderr,
             "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
-            "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed)\n",
+            "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
+            "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx)\n",
             (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
             (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
             (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
-            (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail);
+            (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail, (unsigned long long)g_ps_holds,
+            (unsigned long long)g_ps_gaps_taken, (unsigned long long)g_ps_gaps, (unsigned long long)g_ps_gap_locks,
+            (unsigned long long)g_ps_gap_owner);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
@@ -245,11 +271,42 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_call(ctx, &g_w_world, &a, dt);
     } else {
         const float sub = dt / (float)n;
-        const uint64_t lv = g_ps_relock ? ps_world_lock_var(ctx, a.rdi) : 0;
+        const uint64_t lv = g_ps_relock || g_ps_hold || (g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var)
+                                ? ps_world_lock_var(ctx, a.rdi)
+                                : 0;
         const uint32_t depth0 = lv ? ps4_sync_guest_mutex_depth(ctx, lv) : 0;
+        const int hold = g_ps_hold && depth0;
+        const uint64_t me = depth0 ? ps4_sync_guest_owner_id(ctx) : 0;
         for (int i = 0; i < n; i++) {
-            if (i > 0 && depth0) ps_world_relock(ctx, lv, depth0);
+            const int last = i == n - 1;
+            // hold: one more level before each sub-step but the last; the step's release then leaves depth0 held
+            if (hold && !last && ps4_sync_guest_mutex_lock(ctx, lv) == 0)
+                atomic_fetch_add_explicit(&g_ps_holds, 1, memory_order_relaxed);
+            const uint64_t acq0 = depth0 && !last ? ps4_sync_guest_mutex_acquisitions(ctx, lv, NULL) : 0;
             ps_call(ctx, &g_w_world, &a, sub);
+            if (!depth0 || last) continue;
+            // gap probe: did another thread take the lock after this sub-step released it (before the shim has it again)?
+            uint64_t owner = 0;
+            const uint32_t d = ps4_sync_guest_mutex_depth(ctx, lv);
+            uint64_t acq1 = ps4_sync_guest_mutex_acquisitions(ctx, lv, &owner);
+            if (d < depth0) {
+                if (owner && owner != me) atomic_store_explicit(&g_ps_gap_owner, owner, memory_order_relaxed);
+                if (g_ps_relock || hold) ps_world_relock(ctx, lv, depth0);
+                // the shim's own first-level acquisition (from depth 0) is one of the counted ones
+                if (d == 0 && (g_ps_relock || hold)) {
+                    const uint64_t a2 = ps4_sync_guest_mutex_acquisitions(ctx, lv, NULL);
+                    acq1 = a2 > 0 ? a2 - 1 : 0;
+                }
+            }
+            while (hold && ps4_sync_guest_mutex_depth(ctx, lv) > depth0) // the step did not release it: keep depth0
+                if (ps4_sync_guest_mutex_unlock(ctx, lv) != 0) break;
+            if (d < depth0) atomic_fetch_add_explicit(&g_ps_gaps, 1, memory_order_relaxed);
+            {
+                if (acq1 > acq0) {
+                    atomic_fetch_add_explicit(&g_ps_gaps_taken, 1, memory_order_relaxed);
+                    atomic_fetch_add_explicit(&g_ps_gap_locks, acq1 - acq0, memory_order_relaxed);
+                }
+            }
         }
         if (g_ps_dtfix) {
             // the last sub-step left dt / n and n / dt as the step values; per-frame readers must see the frame's

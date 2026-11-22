@@ -25,6 +25,10 @@
 //                                 physsub.world.lock_obj/.lock_field/.lock_var) gets that lock back before each further sub-step,
 //                                 so every sub-step runs under it and releases it once (ASTRO BOT: without it sub-steps 2..n
 //                                 unlock as a non-owner, EPERM, the game's Mutex.cpp:418 assert, and simulate unlocked). 0 = off.
+//   NPS5_PHYS_SUBSTEP_HOLD=0      1 = keep that world lock held through ALL sub-steps of a split world step (the step's release of
+//                                 sub-steps 1..n-1 is balanced by one extra lock level), so threads that wait for the lock see the
+//                                 frame's physics only when the whole frame is simulated, as with one unsplit step (ASTRO BOT: the
+//                                 walking character sinks into floors with plain split; opt-in experiment). Needs the lock params.
 #pragma once
 #include <math.h>
 #include <stdint.h>
