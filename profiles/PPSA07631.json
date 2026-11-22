@@ -12,6 +12,8 @@
         "KYTY_STORE_COMPLETION_FENCE": "1",
         "KYTY_DISPATCHER_TREE": "1",
         "KYTY_VRAM_BUDGET_MB": "8000",
-        "KYTY_VRAM_IDLE_FRAMES": "150"
-    }
+        "KYTY_VRAM_IDLE_FRAMES": "150",
+        "NPS5_KK_SWITCH_TREE": "1"
+    },
+    "_kk": "KosmicKrisp nps5-kk-saros1 a869fde (switch tree + residency lock + int64) is required for NPS5_KK_SWITCH_TREE / NPS5_KK_RESIDENCY_LOCK; the Kyty KYTY_DISPATCHER_TREE stays as the fallback"
 }
