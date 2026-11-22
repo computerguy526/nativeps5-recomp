@@ -3,7 +3,9 @@ package disasm
 import (
 	"debug/elf"
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"ps4-recomp/pkg/elfloader"
@@ -155,6 +157,11 @@ type Disassembler struct {
 	// rejected holds weak entries dropped as mid-instruction (see dropMidInstructionEntries).
 	rejected       map[uint64]struct{}
 	droppedEntries int
+	// fallInto: entries that a decoded function runs into by fall-through (a tail edge to the next
+	// entry). Such an entry is a proven instruction boundary; with keepFallInto it is decoded even if
+	// a later, overlapping decode rejected it (otherwise the tail edge dangles: PPSA07631 r16, see
+	// keepFallInto). Discovery only (clones do not record).
+	fallInto map[uint64]uint64
 	// sortedEntries is entries in address order: in code without unwind extents a function ends
 	// where the next known function starts.
 	sortedEntries []uint64
@@ -164,6 +171,53 @@ type Disassembler struct {
 	isClone bool
 	undo    []uint64
 }
+
+// keepFallInto (translate-time NPS5_KEEP_FALLINTO=1, or the packed-layout profile NPS5_SEED_AFTER_UD2=1):
+// an entry that a decoded function falls through into is never dropped as mid-instruction and is
+// always decoded. Without it, a garbage decode from a bogus entry that overlaps it can reject it after
+// the falling function's IR was built with a tail edge to it; no function is emitted there, the
+// return-site continuation of the call before it is that tail jump, and the dispatch of that jump
+// finds the same continuation again: an endless loop (PPSA07631 r16: UE main thread, 0x1ee768b).
+var keepFallInto = os.Getenv("NPS5_KEEP_FALLINTO") == "1" || os.Getenv("NPS5_SEED_AFTER_UD2") == "1"
+
+func (d *Disassembler) noteFallInto(target, from uint64) {
+	if !keepFallInto || d.isClone {
+		return
+	}
+	if d.fallInto == nil {
+		d.fallInto = map[uint64]uint64{}
+	}
+	if _, ok := d.fallInto[target]; !ok {
+		d.fallInto[target] = from
+	}
+	if explainAddr(target) {
+		fmt.Fprintf(os.Stderr, "[explain] 0x%x: fall-through target of function 0x%x\n", target, from)
+	}
+}
+
+func (d *Disassembler) keptFallInto(addr uint64) bool {
+	if !keepFallInto {
+		return false
+	}
+	_, ok := d.fallInto[addr]
+	if ok && explainAddr(addr) {
+		fmt.Fprintf(os.Stderr, "[explain] 0x%x: rejected entry kept (fall-through target)\n", addr)
+	}
+	return ok
+}
+
+// NPS5_EXPLAIN_ADDRS=0x..,0x..: log what discovery does with these addresses (diagnosis).
+var explainSet = func() map[uint64]bool {
+	m := map[uint64]bool{}
+	for _, f := range strings.Split(os.Getenv("NPS5_EXPLAIN_ADDRS"), ",") {
+		if v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(f), "0x"), 16, 64); err == nil && v != 0 {
+			m[v] = true
+		}
+	}
+	return m
+}()
+
+func explainAddr(a uint64) bool { return len(explainSet) > 0 && explainSet[a] }
 
 func (d *Disassembler) isOtherEntry(addr, self uint64) bool {
 	if addr == self || d.entries == nil {
@@ -428,7 +482,7 @@ func (d *Disassembler) WalkReachable(entryAddrs []uint64, visit func(fn *Functio
 
 	for head := 0; head < len(queue); head++ {
 		curr := queue[head]
-		if _, bad := d.rejected[curr]; bad {
+		if _, bad := d.rejected[curr]; bad && !d.keptFallInto(curr) {
 			continue
 		}
 
@@ -446,7 +500,7 @@ func (d *Disassembler) WalkReachable(entryAddrs []uint64, visit func(fn *Functio
 		}
 
 		for _, target := range newCalls {
-			if _, bad := d.rejected[target]; bad {
+			if _, bad := d.rejected[target]; bad && !d.keptFallInto(target) {
 				continue
 			}
 			if !visited[target] && d.inCode(target) {
@@ -951,6 +1005,7 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 				if pc != blockStart && d.isOtherEntry(pc, entryAddr) {
 					// Fall-through into another function (a call that does not return, no
 					// padding): a tail edge, not more of this function.
+					d.noteFallInto(pc, entryAddr)
 					edge(pc)
 					break
 				}
@@ -1249,6 +1304,16 @@ func (d *Disassembler) disasmBranchFollowing(entryAddr uint64) (*Function, []uin
 					capPC = pc
 					capConts = append(capConts, pc)
 					break
+				}
+			}
+			// The block ran up to the next known entry without a terminator: it falls through into
+			// that function (the bound is the entry, see functionEnd).
+			if keepFallInto && len(curBlock) > 0 && pc == fnEnd && d.isOtherEntry(pc, entryAddr) {
+				switch curBlock[len(curBlock)-1].Inst.Op {
+				case x86asm.JMP, x86asm.RET, x86asm.UD2, x86asm.INT, x86asm.HLT:
+				default:
+					d.noteFallInto(pc, entryAddr)
+					edge(pc)
 				}
 			}
 			blockInsts[blockStart] = curBlock

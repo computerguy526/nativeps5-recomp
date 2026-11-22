@@ -1,7 +1,9 @@
 package disasm
 
 import (
+	"fmt"
 	"maps"
+	"os"
 	"runtime"
 	"slices"
 	"sync"
@@ -191,6 +193,9 @@ func (d *Disassembler) dropMidInstructionEntries() {
 		d.rejected = make(map[uint64]struct{}, len(dropped))
 	}
 	for _, a := range dropped {
+		if explainAddr(a) {
+			fmt.Fprintf(os.Stderr, "[explain] 0x%x: dropped as mid-instruction (linear decode from the entry before it)\n", a)
+		}
 		delete(d.entries, a)
 		d.rejected[a] = struct{}{}
 	}
@@ -279,6 +284,12 @@ func (d *Disassembler) dropStraddledEntry(entry, addr uint64) bool {
 	}
 	if sym, ok := d.elf.SymbolByAddr[addr]; ok && sym.Type == 2 {
 		return false
+	}
+	if _, fall := d.fallInto[addr]; fall && keepFallInto {
+		return false // a proven boundary: the decode that straddles it is the wrong one
+	}
+	if explainAddr(addr) {
+		fmt.Fprintf(os.Stderr, "[explain] 0x%x: dropped as straddled by function 0x%x (clone %v)\n", addr, entry, d.isClone)
 	}
 	delete(d.entries, addr)
 	if d.rejected == nil {

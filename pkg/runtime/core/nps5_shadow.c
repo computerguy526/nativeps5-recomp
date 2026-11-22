@@ -498,6 +498,63 @@ __attribute__((noreturn)) static void flat_fatal(GuestContext *ctx, uint64_t rip
   abort();
 }
 
+// NPS5_TRACE_SLOWDISPATCH=<N> (diagnosis): every N-th slow indirect call/jump/resume of a thread (the ones counted in
+// dispatch_slow) is tallied by (target, caller return address, host thread name); the top rows go to stderr every
+// 2^16 samples and at exit. Finds hot loops that leave the inline cache (e.g. a spin loop through a virtual call).
+#define SD_ROWS 512
+typedef struct { uint64_t rip, ra; uint32_t reason; uint64_t n; char th[24]; } SdRow;
+static SdRow s_sd[SD_ROWS];
+static int s_sd_n;
+static uint64_t s_sd_total;
+static pthread_mutex_t s_sd_mu = PTHREAD_MUTEX_INITIALIZER;
+static int s_sd_every = -1;
+static _Thread_local uint64_t t_sd_count;
+
+static void sd_print_locked(const char *why) {
+  SdRow tmp[SD_ROWS];
+  int n = s_sd_n;
+  memcpy(tmp, s_sd, sizeof(SdRow) * (size_t)n);
+  for (int i = 1; i < n; i++) { // insertion sort, descending by n
+    SdRow r = tmp[i]; int j = i - 1;
+    while (j >= 0 && tmp[j].n < r.n) { tmp[j + 1] = tmp[j]; j--; }
+    tmp[j + 1] = r;
+  }
+  fprintf(stderr, "[slowdispatch] %s: %llu samples (1 per %d), %d sites\n", why, (unsigned long long)s_sd_total, s_sd_every, n);
+  for (int i = 0; i < n && i < 16; i++)
+    fprintf(stderr, "[slowdispatch]   %8llu  target 0x%llx  reason %u  caller_ra 0x%llx  thread '%s'\n", (unsigned long long)tmp[i].n,
+            (unsigned long long)tmp[i].rip, tmp[i].reason, (unsigned long long)tmp[i].ra, tmp[i].th);
+  fflush(stderr);
+}
+static void sd_atexit(void) {
+  pthread_mutex_lock(&s_sd_mu);
+  if (s_sd_total) sd_print_locked("exit");
+  pthread_mutex_unlock(&s_sd_mu);
+}
+static void sd_sample(GuestContext *ctx, uint64_t rip, uint32_t reason) {
+  if (s_sd_every < 0) {
+    const char *e = getenv("NPS5_TRACE_SLOWDISPATCH");
+    int v = e ? atoi(e) : 0;
+    if (v > 0) atexit(sd_atexit);
+    s_sd_every = v > 0 ? v : 0;
+  }
+  if (!s_sd_every || (++t_sd_count % (uint64_t)s_sd_every)) return;
+  uint64_t ra = 0;
+  RecompShadow *s = ctx->shadow;
+  RecompShadowEntry *top = (RecompShadowEntry *)(uintptr_t)ctx->shadow_sp;
+  if (s && top >= s->lo && top < s->bottom) ra = top->guest_ra;
+  char th[24] = {0};
+  pthread_getname_np(pthread_self(), th, sizeof th);
+  pthread_mutex_lock(&s_sd_mu);
+  s_sd_total++;
+  int i = 0;
+  for (; i < s_sd_n; i++)
+    if (s_sd[i].rip == rip && s_sd[i].ra == ra && strcmp(s_sd[i].th, th) == 0) break;
+  if (i == s_sd_n && s_sd_n < SD_ROWS) { s_sd[i] = (SdRow){rip, ra, reason, 0, {0}}; memcpy(s_sd[i].th, th, sizeof th); s_sd_n++; }
+  if (i < s_sd_n) s_sd[i].n++;
+  if ((s_sd_total & 0xffff) == 0) sd_print_locked("periodic");
+  pthread_mutex_unlock(&s_sd_mu);
+}
+
 uintptr_t recomp_flat_continue(GuestContext *ctx, uint64_t rip, uint32_t reason) {
   RecompShadow *s = ctx->shadow;
   uintptr_t host = 0;
@@ -531,6 +588,24 @@ uintptr_t recomp_flat_continue(GuestContext *ctx, uint64_t rip, uint32_t reason)
     }
   }
   atomic_fetch_add_explicit(reason == RECOMP_MISS_RET ? &g_st_addr : &g_st_miss_calls, 1, memory_order_relaxed);
+  if (reason != RECOMP_MISS_RET && s_sd_every != 0) sd_sample(ctx, rip, reason);
+  if (reason != RECOMP_MISS_RET) {
+    // The same indirect target 2^24 times in a row with no other slow dispatch between: almost
+    // always a continuation that dispatches to itself (a tail edge to an address the translation has
+    // no function for). Said once per thread; the run goes on.
+    static _Thread_local uint64_t t_last_rip, t_same;
+    if (rip == t_last_rip) {
+      if (++t_same == (1u << 24)) {
+        char th[32] = {0};
+        pthread_getname_np(pthread_self(), th, sizeof th);
+        fprintf(stderr, "[nps5] dispatch self-loop? thread '%s' dispatched to guest 0x%llx (reason %u) %u times in a row\n", th,
+                (unsigned long long)rip, reason, 1u << 24);
+      }
+    } else {
+      t_last_rip = rip;
+      t_same = 0;
+    }
+  }
   host = recomp_cont_resolve(ctx, rip, reason);
   if (!host) {
     flat_fatal(ctx, rip, reason,

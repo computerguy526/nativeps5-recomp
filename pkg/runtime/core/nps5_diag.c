@@ -288,7 +288,7 @@ void nps5_log_compat(int subsys, int level, const char *tag, const char *fmt, ..
 
 // ------------------------------------------------------------------ HLE counters
 #define HLE_SLOTS 8192
-typedef struct { _Atomic(void *) fn; _Atomic uint64_t count; } HleSlot;
+typedef struct { _Atomic(void *) fn; _Atomic uint64_t count; _Atomic int trace; } HleSlot; // trace: 0 undecided, 1 log, 2 skip
 static HleSlot g_hle[HLE_SLOTS];
 static _Atomic uint64_t g_hle_total;
 static _Thread_local void *t_hle_current;
@@ -310,28 +310,51 @@ static const char *hle_name(void *fn, char *buf, size_t cap) {
   return buf;
 }
 
+static int g_trace_hle_first = -1; // NPS5_TRACE_HLE_FIRST=1: one line the first time each shim is called (order of first use)
 static void hle_hook(void *ctx, void *fn) {
   t_hle_current = fn;
   if (g_nps5_perf_hle_enter) g_nps5_perf_hle_enter(fn);
   atomic_store_explicit(&g_hle_last, fn, memory_order_relaxed);
   atomic_fetch_add_explicit(&g_hle_total, 1, memory_order_relaxed);
   size_t h = ((uintptr_t)fn >> 2) % HLE_SLOTS;
+  HleSlot *slot = NULL;
+  int claimed = 0;
   for (size_t i = 0; i < HLE_SLOTS; i++) {
     HleSlot *s = &g_hle[(h + i) % HLE_SLOTS];
     void *cur = atomic_load_explicit(&s->fn, memory_order_acquire);
     if (!cur) {
       void *exp = NULL;
-      if (!atomic_compare_exchange_strong(&s->fn, &exp, fn)) cur = exp; else cur = fn;
+      if (!atomic_compare_exchange_strong(&s->fn, &exp, fn)) cur = exp; else { cur = fn; claimed = 1; }
     }
     if (cur == fn) {
       atomic_fetch_add_explicit(&s->count, 1, memory_order_relaxed);
+      slot = s;
       break;
     }
   }
+  if (claimed) {
+    if (g_trace_hle_first < 0) { const char *e = getenv("NPS5_TRACE_HLE_FIRST"); g_trace_hle_first = e && e[0] == '1'; }
+    if (g_trace_hle_first) {
+      char nm[160], th[32] = {0};
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      pthread_getname_np(pthread_self(), th, sizeof th);
+      fprintf(stderr, "[hle-first] %.3f '%s' %s\n",
+              (double)(now.tv_sec - g_t0.tv_sec) + (double)(now.tv_nsec - g_t0.tv_nsec) / 1e9, th, hle_name(fn, nm, sizeof nm));
+    }
+  }
   if (g_trace_hle[0] && g_nps5_level[NPS5_S_HLE] <= NPS5_L_TRACE + 1) {
+    // The match is decided once per shim (dladdr + fnmatch on every call made a global trace crawl).
+    int tr = slot ? atomic_load_explicit(&slot->trace, memory_order_relaxed) : 0;
     char nm[160];
-    hle_name(fn, nm, sizeof nm);
-    if (fnmatch(g_trace_hle, nm, 0) == 0 || strstr(g_trace_hle, nm)) {
+    if (tr == 0) {
+      hle_name(fn, nm, sizeof nm);
+      tr = (fnmatch(g_trace_hle, nm, 0) == 0 || strstr(g_trace_hle, nm)) ? 1 : 2;
+      if (slot) atomic_store_explicit(&slot->trace, tr, memory_order_relaxed);
+    } else if (tr == 1) {
+      hle_name(fn, nm, sizeof nm);
+    }
+    if (tr == 1) {
       GuestContext *c = (GuestContext *)ctx;
       nps5_log(NPS5_S_HLE, NPS5_L_INFO, "hle %s rdi=0x%llx rsi=0x%llx rdx=0x%llx rcx=0x%llx r8=0x%llx r9=0x%llx", nm,
                (unsigned long long)c->rdi, (unsigned long long)c->rsi, (unsigned long long)c->rdx,
@@ -1682,6 +1705,7 @@ __attribute__((constructor)) static void nps5_diag_init(void) {
     strlcpy(g_trace_hle, th, sizeof g_trace_hle);
     nps5_lean_require_hooks(); // the trace is a bridge hook: lean calls must run it
   }
+  if (getenv("NPS5_TRACE_HLE_FIRST")) nps5_lean_require_hooks(); // same: first calls of lean shims too
   make_bundle();
   g_started = 1;
   load_pcmap();

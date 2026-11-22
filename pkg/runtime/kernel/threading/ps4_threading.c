@@ -403,9 +403,9 @@ static int do_thread_join(RecompThread *t, void **thread_return) {
   }
   pthread_mutex_unlock(&t->lock);
 
-  // ue2boot: NPS5_TRACE_JOIN=1 names both sides of every join (diagnosis of joins that never return).
+  // ue2boot: NPS5_TRACE_JOIN=1 names both sides of every join (diagnosis of joins that never return), and the return.
+  static int tj = -1;
   {
-    static int tj = -1;
     if (tj < 0) { const char *e = getenv("NPS5_TRACE_JOIN"); tj = (e && e[0] == '1') ? 1 : 0; }
     if (tj == 1) {
       fprintf(stderr, "[join] '%s' joins '%s' (tid %d, host %p)\n", g_current_thread ? g_current_thread->name : "?",
@@ -419,6 +419,10 @@ static int do_thread_join(RecompThread *t, void **thread_return) {
     pthread_cond_wait(&t->join_wait_cv, &t->join_wait_mutex);
   }
   pthread_mutex_unlock(&t->join_wait_mutex);
+  if (tj == 1) {
+    fprintf(stderr, "[join] '%s' joined '%s' (returned)\n", g_current_thread ? g_current_thread->name : "?", t->name);
+    fflush(stderr);
+  }
 
   if (g_current_thread) {
     g_current_thread->join_target = NULL;
