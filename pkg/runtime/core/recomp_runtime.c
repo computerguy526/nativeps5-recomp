@@ -133,6 +133,10 @@ static void crash_journal(uint64_t a, uint64_t len, const char *indent) {
     void *h = nps5_kyty_lib_handle ? nps5_kyty_lib_handle() : NULL;
     fn = (KytyJournalLookup)(h ? dlsym(h, "kyty_guest_write_journal_lookup") : NULL);
     if (!fn) fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
+    Dl_info di;
+    if (fn && dladdr((void *)fn, &di))
+      fprintf(stderr, "Kyty guest-write journal: %s loaded at %p (atos -o <dylib> -l %p <caller>)\n", di.dli_fname,
+              di.dli_fbase, di.dli_fbase);
   }
   if (!fn) return;
   char buf[2048];
