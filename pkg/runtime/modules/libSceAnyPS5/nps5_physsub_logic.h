@@ -54,7 +54,7 @@ enum { NPS5_PS_CLOTH_OFF = 0, NPS5_PS_CLOTH_CLAMP = 1, NPS5_PS_CLOTH_SUBSTEP = 2
 
 typedef struct {
     int on, world, cloth, log;
-    double hz;       // cloth (and the world when NPS5_PHYS_SUBSTEP_HZ is set)
+    double hz; // cloth (and the world when NPS5_PHYS_SUBSTEP_HZ is set)
     double world_hz; // world step split / clamp
     int max;
 } Nps5PhysCfg;

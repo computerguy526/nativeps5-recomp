@@ -1628,67 +1628,71 @@ int ps4_vfs_close(int fd) {
 // there like any guest store. NPS5_KIO_BOUNCE=0 = old behaviour (for A/B only).
 static _Atomic uint64_t g_kio_bounces, g_kio_bounce_bytes, g_kio_short;
 static int kio_bounce_on(void) {
-  static int on = -1;
-  if (on < 0) {
-    const char *e = getenv("NPS5_KIO_BOUNCE");
-    on = !(e && *e == '0');
-  }
-  return on;
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("NPS5_KIO_BOUNCE");
+        on = !(e && *e == '0');
+    }
+    return on;
 }
 static void kio_report_exit(void) {
-  const uint64_t b = atomic_load(&g_kio_bounces), s = atomic_load(&g_kio_short);
-  if (b || s)
-    fprintf(stderr, "[kio] exit: %llu reads finished through a host buffer after the refaults ran out (%llu bytes), %llu short reads before EOF\n",
-            (unsigned long long)b, (unsigned long long)atomic_load(&g_kio_bounce_bytes), (unsigned long long)s);
+    const uint64_t b = atomic_load(&g_kio_bounces), s = atomic_load(&g_kio_short);
+    if (b || s)
+        fprintf(stderr,
+                "[kio] exit: %llu reads finished through a host buffer after the refaults ran out (%llu bytes), %llu "
+                "short reads before EOF\n",
+                (unsigned long long)b, (unsigned long long)atomic_load(&g_kio_bounce_bytes), (unsigned long long)s);
 }
 static void kio_exit_hook_once(void) {
-  static atomic_flag done = ATOMIC_FLAG_INIT;
-  if (!atomic_flag_test_and_set(&done)) atexit(kio_report_exit);
+    static atomic_flag done = ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&done)) atexit(kio_report_exit);
 }
 // A read that returns fewer bytes than asked although the file has more (an error after a partial copy).
 static void vfs_note_short(int fd, size_t got, size_t want, int err) {
-  kio_exit_hook_once();
-  const uint64_t n = atomic_fetch_add(&g_kio_short, 1) + 1;
-  if (n <= 20 || n % 100 == 0)
-    fprintf(stderr, "[kio] SHORT READ fd %d: 0x%zx of 0x%zx bytes before EOF (errno %d, %llu so far)\n", fd, got, want, err,
-            (unsigned long long)n);
+    kio_exit_hook_once();
+    const uint64_t n = atomic_fetch_add(&g_kio_short, 1) + 1;
+    if (n <= 20 || n % 100 == 0)
+        fprintf(stderr, "[kio] SHORT READ fd %d: 0x%zx of 0x%zx bytes before EOF (errno %d, %llu so far)\n", fd, got,
+                want, err, (unsigned long long)n);
 }
 // The rest of a read whose kernel copy kept failing with EFAULT: pread into a host buffer, then user-mode stores.
 // Returns the bytes stored, or -1 (errno set) when nothing could be read.
 static ssize_t vfs_bounce_pread(int hfd, int fd, char *dst, size_t n, off_t off) {
-  kio_exit_hook_once();
-  const size_t chunk = (size_t)4 << 20;
-  char *tmp = malloc(n < chunk ? (n ? n : 1) : chunk);
-  if (!tmp) {
-    errno = ENOMEM;
-    return -1;
-  }
-  size_t got = 0;
-  int err = 0;
-  while (got < n) {
-    const size_t want = n - got < chunk ? n - got : chunk;
-    const ssize_t r = pread(hfd, tmp, want, off + (off_t)got);
-    if (r < 0) {
-      if (errno == EINTR) continue;
-      err = errno;
-      break;
+    kio_exit_hook_once();
+    const size_t chunk = (size_t)4 << 20;
+    char *tmp = malloc(n < chunk ? (n ? n : 1) : chunk);
+    if (!tmp) {
+        errno = ENOMEM;
+        return -1;
     }
-    if (r == 0) break;
-    memcpy(dst + got, tmp, (size_t)r); // user-mode stores: a closed page faults into the watch and is opened there
-    got += (size_t)r;
-  }
-  free(tmp);
-  const uint64_t k = atomic_fetch_add(&g_kio_bounces, 1) + 1;
-  atomic_fetch_add(&g_kio_bounce_bytes, got);
-  if (k <= 20 || k % 100 == 0)
-    fprintf(stderr, "[kio] read fd %d: kernel copy into guest memory still EFAULT after %u refaults, 0x%zx bytes left at file offset 0x%llx: "
-            "read through a host buffer, 0x%zx bytes (%llu so far)\n",
-            fd, NPS5_KIO_RETRIES, n, (unsigned long long)off, got, (unsigned long long)k);
-  if (got == 0 && err) {
-    errno = err;
-    return -1;
-  }
-  return (ssize_t)got;
+    size_t got = 0;
+    int err = 0;
+    while (got < n) {
+        const size_t want = n - got < chunk ? n - got : chunk;
+        const ssize_t r = pread(hfd, tmp, want, off + (off_t)got);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            err = errno;
+            break;
+        }
+        if (r == 0) break;
+        memcpy(dst + got, tmp, (size_t)r); // user-mode stores: a closed page faults into the watch and is opened there
+        got += (size_t)r;
+    }
+    free(tmp);
+    const uint64_t k = atomic_fetch_add(&g_kio_bounces, 1) + 1;
+    atomic_fetch_add(&g_kio_bounce_bytes, got);
+    if (k <= 20 || k % 100 == 0)
+        fprintf(stderr,
+                "[kio] read fd %d: kernel copy into guest memory still EFAULT after %u refaults, 0x%zx bytes left at "
+                "file offset 0x%llx: "
+                "read through a host buffer, 0x%zx bytes (%llu so far)\n",
+                fd, NPS5_KIO_RETRIES, n, (unsigned long long)off, got, (unsigned long long)k);
+    if (got == 0 && err) {
+        errno = err;
+        return -1;
+    }
+    return (ssize_t)got;
 }
 
 static ssize_t vfs_read_inner(int fd, void *buf, size_t count);
@@ -1735,16 +1739,16 @@ static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
         if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
           continue; // a page of the destination was closed again before the kernel copied: opened again, repeat
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-          const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
-                                             (off_t)(vf->data_offset + (uint64_t)vf->cur_offset + total));
-          if (b > 0) {
-            total += (size_t)b;
-            continue;
-          }
+            const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
+                                               (off_t)(vf->data_offset + (uint64_t)vf->cur_offset + total));
+            if (b > 0) {
+                total += (size_t)b;
+                continue;
+            }
         }
         if (total > 0) {
-          vfs_note_short(fd, total, to_read, errno);
-          break;
+            vfs_note_short(fd, total, to_read, errno);
+            break;
         }
         pthread_mutex_unlock(&g_vfile_mutex);
         return -1;
@@ -1773,16 +1777,17 @@ static ssize_t vfs_read_inner(int fd, void *buf, size_t count) {
           continue;
         }
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && pos >= 0 && kio_bounce_on()) {
-          const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, pos + (off_t)total);
-          if (b > 0) {
-            total += (size_t)b;
-            lseek(fd, pos + (off_t)total, SEEK_SET); // pread does not move the position: put it after the bytes read
-            continue;
-          }
+            const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, pos + (off_t)total);
+            if (b > 0) {
+                total += (size_t)b;
+                lseek(fd, pos + (off_t)total,
+                      SEEK_SET); // pread does not move the position: put it after the bytes read
+                continue;
+            }
         }
         if (total > 0) {
-          vfs_note_short(fd, total, count, errno);
-          return (ssize_t)total;
+            vfs_note_short(fd, total, count, errno);
+            return (ssize_t)total;
         }
         return -1;
       }
@@ -1847,16 +1852,16 @@ static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
         if (errno == EFAULT && nps5_host_write_refault(p + total, to_read - total, &refault))
           continue;
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-          const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
-                                             (off_t)(vf->data_offset + (uint64_t)offset + total));
-          if (b > 0) {
-            total += (size_t)b;
-            continue;
-          }
+            const ssize_t b = vfs_bounce_pread(vf->pak_fd, fd, p + total, to_read - total,
+                                               (off_t)(vf->data_offset + (uint64_t)offset + total));
+            if (b > 0) {
+                total += (size_t)b;
+                continue;
+            }
         }
         if (total > 0) {
-          vfs_note_short(fd, total, to_read, errno);
-          break;
+            vfs_note_short(fd, total, to_read, errno);
+            break;
         }
         pthread_mutex_unlock(&g_vfile_mutex);
         return -1;
@@ -1881,15 +1886,15 @@ static ssize_t vfs_pread_inner(int fd, void *buf, size_t count, off_t offset) {
         if (errno == EFAULT && nps5_host_write_refault(p + total, count - total, &refault))
           continue;
         if (errno == EFAULT && refault >= NPS5_KIO_RETRIES && kio_bounce_on()) {
-          const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, offset + (off_t)total);
-          if (b > 0) {
-            total += (size_t)b;
-            continue;
-          }
+            const ssize_t b = vfs_bounce_pread(fd, fd, p + total, count - total, offset + (off_t)total);
+            if (b > 0) {
+                total += (size_t)b;
+                continue;
+            }
         }
         if (total > 0) {
-          vfs_note_short(fd, total, count, errno);
-          return (ssize_t)total;
+            vfs_note_short(fd, total, count, errno);
+            return (ssize_t)total;
         }
         return -1;
       }

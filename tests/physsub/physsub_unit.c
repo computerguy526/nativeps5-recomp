@@ -57,8 +57,8 @@ int main(void) {
               c.cloth == NPS5_PS_CLOTH_SUBSTEP && c.hz == 120 && c.world_hz == 120 && c.max == 8 && c.log,
           "all set (an explicit HZ also sets the world)");
     CHECK(nps5_ps_config(&c, "1", NULL, NULL, "off", NULL, NULL) == 0 && c.cloth == NPS5_PS_CLOTH_OFF, "cloth off");
-    CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && c.on && c.hz == 60 && c.world_hz == 25 && c.max == 4 &&
-              c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log,
+    CHECK(nps5_ps_config(&c, "yes", "5", "0", "fast", "2", "x") == 6 && c.on && c.hz == 60 && c.world_hz == 25 &&
+              c.max == 4 && c.cloth == NPS5_PS_CLOTH_CLAMP && c.world && !c.log,
           "bad values not ignored");
     CHECK(nps5_ps_config(&c, "0", NULL, NULL, NULL, NULL, NULL) == 0 && !c.on, "0 = off");
     // dtfix: the frame's step values

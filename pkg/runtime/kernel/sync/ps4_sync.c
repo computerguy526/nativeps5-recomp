@@ -612,34 +612,34 @@ int hle_pthread_mutex_unlock(GuestContext *ctx, void *mutex) {
 // deep the calling guest thread holds the guest mutex whose handle variable is at guest address var (0 = it does not
 // hold it, or var holds no mutex), and taking it once more for that thread (pthread_mutex_lock semantics).
 uint32_t ps4_sync_guest_mutex_depth(GuestContext *ctx, uint64_t var) {
-  if (!ctx || !var) return 0;
-  const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
-  if (sync_obj_slot(h) < 0) return 0;
-  GuestMutex *m = get_host_mutex(h);
-  // owner and count change only on the owning thread, so for the caller this read is exact.
-  return GM_OWNER(m) == guest_owner_id(ctx) ? m->count : 0;
+    if (!ctx || !var) return 0;
+    const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
+    if (sync_obj_slot(h) < 0) return 0;
+    GuestMutex *m = get_host_mutex(h);
+    // owner and count change only on the owning thread, so for the caller this read is exact.
+    return GM_OWNER(m) == guest_owner_id(ctx) ? m->count : 0;
 }
 
 int ps4_sync_guest_mutex_lock(GuestContext *ctx, uint64_t var) {
-  if (!ctx || !var) return EINVAL;
-  return hle_pthread_mutex_lock(ctx, (void *)(ctx->mem_base + var));
+    if (!ctx || !var) return EINVAL;
+    return hle_pthread_mutex_lock(ctx, (void *)(ctx->mem_base + var));
 }
 
 int ps4_sync_guest_mutex_unlock(GuestContext *ctx, uint64_t var) {
-  if (!ctx || !var) return EINVAL;
-  return hle_pthread_mutex_unlock(ctx, (void *)(ctx->mem_base + var));
+    if (!ctx || !var) return EINVAL;
+    return hle_pthread_mutex_unlock(ctx, (void *)(ctx->mem_base + var));
 }
 
 // First-level acquisitions of that mutex so far (any thread; recursive re-locks by the owner are not counted) and its
 // current owner id (0 = free): for HLE code that wants to know whether other threads took the mutex in a window.
 uint64_t ps4_sync_guest_mutex_acquisitions(GuestContext *ctx, uint64_t var, uint64_t *owner) {
-  if (owner) *owner = 0;
-  if (!ctx || !var) return 0;
-  const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
-  if (sync_obj_slot(h) < 0) return 0;
-  GuestMutex *m = get_host_mutex(h);
-  if (owner) *owner = GM_OWNER(m);
-  return __atomic_load_n(&m->st_locks, __ATOMIC_RELAXED);
+    if (owner) *owner = 0;
+    if (!ctx || !var) return 0;
+    const uint64_t h = __atomic_load_n((uint64_t *)(ctx->mem_base + var), __ATOMIC_ACQUIRE);
+    if (sync_obj_slot(h) < 0) return 0;
+    GuestMutex *m = get_host_mutex(h);
+    if (owner) *owner = GM_OWNER(m);
+    return __atomic_load_n(&m->st_locks, __ATOMIC_RELAXED);
 }
 
 uint64_t ps4_sync_guest_owner_id(GuestContext *ctx) { return guest_owner_id(ctx); }

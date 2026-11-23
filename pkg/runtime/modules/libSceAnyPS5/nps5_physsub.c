@@ -103,8 +103,8 @@ static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
 // inner split consumers (guest addresses / offsets from the table params; 0 = not given)
-static uint64_t g_pi_trigger_fn, g_pi_contact_fn, g_pi_contacts, g_pi_pinfo_fn, g_pi_particles, g_pi_pinfo_obj, g_pi_pinfo_flag,
-    g_pi_cfg, g_pi_cfg_pcollide;
+static uint64_t g_pi_trigger_fn, g_pi_contact_fn, g_pi_contacts, g_pi_pinfo_fn, g_pi_particles, g_pi_pinfo_obj,
+    g_pi_pinfo_flag, g_pi_cfg, g_pi_cfg_pcollide;
 static int g_pi_ok;
 static _Atomic uint64_t g_ps_inner_drain;
 static _Atomic uint64_t g_ps_inner_frames, g_ps_inner_sim, g_ps_inner_sim_steps, g_ps_inner_pc, g_ps_inner_pc_steps;
@@ -143,10 +143,10 @@ static void ps_init(void) {
     {
         double v = 1; // default on (ASTRO BOT: game threads waiting on the world lock otherwise run between sub-steps)
         const char *e = getenv("NPS5_PHYS_SUBSTEP_HOLD");
-        if (nps5_ps_num(e, 0, 1, &v))
-            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD: 0|1\n");
+        if (nps5_ps_num(e, 0, 1, &v)) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD: 0|1\n");
         g_ps_hold = v == 1.0 && g_ps_lock_obj && g_ps_lock_field && g_ps_lock_var;
-        if (e && *e && v == 1.0 && !g_ps_hold) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
+        if (e && *e && v == 1.0 && !g_ps_hold)
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_HOLD=1 needs the physsub.world.lock_* params\n");
     }
     {
         double v = 0;
@@ -154,9 +154,12 @@ static void ps_init(void) {
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_ATTACH_ONCE: 0|1\n");
         g_ps_attach_once = v == 1.0;
         if (g_ps_attach_once)
-            fprintf(stderr, "[physsub] attach once: the attaching update runs once per split frame (first sub-step, frame dt)%s\n",
-                    nps5_repl_wrap_body("nps5_physsub_attach_step", &(uint64_t){0}) ? ""
-                                                                                    : " (W: no nps5_physsub_attach_step wrap: no effect)");
+            fprintf(
+                stderr,
+                "[physsub] attach once: the attaching update runs once per split frame (first sub-step, frame dt)%s\n",
+                nps5_repl_wrap_body("nps5_physsub_attach_step", &(uint64_t){0})
+                    ? ""
+                    : " (W: no nps5_physsub_attach_step wrap: no effect)");
     }
     {
         double v = 0;
@@ -176,21 +179,23 @@ static void ps_init(void) {
             const char *k[9] = {"physsub.inner.trigger_fn", "physsub.inner.contact_fn", "physsub.inner.contacts",
                                 "physsub.inner.pinfo_fn",   "physsub.inner.particles",  "physsub.inner.pinfo_obj",
                                 "physsub.inner.pinfo_flag", "physsub.inner.cfg",        "physsub.inner.cfg_pcollide"};
-            uint64_t *d[9] = {&g_pi_trigger_fn, &g_pi_contact_fn, &g_pi_contacts, &g_pi_pinfo_fn, &g_pi_particles,
-                              &g_pi_pinfo_obj, &g_pi_pinfo_flag, &g_pi_cfg, &g_pi_cfg_pcollide};
+            uint64_t *d[9] = {&g_pi_trigger_fn, &g_pi_contact_fn, &g_pi_contacts, &g_pi_pinfo_fn,    &g_pi_particles,
+                              &g_pi_pinfo_obj,  &g_pi_pinfo_flag, &g_pi_cfg,      &g_pi_cfg_pcollide};
             g_pi_ok = 1;
             for (int i = 0; i < 9; i++)
                 if (!nps5_repl_param(k[i], d[i])) g_pi_ok = 0;
         }
         g_ps_inner = v == 1.0 && sim && g_pi_ok;
         if (v == 1.0 && !g_pi_ok)
-            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_INNER=1 needs the physsub.inner.* params: whole-step split kept\n");
-        if (v == 1.0)
             fprintf(stderr,
-                    "[physsub] inner split %s: the world step runs once per frame with the frame dt, only its engine step "
-                    "(simulation%s) is split%s\n",
-                    g_ps_inner ? "on" : "NOT on", pc ? " + particle collide" : ", no particle-collide wrap",
-                    sim ? "" : " (W: no nps5_physsub_sim_step wrap in this build: whole-step split kept)");
+                    "[physsub] W NPS5_PHYS_SUBSTEP_INNER=1 needs the physsub.inner.* params: whole-step split kept\n");
+        if (v == 1.0)
+            fprintf(
+                stderr,
+                "[physsub] inner split %s: the world step runs once per frame with the frame dt, only its engine step "
+                "(simulation%s) is split%s\n",
+                g_ps_inner ? "on" : "NOT on", pc ? " + particle collide" : ", no particle-collide wrap",
+                sim ? "" : " (W: no nps5_physsub_sim_step wrap in this build: whole-step split kept)");
     }
     {
         double v = 1;
@@ -204,7 +209,8 @@ static void ps_init(void) {
                 "clamp|substep|off, WORLD 0|1, LOG 0|1)\n",
                 bad);
     if (g_ps.on && g_ps.world)
-        fprintf(stderr, "[physsub] world dtfix %s (world step dt %s, engine solver dt %s), world lock kept per sub-step: %s\n",
+        fprintf(stderr,
+                "[physsub] world dtfix %s (world step dt %s, engine solver dt %s), world lock kept per sub-step: %s\n",
                 g_ps_dtfix ? "on" : "off", g_ps_stepdt ? "yes" : "no param",
                 g_ps_engine_ptr && g_ps_engine_dt ? "yes" : "no param",
                 g_ps_hold     ? "held across all sub-steps (NPS5_PHYS_SUBSTEP_HOLD=1)"
@@ -308,22 +314,25 @@ static void ps_log(void) {
     uint32_t bw = atomic_exchange(&g_ps_maxdt_bits[0], 0), bc = atomic_exchange(&g_ps_maxdt_bits[1], 0);
     memcpy(&mw, &bw, 4);
     memcpy(&mc, &bc, 4);
-    fprintf(stderr,
-            "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
-            "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
-            "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx) | attach: %llu frame-dt calls, "
-            "%llu skipped | inner: %llu frames, sim %llu calls -> %llu steps, particle collide %llu calls -> %llu steps, %llu "
-            "consumer drains | world clamped %llu\n",
-            (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
-            (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
-            (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
-            (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail, (unsigned long long)g_ps_holds,
-            (unsigned long long)g_ps_gaps_taken, (unsigned long long)g_ps_gaps, (unsigned long long)g_ps_gap_locks,
-            (unsigned long long)g_ps_gap_owner, (unsigned long long)g_ps_attach_ran,
-            (unsigned long long)g_ps_attach_skipped, (unsigned long long)g_ps_inner_frames,
-            (unsigned long long)g_ps_inner_sim, (unsigned long long)g_ps_inner_sim_steps, (unsigned long long)g_ps_inner_pc,
-            (unsigned long long)g_ps_inner_pc_steps, (unsigned long long)g_ps_inner_drain,
-            (unsigned long long)g_ps_wclamped);
+    fprintf(
+        stderr,
+        "[physsub] world: %llu calls, %llu steps (%llu split), max dt %.4f s | cloth: %llu calls, %llu steps (%llu "
+        "split, %llu clamped), max dt %.4f s | world lock re-taken %llu (%llu failed), held %llu | world lock taken by "
+        "another thread between sub-steps: %llu of %llu gaps (%llu locks, last owner 0x%llx) | attach: %llu frame-dt "
+        "calls, "
+        "%llu skipped | inner: %llu frames, sim %llu calls -> %llu steps, particle collide %llu calls -> %llu steps, "
+        "%llu "
+        "consumer drains | world clamped %llu\n",
+        (unsigned long long)g_ps_calls[0], (unsigned long long)g_ps_steps[0], (unsigned long long)g_ps_split[0],
+        (double)mw, (unsigned long long)g_ps_calls[1], (unsigned long long)g_ps_steps[1],
+        (unsigned long long)g_ps_split[1], (unsigned long long)g_ps_clamped, (double)mc,
+        (unsigned long long)g_ps_relocks, (unsigned long long)g_ps_relock_fail, (unsigned long long)g_ps_holds,
+        (unsigned long long)g_ps_gaps_taken, (unsigned long long)g_ps_gaps, (unsigned long long)g_ps_gap_locks,
+        (unsigned long long)g_ps_gap_owner, (unsigned long long)g_ps_attach_ran,
+        (unsigned long long)g_ps_attach_skipped, (unsigned long long)g_ps_inner_frames,
+        (unsigned long long)g_ps_inner_sim, (unsigned long long)g_ps_inner_sim_steps, (unsigned long long)g_ps_inner_pc,
+        (unsigned long long)g_ps_inner_pc_steps, (unsigned long long)g_ps_inner_drain,
+        (unsigned long long)g_ps_wclamped);
 }
 
 static PsWrap g_w_world = {.shim = "nps5_physsub_world_step"};
@@ -352,8 +361,9 @@ static void ps_world_relock(GuestContext *ctx, uint64_t var, uint32_t depth0) {
         }
         atomic_fetch_add_explicit(&g_ps_relocks, 1, memory_order_relaxed);
         if (!atomic_exchange(&said, 1))
-            fprintf(stderr, "[physsub] world: the step released the world lock 0x%llx its caller holds (depth %u -> %u): "
-                            "taken again before each further sub-step\n",
+            fprintf(stderr,
+                    "[physsub] world: the step released the world lock 0x%llx its caller holds (depth %u -> %u): "
+                    "taken again before each further sub-step\n",
                     (unsigned long long)var, depth0, d);
         d++;
     }
@@ -519,7 +529,8 @@ static void ps_inner_drain(GuestContext *ctx, int pinfo, int contacts) {
 // 1 when the world uses the separate particle collide step (its particle contact info then follows that step)
 static int ps_inner_pcollide_path(const GuestContext *ctx) {
     const uint64_t cfg = ps_rd64(ctx, t_ps_inner_world + g_pi_cfg);
-    return cfg && cfg + g_pi_cfg_pcollide < ctx->mem_size && *(const uint8_t *)NPS5_G2H(ctx, cfg + g_pi_cfg_pcollide) != 0;
+    return cfg && cfg + g_pi_cfg_pcollide < ctx->mem_size &&
+           *(const uint8_t *)NPS5_G2H(ctx, cfg + g_pi_cfg_pcollide) != 0;
 }
 static void ps_inner_split(GuestContext *ctx, PsWrap *w, int fix_dt, _Atomic uint64_t *calls, _Atomic uint64_t *steps) {
     pthread_once(&g_ps_once, ps_init);
@@ -809,7 +820,8 @@ void nps5_astro_texname_guard(GuestContext *ctx) {
     if (on && !full && !name) {
         const uint64_t n = atomic_fetch_add_explicit(&g_texname_guarded, 1, memory_order_relaxed) + 1;
         if (n <= 20)
-            fprintf(stderr, "[texname-guard] model texture entry without a name (%llu so far): no texture instead of a crash\n",
+            fprintf(stderr,
+                    "[texname-guard] model texture entry without a name (%llu so far): no texture instead of a crash\n",
                     (unsigned long long)n);
         ctx->rax = 0xffff;
         SHIM_RETURN();

@@ -253,15 +253,17 @@ static _Atomic uint64_t g_write_refaults;
 uint64_t nps5_host_write_refault_count(void) { return atomic_load_explicit(&g_write_refaults, memory_order_relaxed); }
 static _Atomic uint64_t g_write_refault_exhausted;
 bool nps5_host_write_refault(void *p, size_t len, unsigned *tries) {
-  if (!access_hooked(p, len) || !g_access_hooks.write_begin) return false;
-  if (*tries >= NPS5_KIO_RETRIES) {
-    // the caller now fails the kernel call (or, in the VFS read paths, finishes it through a host buffer): always visible
-    const uint64_t x = atomic_fetch_add_explicit(&g_write_refault_exhausted, 1, memory_order_relaxed) + 1;
-    if (x <= 20 || x % 100 == 0)
-      fprintf(stderr, "[kio] kernel write into guest memory host %p +0x%zx: still EFAULT after %u refaults, giving up the kernel copy (%llu so far)\n",
-              p, len, NPS5_KIO_RETRIES, (unsigned long long)x);
-    return false;
-  }
+    if (!access_hooked(p, len) || !g_access_hooks.write_begin) return false;
+    if (*tries >= NPS5_KIO_RETRIES) {
+        // the caller now fails the kernel call (or, in the VFS read paths, finishes it through a host buffer): always visible
+        const uint64_t x = atomic_fetch_add_explicit(&g_write_refault_exhausted, 1, memory_order_relaxed) + 1;
+        if (x <= 20 || x % 100 == 0)
+            fprintf(stderr,
+                    "[kio] kernel write into guest memory host %p +0x%zx: still EFAULT after %u refaults, giving up "
+                    "the kernel copy (%llu so far)\n",
+                    p, len, NPS5_KIO_RETRIES, (unsigned long long)x);
+        return false;
+    }
   const unsigned t = ++*tries;
   const uint64_t n = atomic_fetch_add_explicit(&g_write_refaults, 1, memory_order_relaxed) + 1;
   if (n <= 20 || n % 1000 == 0)
