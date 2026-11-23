@@ -198,6 +198,9 @@ type Arm64Lifter struct {
 	noTSO bool
 	// tsoRelax: entry addresses of functions lifted without acquire/release (SetTSORelax).
 	tsoRelax map[uint64]bool
+	// tsoStrict: entry addresses of functions whose vector, FP and string accesses are fenced like x86 TSO
+	// (SetTSOStrict; empty by default, the lowering is then byte-identical).
+	tsoStrict map[uint64]bool
 	// tsoElide selects which stack accesses stay plain (SetTSOElide); stackPriv holds the
 	// stack privacy bits of the instruction being lowered (disasm.Instruction.StackPriv).
 	tsoElide  TSOElideMode
@@ -448,6 +451,7 @@ func NewArm64Lifter(knownFuncs map[uint64]bool) *Arm64Lifter {
 		knownFuncs: knownFuncs,
 		noPeephole: !peepholeDefault || os.Getenv("NPS5_NO_PEEPHOLE") != "",
 		tsoRelax:   parseTSORelax(os.Getenv("NPS5_TSO_RELAX_FUNCS")),
+		tsoStrict:  parseTSORelax(os.Getenv("NPS5_TSO_STRICT_FUNCS")),
 	}
 }
 
@@ -891,6 +895,9 @@ func (l *Arm64Lifter) LiftInstructionToBuf(inst disasm.Instruction, nextPC uint6
 		lines = l.peephole(lines, start)
 		if !l.noTSO && !(fn != nil && l.tsoRelax[fn.EntryAddr]) {
 			lines = l.applyTSO(inst, lines, start)
+			if len(l.tsoStrict) != 0 && fn != nil && l.tsoStrict[fn.EntryAddr] {
+				lines = l.applyTSOStrict(inst, lines, start)
+			}
 		}
 	}
 	if err == nil && isValueSite {
@@ -2431,6 +2438,10 @@ func (l *Arm64Lifter) ConfigKey() string {
 	if l.tsoElide != TSOElideOff {
 		// Appended only when elision is on: the key of the "off" configuration is what it was before the option existed.
 		key += " elide=" + l.tsoElide.String() + " priv=" + disasm.StackPrivRulesID()
+	}
+	if len(l.tsoStrict) != 0 {
+		// Appended only when the list is non-empty: the key of a title without one is what it was before the option existed.
+		key += fmt.Sprintf(" strict=%x", l.TSOStrict())
 	}
 	key += lift2Key(l.tsoElide != TSOElideOff)
 	return key

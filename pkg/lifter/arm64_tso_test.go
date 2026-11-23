@@ -198,3 +198,43 @@ func TestTSORelaxPerFunction(t *testing.T) {
 		t.Errorf("parseTSORelax = %v", m)
 	}
 }
+
+// A function named in the strict list fences its vector and string accesses (SetTSOStrict,
+// NPS5_TSO_STRICT_FUNCS); every other function, and an empty list, lift exactly as before.
+func TestTSOStrictPerFunction(t *testing.T) {
+	lift := func(l *Arm64Lifter, code []byte, entry uint64) string {
+		inst, err := x86asm.Decode(code, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := &disasm.Function{EntryAddr: entry, EndAddr: entry + 0x100, Blocks: map[uint64]*disasm.BasicBlock{entry: {StartAddr: entry}}}
+		out, err := l.LiftInstructionToBuf(disasm.Instruction{Address: entry, Inst: inst, ParityDead: true, AdjustDead: true}, entry+uint64(len(code)), fn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(out, "\n")
+	}
+	movups := []byte{0x0f, 0x11, 0x07}       // movups [rdi], xmm0
+	movdqu := []byte{0xf3, 0x0f, 0x6f, 0x07} // movdqu xmm0, [rdi]
+	repmovs := []byte{0xf3, 0x48, 0xa5}      // rep movsq
+	plain := NewArm64Lifter(nil)
+	l := NewArm64Lifter(nil)
+	l.SetTSOStrict([]uint64{0x2000})
+	for _, c := range [][]byte{movups, movdqu, repmovs} {
+		if lift(plain, c, 0x3000) != lift(l, c, 0x3000) {
+			t.Errorf("function outside the list changed for % x", c)
+		}
+	}
+	if got := lift(l, movups, 0x2000); !strings.Contains(got, "dmb ish\n") && !strings.HasPrefix(strings.TrimSpace(got), "dmb ish") || strings.Index(got, "dmb ish") > strings.Index(got, "str q") {
+		t.Errorf("vector store is not fenced before:\n%s", got)
+	}
+	if got := lift(l, movdqu, 0x2000); !strings.HasSuffix(strings.TrimSpace(got), "dmb ishld") {
+		t.Errorf("vector load is not fenced after:\n%s", got)
+	}
+	if got := lift(l, repmovs, 0x2000); strings.Count(got, "dmb ish") < 2 {
+		t.Errorf("rep movs is not fenced both sides:\n%s", got)
+	}
+	if r := l.TSOStrict(); len(r) != 1 || r[0] != 0x2000 {
+		t.Errorf("TSOStrict = %v", r)
+	}
+}

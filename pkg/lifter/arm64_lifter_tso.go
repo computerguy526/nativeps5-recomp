@@ -101,6 +101,82 @@ func (l *Arm64Lifter) TSORelaxed() []uint64 {
 	return out
 }
 
+// SetTSOStrict names functions (guest entry addresses) whose vector, FP/x87 and string
+// (rep movs/stos/...) guest accesses are ordered like the scalar ones: a `dmb ish` before every
+// instruction that stores and a `dmb ishld` after every instruction that loads. The scalar TSO
+// lowering (applyTSO) leaves those accesses plain, so a scalar STLR that publishes a block filled
+// by vector stores or rep movs can be observed before the block, and a plain vector load can pass
+// the acquire that guards it. The default is empty (the output is then byte-identical);
+// NPS5_TSO_STRICT_FUNCS=0x...,0x... sets it from the environment. It is a per-title, per-function
+// opt-in for a producer or consumer shown to need it (SAROS PPSA07631 record array).
+func (l *Arm64Lifter) SetTSOStrict(entries []uint64) {
+	l.tsoStrict = map[uint64]bool{}
+	for _, e := range entries {
+		l.tsoStrict[e] = true
+	}
+}
+
+// TSOStrict returns the functions with strict vector/string ordering, sorted.
+func (l *Arm64Lifter) TSOStrict() []uint64 {
+	var out []uint64
+	for e := range l.tsoStrict {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// EnvTSOStrict is the strict list a new lifter takes from NPS5_TSO_STRICT_FUNCS (sorted).
+func EnvTSOStrict() []uint64 { return NewArm64Lifter(nil).TSOStrict() }
+
+var strictAccessRe = regexp.MustCompile(`^\s*(ld|st)[a-z0-9]*\s.*\[x28[,\]]`)
+
+// hasVecArg reports an xmm/ymm/mm operand (the SSE forms of MOVSD/CMPSD share the string opcodes).
+func hasVecArg(inst x86asm.Inst) bool {
+	for _, a := range inst.Args {
+		if r, ok := a.(x86asm.Reg); ok && (r >= x86asm.X0 && r <= x86asm.Y15 || r >= x86asm.M0 && r <= x86asm.M7) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyTSOStrict fences the accesses applyTSO leaves plain (tsoAppliesMode false): the guest
+// loads and stores of vector, FP, x87 and MMX instructions through [x28, ...], and string
+// instructions as a whole (their implicit RSI/RDI accesses). Loads get `dmb ishld` after the
+// lowering, stores `dmb ish` before it; a string instruction gets a full fence on both sides.
+func (l *Arm64Lifter) applyTSOStrict(inst disasm.Instruction, lines []string, start int) []string {
+	str := isStringOp(inst.Inst.Op) && !hasVecArg(inst.Inst)
+	if !str && tsoAppliesMode(inst.Inst, l.tsoElide, l.stackPriv) {
+		return lines // scalar accesses: handled by applyTSO
+	}
+	if str {
+		lines = append(lines[:start:start], append([]string{"    dmb ish"}, lines[start:]...)...)
+		return append(lines, "    dmb ish")
+	}
+	ld, st := false, false
+	for _, ln := range lines[start:] {
+		code := ln
+		if i := strings.Index(code, "//"); i >= 0 {
+			code = code[:i]
+		}
+		if m := strictAccessRe.FindStringSubmatch(code); m != nil {
+			if m[1] == "ld" {
+				ld = true
+			} else {
+				st = true
+			}
+		}
+	}
+	if st {
+		lines = append(lines[:start:start], append([]string{"    dmb ish"}, lines[start:]...)...)
+	}
+	if ld {
+		lines = append(lines, "    dmb ishld")
+	}
+	return lines
+}
+
 func parseTSORelax(s string) map[uint64]bool {
 	m := map[uint64]bool{}
 	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {

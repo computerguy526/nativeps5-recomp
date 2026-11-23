@@ -386,6 +386,9 @@ func (env *fragEnv) build(o *fragOpts) (*fragResult, error) {
 	l.SetTSO(info.TSO)
 	// the translation's relax list and peephole setting, not this process's environment (fragments must agree with the title's lowering)
 	l.SetTSORelax(info.TSORelax)
+	if len(info.TSOStrict) != 0 {
+		l.SetTSOStrict(info.TSOStrict)
+	}
 	l.SetPeephole(!info.NoPeephole)
 	elide, err := lifter.ParseTSOElide(info.TSOElide)
 	if err != nil {

@@ -443,6 +443,8 @@ type LifterManifest struct {
 	TSO       bool   `json:"tso"`
 	// TSORelaxed: functions lifted without x86 memory ordering (NPS5_TSO_RELAX_FUNCS), as hex entry addresses.
 	TSORelaxed []string `json:"tso_relaxed_functions,omitempty"`
+	// TSOStrict: functions whose vector/string accesses are fenced (NPS5_TSO_STRICT_FUNCS), as hex entry addresses.
+	TSOStrict []string `json:"tso_strict_functions,omitempty"`
 	// TSOElide: which stack accesses are emitted without ordering ("off": every RSP/RBP-based
 	// one, "stack": the proven-private ones only; docs/m3/tsoelide.md).
 	TSOElide string `json:"tso_elide"`
@@ -470,6 +472,7 @@ func (e *AsmEmitter) writeLifterManifest(outDir string) error {
 		CallModel:        lifter.GetCallModel().String(),
 		TSO:              e.lifter.TSO(),
 		TSORelaxed:       hexAddrs(e.lifter.TSORelaxed()),
+		TSOStrict:        hexAddrs(e.lifter.TSOStrict()),
 		TSOElide:         e.lifter.TSOElide().String(),
 		ROLoads:          lifter.GetROLoads(),
 		RedZoneLeaf:      lifter.GetRedZoneLeaf(),
