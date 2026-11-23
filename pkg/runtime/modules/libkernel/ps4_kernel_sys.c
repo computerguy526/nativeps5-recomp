@@ -1097,11 +1097,24 @@ void shim_sceKernelGetModuleInfoForUnwind(GuestContext *ctx) {
     info->eh_frame_size = mod->eh_frame_size;
     info->seg0_addr = mod->seg0_addr ? mod->seg0_addr : mod->start_addr;
     info->seg0_size = mod->seg0_size ? mod->seg0_size : (mod->end_addr - mod->start_addr);
-    fprintf(stderr, "[ps4-unwind] GetModuleInfoForUnwind: addr=0x%llx -> mod=%s, hdr=0x%llx, frame=0x%llx (size=0x%llx)\n",
-            (unsigned long long)addr, mod->name ? mod->name : "(null)",
-            (unsigned long long)info->eh_frame_hdr_addr,
-            (unsigned long long)info->eh_frame_addr,
-            (unsigned long long)info->eh_frame_size);
+    /* Per-lookup log is opt-in (NPS5_UNWIND_LOG=1): Unity titles walk the stack
+     * every frame (managed new StackTrace), ~26 k lookups/s, each a printf.
+     * Without the switch only the first 4 lookups are logged. */
+    static int unwind_log = -1;
+    static volatile int unwind_logged = 0;
+    if (unwind_log < 0) {
+        const char *e = getenv("NPS5_UNWIND_LOG");
+        unwind_log = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    int n_logged = unwind_log ? 0 : __atomic_fetch_add(&unwind_logged, 1, __ATOMIC_RELAXED);
+    if (unwind_log || n_logged < 4) {
+        fprintf(stderr, "[ps4-unwind] GetModuleInfoForUnwind: addr=0x%llx -> mod=%s, hdr=0x%llx, frame=0x%llx (size=0x%llx)%s\n",
+                (unsigned long long)addr, mod->name ? mod->name : "(null)",
+                (unsigned long long)info->eh_frame_hdr_addr,
+                (unsigned long long)info->eh_frame_addr,
+                (unsigned long long)info->eh_frame_size,
+                (!unwind_log && n_logged == 3) ? " (further lookups silent; NPS5_UNWIND_LOG=1 logs all)" : "");
+    }
 
     ctx->rax = 0; // ORBIS_OK
     SHIM_RETURN();
