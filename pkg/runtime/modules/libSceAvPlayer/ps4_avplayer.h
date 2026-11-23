@@ -128,7 +128,9 @@ typedef struct AvPlayerVideoEx {
     uint8_t luma_bit_depth;
     uint8_t chroma_bit_depth;
     bool video_full_range_flag;
-    uint8_t reserved1[37];
+    uint8_t reserved1[5];
+    double frame_rate; // offset 48 (AnyPS5 SceTypes.hpp; the Unity PS5 player reads it)
+    uint8_t reserved2[24];
 } AvPlayerVideoEx;
 
 typedef struct AvPlayerTimedTextEx {
@@ -144,16 +146,18 @@ typedef union AvPlayerStreamDetailsEx {
     uint8_t reserved1[80];
 } AvPlayerStreamDetailsEx;
 
-// SceAvPlayerStreamInfoEx (PS5 SDK): 104 bytes {type, reserved[4], details (Ex union, 80), duration, startTime}.
+// SceAvPlayerStreamInfoEx (PS5): 104 bytes {thisSize, type, reserved[4], details (Ex union, 80), duration}, as AnyPS5
+// SceTypes.hpp; the caller sets thisSize (0x68) before the call (Unity PS5 player).
 typedef struct AvPlayerStreamInfoEx {
+    uint64_t this_size;
     uint32_t type;
     uint8_t reserved[4];
     AvPlayerStreamDetailsEx details;
     uint64_t duration;
-    uint64_t start_time;
 } AvPlayerStreamInfoEx;
 #ifdef __cplusplus
-static_assert(sizeof(AvPlayerStreamInfoEx) == 104, "SceAvPlayerStreamInfoEx is 104 bytes");
+static_assert(sizeof(AvPlayerStreamInfoEx) == 104 && offsetof(AvPlayerStreamInfoEx, details) == 16 && offsetof(AvPlayerStreamInfoEx, duration) == 96, "SceAvPlayerStreamInfoEx layout");
+static_assert(sizeof(AvPlayerVideoEx) == 80 && offsetof(AvPlayerVideoEx, pitch) == 36 && offsetof(AvPlayerVideoEx, frame_rate) == 48, "SceAvPlayerVideoEx layout");
 #else
 _Static_assert(sizeof(AvPlayerStreamInfoEx) == 104, "SceAvPlayerStreamInfoEx is 104 bytes");
 #endif

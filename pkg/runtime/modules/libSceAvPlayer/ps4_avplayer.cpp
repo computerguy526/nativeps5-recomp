@@ -527,14 +527,14 @@ public:
     }
 
     // The Ex record of a stream: the video fields the decoded frames will carry (16-aligned size, pitch, crops of the
-    // padding, 8-bit planes, range), the frame rate in frames per second.
+    // padding, 8-bit planes, range) and the frame rate (double, frames per second), as AnyPS5's createStreamInfoEx.
     bool get_stream_info_ex(uint32_t stream_index, AvPlayerStreamInfoEx *info) const {
         if (!info || stream_index >= m_streams.size()) return false;
         const StreamDesc &d = m_streams[stream_index];
         memset(info, 0, sizeof(*info));
+        info->this_size = sizeof(*info);
         info->type = (uint32_t)d.info.type;
         info->duration = d.info.duration;
-        info->start_time = d.info.start_time;
         const AVStream *st = m_fmt_ctx ? m_fmt_ctx->streams[d.ffmpeg_index] : nullptr;
         if (d.info.type == AVPLAYER_STREAM_TYPE_VIDEO) {
             AvPlayerVideoEx &v = info->details.video;
@@ -547,8 +547,8 @@ public:
                 v.pitch = video_pitch(w);
                 v.crop_right_offset = v.pitch - w;
                 v.crop_bottom_offset = v.height > h ? v.height - h : 0;
-                const AVRational fr = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
-                v.framerate = fr.den > 0 ? (uint32_t)((fr.num + fr.den / 2) / fr.den) : 0;
+                const AVRational fr = av_guess_frame_rate(m_fmt_ctx, const_cast<AVStream *>(st), nullptr);
+                v.frame_rate = fr.num > 0 && fr.den > 0 ? av_q2d(fr) : 0.0; // AnyPS5 fills only this one
                 v.video_full_range_flag = st->codecpar->color_range == AVCOL_RANGE_JPEG;
             }
             v.luma_bit_depth = 8;

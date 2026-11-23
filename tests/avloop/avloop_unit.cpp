@@ -78,10 +78,10 @@ int main() {
       const bool got = p->get_stream_info_ex(0, &ex);
       const AvPlayerVideoEx &v = ex.details.video;
       if (!got || ex.type != AVPLAYER_STREAM_TYPE_VIDEO || v.width != 320 || v.height != 192 || v.pitch != 512 ||
-          v.crop_right_offset != 192 || v.crop_bottom_offset != 12 || v.framerate != 60 || v.luma_bit_depth != 8 ||
+          v.crop_right_offset != 192 || v.crop_bottom_offset != 12 || v.frame_rate != 60.0 || v.luma_bit_depth != 8 || ex.this_size != 104 ||
           ex.duration < 300 || ex.duration > 500 || p->get_stream_info_ex(1, &ex)) {
-        printf("FAIL stream info ex: got %d type %u %ux%u pitch %u crop r%u b%u fps %u depth %u duration %llu\n", got, ex.type,
-               v.width, v.height, v.pitch, v.crop_right_offset, v.crop_bottom_offset, v.framerate, v.luma_bit_depth,
+        printf("FAIL stream info ex: got %d type %u %ux%u pitch %u crop r%u b%u fps %.2f depth %u duration %llu\n", got, ex.type,
+               v.width, v.height, v.pitch, v.crop_right_offset, v.crop_bottom_offset, v.frame_rate, v.luma_bit_depth,
                (unsigned long long)ex.duration);
         fails++;
       }
