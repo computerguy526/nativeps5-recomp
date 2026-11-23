@@ -13,7 +13,9 @@
         "KYTY_DISPATCHER_TREE": "1",
         "KYTY_VRAM_BUDGET_MB": "8000",
         "KYTY_VRAM_IDLE_FRAMES": "150",
-        "NPS5_KK_SWITCH_TREE": "1"
+        "NPS5_KK_SWITCH_TREE": "1",
+        "NPS5_UECVAR_SET": "r.Nanite.PersistentThreadsCulling=0,r.RayTracing.Enable=0",
+        "NPS5_UECVAR_SET_FOR": "100000"
     },
-    "_kk": "KosmicKrisp nps5-kk-saros1 a869fde (switch tree + residency lock + int64) is required for NPS5_KK_SWITCH_TREE / NPS5_KK_RESIDENCY_LOCK; the Kyty KYTY_DISPATCHER_TREE stays as the fallback"
+    "_kk": "KosmicKrisp nps5-kk-saros1 a869fde (switch tree + residency lock + int64) is required for NPS5_KK_SWITCH_TREE / NPS5_KK_RESIDENCY_LOCK; the Kyty KYTY_DISPATCHER_TREE stays as the fallback; NPS5_UECVAR_SET (sarosexp 2026-11-24: PTC=0 removes the flicker, +RT off = +32% fps, 8.5 -> 11.2) needs NPS5_UECVAR_LIST=<saros cvar list> from the launcher, else it is a logged no-op"
 }
