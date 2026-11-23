@@ -7,13 +7,15 @@
         "NPS5_VQ_RESERVED_UNCOMMITTED: Unity's virtual-memory commit reads VirtualQuery isCommitted to choose mprotect vs allocate + MAP_FIXED map on its sceKernelReserveVirtualRange ranges (console semantics; opt-in until ASTRO/SAROS regression runs).",
         "NPS5_UNRESOLVED_RET0: bring-up only. PSN.prx imports ~1,600 sce::Np::CppWebApi C++ entries the shipped libSceNpCppWebApi.prx does not export (online paths).",
         "NPS5_VFS_DEVLOG: the Unity player writes its player log to /devlog/app/debug.log (dev-kit volume); mounted on <userdata>/devlog/app/debug.log for bring-up.",
-        "NPS5_KYTY_PROGRESS_VERDICT: Unity's gfx worker writes a descriptor every frame into a 16 KiB host page whose neighbour tracker page Kyty re-arms every frame (~250 faults/s at one address); without the switch the runtime's fault livelock guard (20,000 claimed faults, <50 ms apart) reads that as a livelock after ~80 s and ends the run in a SIGBUS report (PPSA28997 r13). Opt-in until ASTRO/SAROS regression runs."
+        "NPS5_KYTY_PROGRESS_VERDICT: Unity's gfx worker writes a descriptor every frame into a 16 KiB host page whose neighbour tracker page Kyty re-arms every frame (~250 faults/s at one address); without the switch the runtime's fault livelock guard (20,000 claimed faults, <50 ms apart) reads that as a livelock after ~80 s and ends the run in a SIGBUS report (PPSA28997 r13). Opt-in until ASTRO/SAROS regression runs.",
+        "NPS5_SAVEDATA_PREPARE_RW: the PS5 transactional save (Unity SaveData plugin) mounts its own save RDONLY (|CREATE2), creates a transaction resource and calls sceSaveDataPrepare to write; Prepare must open the mount for writing (it returned INTERNAL 0x809f000b and the game showed the save-error dialog). Opt-in until ASTRO/SAROS regression runs."
     ],
     "translate": {},
     "env": {
         "NPS5_VQ_RESERVED_UNCOMMITTED": "1",
         "NPS5_UNRESOLVED_RET0": "1",
         "NPS5_VFS_DEVLOG": "1",
-        "NPS5_KYTY_PROGRESS_VERDICT": "1"
+        "NPS5_KYTY_PROGRESS_VERDICT": "1",
+        "NPS5_SAVEDATA_PREPARE_RW": "1"
     }
 }

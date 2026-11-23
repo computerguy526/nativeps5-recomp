@@ -1860,6 +1860,17 @@ void shim_sceSaveDataPrepare(GuestContext *ctx) {
     } else {
         pthread_mutex_lock(&g_savedata_mutex);
         SdMountSlot *slot = sd_find_mount_by_point(ctx, ctx->rdi);
+        // NPS5_SAVEDATA_PREPARE_RW=1 (opt-in until the ASTRO/SAROS regression; Unity profile): the PS5 transactional
+        // save mounts the title's own save RDONLY (PPSA28997: mode 0x21 = RDONLY|CREATE2), creates a transaction
+        // resource and calls Prepare to write: Prepare opens the mount for writing (Commit ends the transaction).
+        // A transfer mount (another title's save) stays read-only. Without the switch: INTERNAL, as before.
+        const char *prw = getenv("NPS5_SAVEDATA_PREPARE_RW"); // read per call: Prepare is rare
+        const bool prepare_rw = prw && prw[0] == '1';
+        if (slot && slot->read_only && !slot->transfer && prepare_rw) {
+            slot->read_only = false;
+            ps4_vfs_mount(slot->mount_point, slot->host_path);
+            fprintf(stderr, "[ps4-savedata] Prepare: %s (%s) open for writing\n", slot->mount_point, slot->dir_name);
+        }
         rc = !slot ? SD_ERR_NOT_MOUNTED : (slot->read_only ? SD_ERR_INTERNAL : 0);
         pthread_mutex_unlock(&g_savedata_mutex);
     }

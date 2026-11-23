@@ -316,6 +316,13 @@ static void test_savedata(const char *tmp) {
   CHECK(RAX32 == 0 && strcmp((char *)H(out), "Dig deeper") == 0);
   // a read-only mount refuses Prepare
   reset_regs(); C->rdi = res; C->rsi = galloc(0x28); CALL(shim_sceSaveDataPrepare); CHECK(RAX32 != 0);
+  // NPS5_SAVEDATA_PREPARE_RW=1: the PS5 transaction (RDONLY mount, resource, Prepare, write, Commit) opens it
+  setenv("NPS5_SAVEDATA_PREPARE_RW", "1", 1);
+  reset_regs(); C->rdi = res; C->rsi = galloc(0x28); CALL(shim_sceSaveDataPrepare); CHECK(RAX32 == 0);
+  fd = ps4_vfs_open("/savedata0/progress2.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  CHECK(fd >= 0);
+  if (fd >= 0) { CHECK(write(fd, payload, 16) == 16); ps4_vfs_close(fd); }
+  unsetenv("NPS5_SAVEDATA_PREPARE_RW");
   reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2);
 
   // a second slot, listed by name search, then deleted
