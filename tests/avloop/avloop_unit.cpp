@@ -103,6 +103,11 @@ int main() {
       usleep(16667);
     }
     printf("avloop_unit: %d passes, %llu frames delivered\n", done, (unsigned long long)delivered);
+    { // every new pass that reached the guest raised SCE_AVPLAYER_ERROR_WAR_LOOPING_BACK (Unity's loop point)
+      char c[400]; snprintf(c, sizeof c, "grep -c 'loop point: WARNING_ID' '%s'", logp);
+      FILE *f = popen(c, "r"); int w = 0; if (f) { if (fscanf(f, "%d", &w) != 1) w = 0; pclose(f); }
+      if (w < done - 1 || w > done) { printf("FAIL %d looping-back warnings for %d passes\n", w, done); fails++; }
+    }
     if (!fails && delivered < 20) { printf("FAIL too few frames (%llu)\n", (unsigned long long)delivered); fails++; }
     if (bad_ts) { printf("FAIL %llu frames with a timestamp beyond the clip\n", (unsigned long long)bad_ts); fails++; }
     delete p; // stops the workers: must not hang or crash either

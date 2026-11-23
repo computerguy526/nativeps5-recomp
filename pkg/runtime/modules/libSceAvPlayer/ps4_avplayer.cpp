@@ -369,6 +369,7 @@ private:
 struct DecodedVideoFrame {
     GuestBuffer buffer;
     AvPlayerFrameInfoEx info{};
+    bool looped = false; // the first frame of a new pass of a looping source
 };
 
 struct DecodedAudioFrame {
@@ -428,6 +429,7 @@ public:
             recomp_free_thread_context(m_controller_ctx);
             m_controller_ctx = nullptr;
         }
+        if (m_warning_guest && m_proc_ctx) recomp_vm_free(m_proc_ctx, m_warning_guest, 64);
     }
 
     // ue2boot: tear down on the CALLING guest thread's context. The destructor uses m_main_ctx (the context of the
@@ -787,6 +789,15 @@ public:
         m_last_poll_ns = m_last_deliver_ns = 0;
     }
 
+    // SCE_AVPLAYER_ERROR_WAR_LOOPING_BACK (0x806A00A1), sent as an AVPLAYER_EVENT_WARNING_ID when the first frame of a
+    // new pass reaches the guest (as AnyPS5 Source::present). The Unity PS5 player keeps SetLooping(1) on every clip and
+    // takes this warning as the clip's end (VideoPlayer.loopPointReached); timestamps restart at 0 as on the console.
+    void note_looped_frame() {
+        AVPLAYER_LOG("loop point: WARNING_ID 0x806a00a1 to the game");
+        m_warning_codes.push((int32_t)0x806A00A1u);
+        m_event_queue.push(AVPLAYER_EVENT_WARNING_ID);
+    }
+
     bool get_video_data_ex(AvPlayerFrameInfoEx *info) {
         if (!info || !is_active()) return false;
         if (m_is_paused.load()) {
@@ -795,6 +806,7 @@ public:
             DecodedVideoFrame frame;
             if (!m_ready_video_frames.try_pop(frame)) return false;
             m_jump_frame_pending.store(false);
+            if (frame.looped) note_looped_frame();
             if (m_curr_video_buf.has_value()) {
                 release_fetched_buffer(std::move(*m_curr_video_buf));
                 m_curr_video_buf.reset();
@@ -830,12 +842,15 @@ public:
             ok = m_ready_video_frames.pop_due_latest([](const DecodedVideoFrame &f) { return f.info.timestamp; }, now_ms, avsync_tol_ms(), frame, stale);
         }
 
+        bool looped = ok && frame.looped;
         for (auto &f : stale) {
+            looped = looped || f.looped;
             if (avplayer_vtrace()) AVPLAYER_LOG("[avvid] drop pts=%llu clock=%llu", (unsigned long long)f.info.timestamp, (unsigned long long)now_ms);
             f.buffer.fetch_ns = 0;
             m_free_video_buffers.push(std::move(f.buffer));
         }
 
+        if (looped) note_looped_frame();
         if (!ok) {
             if (avplayer_vtrace()) {
                 std::lock_guard<std::mutex> lk(m_stats_mutex);
@@ -1108,6 +1123,8 @@ private:
                 if (jump) {
                     m_jump_frame_pending.store(true);
                     m_jump_inflight.store(false);
+                } else {
+                    m_next_frame_looped = true;
                 }
                 continue;
             }
@@ -1176,6 +1193,8 @@ private:
                 frame.buffer = std::move(buf);
                 frame.info.p_data = frame.buffer.guest_addr;
                 frame.info.timestamp = ts;
+                frame.looped = m_next_frame_looped;
+                m_next_frame_looped = false;
                 frame.info.details.video.width = width;
                 frame.info.details.video.height = height;
                 frame.info.details.video.pitch = pitch;
@@ -1343,11 +1362,25 @@ private:
                     if (a_idx >= 0) enable_stream((uint32_t)a_idx);
                     start_playback(m_main_ctx);
                 }
+                uint64_t event_data = 0;
+                if (ev == AVPLAYER_EVENT_WARNING_ID) {
+                    int32_t code = 0;
+                    m_warning_codes.try_pop(code);
+                    if (!m_warning_guest && m_proc_ctx) {
+                        const uint64_t g = recomp_vm_alloc(m_proc_ctx, 64);
+                        m_warning_guest = g != (uint64_t)-1 ? g : 0;
+                    }
+                    int32_t *slot = m_warning_guest ? (int32_t *)recomp_guest_to_host(m_proc_ctx, m_warning_guest) : nullptr;
+                    if (slot) {
+                        *slot = code;
+                        event_data = m_warning_guest;
+                    }
+                }
                 if (m_init_data.event_replacement.event_callback && m_controller_ctx) {
                     m_controller_ctx->rdi = m_init_data.event_replacement.object_ptr;
                     m_controller_ctx->rsi = (uint64_t)ev;
                     m_controller_ctx->rdx = 0;
-                    m_controller_ctx->rcx = 0;
+                    m_controller_ctx->rcx = event_data; // eventData: the int32 warning code for WARNING_ID
                     recomp_call_guest(m_controller_ctx, m_init_data.event_replacement.event_callback);
                 }
             } else {
@@ -1423,6 +1456,11 @@ private:
 
     std::mutex m_state_mutex;
     SafeQueue<AvPlayerEvents> m_event_queue;
+    // AVPLAYER_EVENT_WARNING_ID payloads (int32 codes), one per queued WARNING_ID event, in order; the controller writes
+    // the code to m_warning_guest (guest memory, allocated on first use) and passes its address as eventData.
+    SafeQueue<int32_t> m_warning_codes;
+    uint64_t m_warning_guest = 0;
+    bool m_next_frame_looped = false; // video decoder thread only
 
     std::thread m_demuxer_thread;
     std::thread m_video_decoder_thread;
