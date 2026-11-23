@@ -183,7 +183,19 @@ static bool umtx_deadline(GuestContext *ctx, uint64_t uaddr, uint64_t uaddr2, st
   return true;
 }
 
+// NPS5_UMTX_OP=1 (Unity profile; default off until the ASTRO/SAROS regression clears it): the umtx
+// operations above. Off: the import behaves as it did unresolved (shim_unresolved_stub: abort, or 0
+// with NPS5_UNRESOLVED_RET0=1).
+extern void shim_unresolved_stub(GuestContext *ctx);
+static int g_umtx_on = -1;
+static int umtx_enabled(void) {
+  if (g_umtx_on < 0) { const char *e = getenv("NPS5_UMTX_OP"); g_umtx_on = e && e[0] == '1'; }
+  return g_umtx_on;
+}
+void nps5_hlesys_umtx_gate_reset(void) { g_umtx_on = -1; } // tests: re-read NPS5_UMTX_OP
+
 void shim__umtx_op(GuestContext *ctx) {
+  if (!umtx_enabled()) { shim_unresolved_stub(ctx); return; }
   const uint64_t obj = ctx->rdi;
   const int op = (int)ctx->rsi;
   const uint64_t val = ctx->rdx, uaddr = ctx->rcx, uaddr2 = ctx->r8;

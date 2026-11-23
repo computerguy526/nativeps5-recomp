@@ -131,6 +131,15 @@ static bool avplayer_verbose() {
 // half the buffers minus one) is how many fetched frames stay untouched by the decoder (the guest copies a frame by DMA
 // AFTER sceAvPlayerGetVideoData returned; recycling the buffer at the next fetch let the decoder overwrite it
 // under the copy = flicker; Jetsku/KytyPS5 PR 106). NPS5_AVPLAYER_VTRACE=1 logs every frame + a summary.
+// NPS5_AVPLAYER_UNITY=1 (Unity profile; default off until the ASTRO/SAROS regression clears it): the Unity PS5
+// player's AvPlayer surface: sceAvPlayerGetStreamInfoEx, a seeking sceAvPlayerJumpToTime, and WARNING_ID
+// LOOPING_BACK at a loop point. Off: GetStreamInfoEx is the unresolved import it was, JumpToTime returns 0 and
+// moves nothing, a loop raises no warning and leaves the paused clock as before.
+static bool avplayer_unity() {
+    static const bool on = [] { const char *t = getenv("NPS5_AVPLAYER_UNITY"); return t && t[0] == '1'; }();
+    return on;
+}
+extern "C" void shim_unresolved_stub(GuestContext *ctx);
 static bool avsync_legacy() {
     static const bool on = [] { const char *t = getenv("NPS5_AVPLAYER_SYNC_LEGACY"); return t && t[0] && t[0] != '0'; }();
     return on;
@@ -793,6 +802,7 @@ public:
     // new pass reaches the guest (as AnyPS5 Source::present). The Unity PS5 player keeps SetLooping(1) on every clip and
     // takes this warning as the clip's end (VideoPlayer.loopPointReached); timestamps restart at 0 as on the console.
     void note_looped_frame() {
+        if (!avplayer_unity()) return;
         AVPLAYER_LOG("loop point: WARNING_ID 0x806a00a1 to the game");
         m_warning_codes.push((int32_t)0x806A00A1u);
         m_event_queue.push(AVPLAYER_EVENT_WARNING_ID);
@@ -1119,7 +1129,7 @@ private:
                 m_clock_base_ms.store(target);
                 m_start_time = std::chrono::steady_clock::now();
                 m_total_pause_duration = std::chrono::steady_clock::duration(0);
-                m_pause_time = m_start_time; // paused: the frozen clock reads the target
+                if (jump || avplayer_unity()) m_pause_time = m_start_time; // paused: the frozen clock reads the target
                 if (jump) {
                     m_jump_frame_pending.store(true);
                     m_jump_inflight.store(false);
@@ -1610,6 +1620,7 @@ void shim_sceAvPlayerGetStreamInfo(GuestContext *ctx) {
 // int32_t sceAvPlayerGetStreamInfoEx(SceAvPlayerHandle, uint32_t streamID, SceAvPlayerStreamInfoEx *info): the Unity PS5
 // player (VideoPlayer) asks for this record of every stream before it enables one (PPSA28997's intro video).
 void shim_sceAvPlayerGetStreamInfoEx(GuestContext *ctx) {
+    if (!avplayer_unity()) { shim_unresolved_stub(ctx); return; }
     AvPlayer *player = (AvPlayer *)ctx->rdi;
     uint32_t stream_id = (uint32_t)ctx->rsi;
     AvPlayerStreamInfoEx *info = (AvPlayerStreamInfoEx *)recomp_guest_to_host(ctx, ctx->rdx);
@@ -1807,6 +1818,7 @@ void shim_sceAvPlayerSetLogCallback(GuestContext *ctx) {
 // Start, Pause, JumpToTime and waits for the frame at the new position (PPSA28997: it closed the clip after 10 s when
 // the old 0-returning stub never moved).
 void shim_sceAvPlayerJumpToTime(GuestContext *ctx) {
+    if (!avplayer_unity()) { ctx->rax = 0; SHIM_RETURN(); }
     AvPlayer *player = (AvPlayer *)ctx->rdi;
     if (!player) {
         ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;

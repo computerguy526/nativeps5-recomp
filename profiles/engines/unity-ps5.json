@@ -8,7 +8,11 @@
         "NPS5_UNRESOLVED_RET0: bring-up only. PSN.prx imports ~1,600 sce::Np::CppWebApi C++ entries the shipped libSceNpCppWebApi.prx does not export (online paths).",
         "NPS5_VFS_DEVLOG: the Unity player writes its player log to /devlog/app/debug.log (dev-kit volume); mounted on <userdata>/devlog/app/debug.log for bring-up.",
         "NPS5_KYTY_PROGRESS_VERDICT: Unity's gfx worker writes a descriptor every frame into a 16 KiB host page whose neighbour tracker page Kyty re-arms every frame (~250 faults/s at one address); without the switch the runtime's fault livelock guard (20,000 claimed faults, <50 ms apart) reads that as a livelock after ~80 s and ends the run in a SIGBUS report (PPSA28997 r13). Opt-in until ASTRO/SAROS regression runs.",
-        "NPS5_SAVEDATA_PREPARE_RW: the PS5 transactional save (Unity SaveData plugin) mounts its own save RDONLY (|CREATE2), creates a transaction resource and calls sceSaveDataPrepare to write; Prepare must open the mount for writing (it returned INTERNAL 0x809f000b and the game showed the save-error dialog). Opt-in until ASTRO/SAROS regression runs."
+        "NPS5_SAVEDATA_PREPARE_RW: the PS5 transactional save (Unity SaveData plugin) mounts its own save RDONLY (|CREATE2), creates a transaction resource and calls sceSaveDataPrepare to write; Prepare must open the mount for writing (it returned INTERNAL 0x809f000b and the game showed the save-error dialog). Opt-in until ASTRO/SAROS regression runs.",
+        "Gating rule (USER): game/engine-specific runtime changes are env-gated, default off, set here; ASTRO/SAROS stay byte-identical without this profile until a regression run clears a switch.",
+        "NPS5_PRX_ENTRY_ARGS: a PRX entry started by sceKernelLoadStartModule gets (argc, argv, NULL) and its result goes to *res (Il2cppUserAssemblies.prx jumped to a stale RDX). NPS5_UMTX_OP: _umtx_op WAIT/WAKE (PS5Util.prx events; off = unresolved import). NPS5_PTHREAD_ATTR_REAL: scePthreadAttrGet/Getstack/Getstackaddr report the thread's real stack (IL2CPP Boehm GC roots). NPS5_AVPLAYER_UNITY: sceAvPlayerGetStreamInfoEx, seeking JumpToTime, WARNING_ID LOOPING_BACK at a loop point (VideoPlayer).",
+        "NPS5_ACM_CONTEXT_OK: sceAcmContextCreate/Destroy/BatchStartBuffers/BatchWait succeed (no DSP output). FMOD's PS5 System::setOutput creates an ACM context and failed ERR_INTERNAL without it: no FMOD system, FMODUnity.RuntimeManager.Instance threw SystemNotInitializedException every frame (PPSA28997 r21-r24, found with work/tools/il2cppmap + NPS5_GUEST_SAMPLE).",
+        "NPS5_SYSMODULE_ISLOADED_SCE: sceSysmoduleIsLoaded returns SCE_OK / 0x805A1001 (SDK) instead of 1/0. No effect seen on PPSA28997 (r22); left off."
     ],
     "translate": {},
     "env": {
@@ -16,6 +20,11 @@
         "NPS5_UNRESOLVED_RET0": "1",
         "NPS5_VFS_DEVLOG": "1",
         "NPS5_KYTY_PROGRESS_VERDICT": "1",
-        "NPS5_SAVEDATA_PREPARE_RW": "1"
+        "NPS5_SAVEDATA_PREPARE_RW": "1",
+        "NPS5_PRX_ENTRY_ARGS": "1",
+        "NPS5_UMTX_OP": "1",
+        "NPS5_PTHREAD_ATTR_REAL": "1",
+        "NPS5_AVPLAYER_UNITY": "1",
+        "NPS5_ACM_CONTEXT_OK": "1"
     }
 }

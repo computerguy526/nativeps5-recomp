@@ -3,6 +3,7 @@
 // scePthreadAttrGet / Getstack / Getstackaddr / Getstacksize through the real shims (vmh.h fake register file): the
 // attributes of a running thread report its usable stack, the bounds a conservative garbage collector scans (IL2CPP's
 // Boehm GC in the Unity PS5 player). Built in base and identity mode; needs kernel/threading/ps4_threading.c.
+#include <stdlib.h>
 #include "vmh.h"
 #include "ps4_threading.h"
 
@@ -48,6 +49,7 @@ static void t_self_stack(void) {
 }
 
 int main(void) {
+  setenv("NPS5_PTHREAD_ATTR_REAL", "1", 1); // the real shims are opt-in (Unity profile)
   vmh_init();
   t_self_stack();
   return mt_status();

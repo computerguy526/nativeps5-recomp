@@ -105,6 +105,8 @@ int32_t sceSysmoduleLoadModuleInternalWithArg(uint32_t moduleId, int32_t argc, c
 // Guest ABI shims
 void shim_sceSysmoduleLoadModule(GuestContext *ctx);
 void shim_sceSysmoduleIsLoaded(GuestContext *ctx);
+// sceSysmoduleIsLoaded's guest result for loaded (1/0) under the old (sce=0) or SDK (sce=1) convention.
+int32_t nps5_sysmodule_isloaded_result(int loaded, int sce);
 void shim_sceSysmoduleUnloadModule(GuestContext *ctx);
 void shim_sceSysmoduleLoadModuleInternal(GuestContext *ctx);
 void shim_sceSysmoduleUnloadModuleInternal(GuestContext *ctx);

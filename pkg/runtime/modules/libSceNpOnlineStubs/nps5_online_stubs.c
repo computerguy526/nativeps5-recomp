@@ -333,9 +333,23 @@ void shim_sceUserServiceGetAgeLevel(GuestContext *ctx) {
 // =============================================================== libSceAcm
 // The audio convolution/FFT service is a console DSP; there is no host implementation. Reporting a
 // bad context makes a title fall back to its non-ACM path instead of consuming undefined output.
-ON_FIXED(sceAcmContextCreate, ON_ACM_ERROR_BAD_CONTEXT)
-ON_FIXED(sceAcmContextDestroy, ON_ACM_ERROR_BAD_CONTEXT)
-ON_FIXED(sceAcmBatchWait, ON_ACM_ERROR_BAD_CONTEXT)
-ON_FIXED(sceAcmBatchStartBuffers, ON_ACM_ERROR_BAD_CONTEXT)
+// NPS5_ACM_CONTEXT_OK=1 (opt-in; Unity profile): context create/destroy and batch submit/wait succeed (the
+// context id written to *rdi is a token; batches compute nothing). FMOD's PS5 System::setOutput creates an
+// ACM context unconditionally and fails with ERR_INTERNAL otherwise, so every FMOD/Unity title has no audio
+// system and FMODUnity.RuntimeManager.Instance throws each frame (PPSA28997 BOOTLOG r21-r24).
+static int acm_ok(void) {
+  const char *e = getenv("NPS5_ACM_CONTEXT_OK");
+  return e && e[0] == '1';
+}
+void shim_sceAcmContextCreate(GuestContext *ctx) {
+  if (!acm_ok()) ON_RET("sceAcmContextCreate", ON_ACM_ERROR_BAD_CONTEXT);
+  on_put32(ctx, ctx->rdi, on_token());
+  ON_RET("sceAcmContextCreate", 0);
+}
+#define ACM_GATED(fn)                                                   \
+  void shim_##fn(GuestContext *ctx) { ON_RET(#fn, acm_ok() ? 0 : ON_ACM_ERROR_BAD_CONTEXT); }
+ACM_GATED(sceAcmContextDestroy)
+ACM_GATED(sceAcmBatchWait)
+ACM_GATED(sceAcmBatchStartBuffers)
 ON_FIXED(sceAcm_ConvReverb_SharedInput, ON_ACM_ERROR_BAD_CONTEXT)
 ON_FIXED(sceAcm_FFT, ON_ACM_ERROR_BAD_CONTEXT)

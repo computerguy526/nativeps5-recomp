@@ -250,6 +250,17 @@ const RecompModuleUnwindInfo *recomp_module_find_by_addr(uint64_t addr) {
 // third argument when that is not NULL, or else module_start(argc, argv). The console's dynamic
 // linker passes NULL there; a stale register value made it jump into data (Unity's
 // Il2cppUserAssemblies.prx jumped to a heap pointer left in RDX by the guest's own call).
+// NPS5_PRX_ENTRY_ARGS=1 (Unity profile; default off until the ASTRO/SAROS regression clears it): pass
+// entry(argc, argv, NULL) and report the result. Off: the entry sees the guest's registers as before.
+static int prx_entry_args(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("NPS5_PRX_ENTRY_ARGS");
+        v = e && e[0] == '1';
+    }
+    return v;
+}
+
 void recomp_module_start(GuestContext *ctx, int32_t handle, uint64_t argc, uint64_t argv, int *res) {
     if (!ctx || handle <= 0) {
         return;
@@ -270,11 +281,14 @@ void recomp_module_start(GuestContext *ctx, int32_t handle, uint64_t argc, uint6
     pthread_mutex_unlock(&g_sysmodule_mutex);
     for (size_t i = 0; i < count; i++) {
         if (inits[i] != 0) {
-            ctx->rdi = argc;
-            ctx->rsi = argv;
-            ctx->rdx = 0;
+            int args = prx_entry_args();
+            if (args) {
+                ctx->rdi = argc;
+                ctx->rsi = argv;
+                ctx->rdx = 0;
+            }
             recomp_call_guest(ctx, inits[i]);
-            if (res) {
+            if (res && args) {
                 *res = (int)(uint32_t)ctx->rax;
             }
         }
@@ -394,9 +408,27 @@ void shim_sceSysmoduleLoadModule(GuestContext *ctx) {
     SHIM_RETURN();
 }
 
+// NPS5_SYSMODULE_ISLOADED_SCE=1 (opt-in; Unity profile): the SDK result of sceSysmoduleIsLoaded,
+// SCE_OK (0) when the module is loaded and SCE_SYSMODULE_ERROR_UNLOADED (0x805A1001) when it is not.
+// The default keeps the old 1 / 0 (a non-zero "loaded" reads as an error to SDK code: FMOD's
+// System::setOutput on PS5 failed with ERR_INTERNAL, PPSA28997 BOOTLOG r21/r22).
+int32_t nps5_sysmodule_isloaded_result(int loaded, int sce) {
+    if (!sce) return loaded ? 1 : 0;
+    return loaded ? 0 : (int32_t)0x805A1001;
+}
+
+static int sysmodule_isloaded_sce(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("NPS5_SYSMODULE_ISLOADED_SCE");
+        v = e && e[0] == '1';
+    }
+    return v;
+}
+
 void shim_sceSysmoduleIsLoaded(GuestContext *ctx) {
     uint16_t moduleId = (uint16_t)ctx->rdi;
-    int32_t ret = sceSysmoduleIsLoaded(moduleId);
+    int32_t ret = nps5_sysmodule_isloaded_result(sceSysmoduleIsLoaded(moduleId), sysmodule_isloaded_sce());
     ctx->rax = (uint64_t)(int64_t)ret;
     SHIM_RETURN();
 }

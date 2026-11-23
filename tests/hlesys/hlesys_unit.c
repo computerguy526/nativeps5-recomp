@@ -897,6 +897,25 @@ static void test_misc(void) {
   printf("misc: ok\n");
 }
 
+// sceSysmoduleIsLoaded: old 1/0 by default; NPS5_SYSMODULE_ISLOADED_SCE=1 gives SCE_OK / UNLOADED (FMOD setOutput).
+// ps4_sysmodule.c's guest-call helper needs these; never called here.
+recomp_fn_t **g_dispatch_l1[DISPATCH_LEVEL_SIZE];
+uint64_t g_recomp_call_model;
+uintptr_t recomp_dispatch_miss(GuestContext *ctx, uint64_t guest_rip, uint32_t reason) { (void)ctx; (void)guest_rip; (void)reason; return 0; }
+extern void shim_sceSysmoduleLoadModule(GuestContext *ctx);
+extern void shim_sceSysmoduleIsLoaded(GuestContext *ctx);
+extern int32_t nps5_sysmodule_isloaded_result(int loaded, int sce);
+static void test_sysmodule_isloaded(void) {
+  CHECK(nps5_sysmodule_isloaded_result(1, 0) == 1 && nps5_sysmodule_isloaded_result(0, 0) == 0);
+  CHECK(nps5_sysmodule_isloaded_result(1, 1) == 0 && nps5_sysmodule_isloaded_result(0, 1) == (int32_t)0x805A1001);
+  setenv("NPS5_SYSMODULE_ISLOADED_SCE", "1", 1); // read once, at the first IsLoaded call
+  reset_regs(); C->rdi = 0x0099; CALL(shim_sceSysmoduleLoadModule); CHECK(RAX32 == 0);
+  reset_regs(); C->rdi = 0x0099; CALL(shim_sceSysmoduleIsLoaded); CHECK(RAX32 == 0);
+  reset_regs(); C->rdi = 0x0098; CALL(shim_sceSysmoduleIsLoaded); CHECK(RAX32 == (int32_t)0x805A1001);
+  unsetenv("NPS5_SYSMODULE_ISLOADED_SCE");
+  printf("sysmodule isloaded: ok\n");
+}
+
 // External (AnyPS5) equeue events: delete frees the slot, and overflow is reported (-1), never silently dropped.
 extern int nps5_ampr_note_external_event(int64_t eq64, uint64_t ident, uint64_t udata);
 extern void nps5_ampr_remove_external_event(int64_t eq64, uint64_t ident);
@@ -1225,6 +1244,9 @@ static void *umtx_waiter(void *p) {
   w->secs = umtx_now() - t0;
   return NULL;
 }
+// The gate's off path (recomp_runtime.c is not linked here): count instead of aborting.
+static int g_unresolved_calls;
+void shim_unresolved_stub(GuestContext *ctx) { g_unresolved_calls++; ctx->rax = 0; ctx->rsp += 8; }
 static void test_umtx(void) {
   int *err = (int *)H(C->fs_base + 0x100);
   uint64_t word = galloc(8); *(uint64_t *)H(word) = 7;
@@ -1287,9 +1309,16 @@ int main(void) {
   test_apr_hardening();
   test_astro_stubs();
   test_misc();
+  test_sysmodule_isloaded();
   test_level_open();
   test_dirent_types(tmp);
   test_dirent_cache(tmp);
+  { // NPS5_UMTX_OP gate: off = the unresolved path, read once; on for the umtx tests (separate process state)
+    extern void nps5_hlesys_umtx_gate_reset(void);
+    unsetenv("NPS5_UMTX_OP"); nps5_hlesys_umtx_gate_reset();
+    reset_regs(); C->rsi = 3; CALL(shim__umtx_op); CHECK(g_unresolved_calls == 1);
+    setenv("NPS5_UMTX_OP", "1", 1); nps5_hlesys_umtx_gate_reset();
+  }
   test_umtx();
 
   char cmd[700]; snprintf(cmd, sizeof cmd, "rm -rf %s", tmp); system(cmd);

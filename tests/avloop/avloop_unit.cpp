@@ -28,9 +28,11 @@ uint64_t recomp_vm_alloc(GuestContext *, size_t size) {
 }
 int recomp_vm_free(GuestContext *, uint64_t, size_t) { return 0; } // bump allocator; the arena is freed at exit
 uintptr_t recomp_dispatch_miss(GuestContext *, uint64_t, uint32_t) { abort(); }
+void shim_unresolved_stub(GuestContext *) { abort(); } // NPS5_AVPLAYER_UNITY off path; main() turns it on
 }
 
 int main() {
+  setenv("NPS5_AVPLAYER_UNITY", "1", 1); // StreamInfoEx / JumpToTime / LOOPING_BACK are opt-in (Unity profile)
   const char *cnt = getenv("NPS5_AVLOOP_COUNT");
   const int loops = cnt && atoi(cnt) > 0 ? atoi(cnt) : 50;
   char dir[] = "/tmp/avloop_unit.XXXXXX";

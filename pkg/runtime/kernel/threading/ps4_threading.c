@@ -1037,8 +1037,18 @@ static PthreadAttr *guest_attr(GuestContext *ctx, uint64_t attr_addr) {
   return (PthreadAttr *)(uintptr_t)(*(uint64_t *)(ctx->mem_base + attr_addr));
 }
 
+// NPS5_PTHREAD_ATTR_REAL=1 (Unity profile; default off until the ASTRO/SAROS regression clears it):
+// scePthreadAttrGet/Getstack/Getstackaddr report the thread's real attributes and stack. Off: the old
+// stubs (return 0, write nothing).
+static int pthread_attr_real(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("NPS5_PTHREAD_ATTR_REAL"); v = e && e[0] == '1'; }
+  return v;
+}
+
 // scePthreadAttrGetstack(attr, void **addr, size_t *size)
 void shim_scePthreadAttrGetstack(GuestContext *ctx) {
+  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
   PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
   if (!attr || !ctx->rsi || !ctx->rdx) {
     ctx->rax = 0x80020016ULL; // EINVAL
@@ -1052,6 +1062,7 @@ void shim_scePthreadAttrGetstack(GuestContext *ctx) {
 
 // scePthreadAttrGetstackaddr(attr, void **addr)
 void shim_scePthreadAttrGetstackaddr(GuestContext *ctx) {
+  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
   PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
   if (!attr || !ctx->rsi) {
     ctx->rax = 0x80020016ULL; // EINVAL
@@ -1142,6 +1153,7 @@ void shim_scePthreadAttrGetdetachstate(GuestContext *ctx) {
 // GC in the Unity PS5 player) take the stack bounds of every thread from here; a stub that left the object untouched
 // made the GC skip thread stacks and free live objects.
 void shim_scePthreadAttrGet(GuestContext *ctx) {
+  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
   RecompThread *t = ctx->rdi ? find_thread(ctx->rdi) : g_current_thread;
   PthreadAttr *attr = guest_attr(ctx, ctx->rsi);
   if (!attr) {

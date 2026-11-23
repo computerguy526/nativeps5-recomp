@@ -35,7 +35,7 @@ DECL(scePlayGoGetInstallChunkId); DECL(scePlayGoGetOptionalChunk);
 DECL(scePlayGoDialogInitialize); DECL(scePlayGoDialogOpen); DECL(scePlayGoDialogUpdateStatus); DECL(scePlayGoDialogGetResult);
 DECL(scePlayGoDialogTerminate);
 DECL(sceSystemServiceInitializePlayerDialogParam); DECL(sceSystemServiceLaunchPlayerDialog);
-DECL(sceUserServiceGetAgeLevel); DECL(sceAcmContextCreate); DECL(sceShareInitialize);
+DECL(sceUserServiceGetAgeLevel); DECL(sceAcmContextCreate); DECL(sceAcmBatchWait); DECL(sceShareInitialize);
 // generated libSceNpCppWebApi samples
 DECL(_ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V132RequestPlayerSessionMemberPlayerEEC1Ev);
 
@@ -126,6 +126,11 @@ int main(void) {
   clear(); C->rsi = P; CALL(shim_sceUserServiceGetAgeLevel); CHECK(RET32 == 0 && *(uint32_t *)H(P) == 0xFFFFFFFFu);
   clear(); CALL(shim_sceUserServiceGetAgeLevel); CHECK((uint32_t)RET32 == 0x80960005u);
   clear(); CALL(shim_sceAcmContextCreate); CHECK((uint32_t)RET32 == 0x81940002u);
+  setenv("NPS5_ACM_CONTEXT_OK", "1", 1);  // opt-in: a context token, batches accepted
+  memset(H(P), 0, 4); clear(); C->rdi = P; CALL(shim_sceAcmContextCreate); CHECK(RET32 == 0 && *(uint32_t *)H(P) != 0);
+  clear(); CALL(shim_sceAcmBatchWait); CHECK(RET32 == 0);
+  unsetenv("NPS5_ACM_CONTEXT_OK");
+  clear(); CALL(shim_sceAcmBatchWait); CHECK((uint32_t)RET32 == 0x81940002u);
   clear(); CALL(shim_sceShareInitialize); CHECK(RET32 == 0);
 
   // ---- generated NpCppWebApi: IntrusivePtr<T>::IntrusivePtr() zeroes the pointer and returns this
