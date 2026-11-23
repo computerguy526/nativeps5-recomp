@@ -3,6 +3,7 @@
 // libSceNpCppWebApi offline stubs: the title bundles the PRX, the loader skips it, so its exports the eboot
 // imports are bound here. See docs/m2/online_stubs.md.
 #include "nps5_online.h"
+#include <stdlib.h>
 
 #define CPP_ERR(fn, disp) void shim_##fn(GuestContext *ctx) { ON_RET(disp, ON_WEBAPI_ERROR_NOT_SIGNED_IN); }
 #define CPP_ZERO(fn, disp) void shim_##fn(GuestContext *ctx) { ON_RET64(disp, 0); }
@@ -248,7 +249,14 @@ CPP_THIS(_ZN3sce2Np9CppWebApi30CommunicationRestrictionStatus2V333CommunicationR
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common10InitParamsC1Ev, "_ZN3sce2Np9CppWebApi6Common10InitParamsC1Ev")
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common10InitParamsD1Ev, "_ZN3sce2Np9CppWebApi6Common10InitParamsD1Ev")
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common10LibContextC1Ev, "_ZN3sce2Np9CppWebApi6Common10LibContextC1Ev")
-CPP_ERR(_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE, "_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE")
+// NPS5_NP_WEBAPI_INIT_OK=1 (bring-up experiment, opt-in; PPSA28997): the library's own initialisation succeeds (on an
+// offline console it is local; requests fail later with NOT_SIGNED_IN). Default: NOT_SIGNED_IN, as before.
+void shim__ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE(GuestContext *ctx) {
+  static int ok = -1;
+  if (ok < 0) { const char *e = getenv("NPS5_NP_WEBAPI_INIT_OK"); ok = e && e[0] == '1'; }
+  if (ok) ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE", 0);
+  ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE", ON_WEBAPI_ERROR_NOT_SIGNED_IN);
+}
 CPP_ZERO(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE21setOnFinishedCallbackEPFvliS8_PvEPFvliSC_ESC_, "_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE21setOnFinishedCallbackEPFvliS8_PvEPFvliSC_ESC_")
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev, "_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev")
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEED1Ev, "_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEED1Ev")
