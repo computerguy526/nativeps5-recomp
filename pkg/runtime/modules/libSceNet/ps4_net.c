@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -213,7 +214,26 @@ void shim_sceNetSetsockopt(GuestContext *ctx) {
     const void *optval = guest_to_host(ctx, ctx->rcx);
     socklen_t optlen = (socklen_t)ctx->r8;
 
-    int ret = setsockopt(s, level, optname, optval, optlen);
+    int ret;
+    static int map_on = -1;
+    if (map_on < 0) { const char *e = getenv("NPS5_NET_SOCKOPT_MAP"); map_on = (e && *e == '1'); }
+    if (map_on && (level == 0xffff || level == 6 || level == 0)) {
+        /* SCE_NET options: FreeBSD numbering == macOS for the standard ones; SO_NBIO (0x1200) is SCE-only. */
+        int v = optval && optlen >= 4 ? *(const int *)optval : 0;
+        if (level == 0xffff && optname == 0x1200) {
+            int fl = fcntl(s, F_GETFL, 0);
+            ret = fl < 0 ? -1 : fcntl(s, F_SETFL, v ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK));
+        } else if (level == 0xffff && (optname == 0x1100 || optname == 0x1101 || optname == 0x1102 ||
+                                       optname == 0x1103 || optname == 0x1104 || optname == 0x1105 ||
+                                       optname == 0x1106 || optname == 0x1107 || optname == 0x1108)) {
+            ret = 0; /* SCE-specific (priority, nat, ...): accept, no host equivalent */
+        } else {
+            ret = setsockopt(s, level, optname, optval, optlen);
+            if (ret < 0 && (errno == ENOPROTOOPT || errno == EINVAL)) ret = 0; /* unknown on host: ignore */
+        }
+    } else {
+        ret = setsockopt(s, level, optname, optval, optlen);
+    }
     if (ret < 0) {
         set_net_errno(ctx, errno);
         ctx->rax = (uint64_t)-1;
