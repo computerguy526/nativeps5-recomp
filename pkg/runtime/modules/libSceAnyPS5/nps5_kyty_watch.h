@@ -54,6 +54,12 @@ typedef struct Nps5KytyWatchConfig {
   uint64_t slow_ns;
   void (*on_slow)(uint64_t guest, int is_write, unsigned kind, uint64_t ns);
   void (*on_declined)(void *ucontext, uint64_t guest, int is_write);
+  // progress_verdict (NPS5_KYTY_PROGRESS_VERDICT=1, opt-in): a retried fault after which the owner changed the
+  // host page's watch state returns 3 instead of 1 (claimed, retry; the resolver protocol counts only 1 towards the
+  // runtime's livelock guard). A page re-armed every frame and written every frame (PPSA28997: a descriptor that
+  // shares a 16 KiB host page with a write-watched tracker page, ~250 faults/s at one address) is progress, not a
+  // livelock: without it the guard trips after 20,000 such faults (~80 s) and the run ends in a SIGBUS report.
+  int progress_verdict;
 } Nps5KytyWatchConfig;
 
 typedef struct Nps5KytyWatchStats {
@@ -96,7 +102,8 @@ void nps5_kyty_watch_forget(uint64_t guest, uint64_t size);
 // owner was run for every armed tracker page: the access is retried. False: not a watch fault.
 bool nps5_kyty_watch_fault(uint64_t host, int is_write);
 // The same with the thread's ucontext_t, which allows the emulation above. Returns 0 not a watch fault, 1 handled:
-// retry the access, 2 handled: the access was carried out and the thread continues behind the instruction.
+// retry the access, 2 handled: the access was carried out and the thread continues behind the instruction, 3 (only with
+// progress_verdict) handled: retry, and the owner changed the host page's watch state (not a livelock).
 int nps5_kyty_watch_fault_ctx(void *ucontext, uint64_t host, int is_write);
 // For the owner, only inside its handle_fault for the FAULTING tracker page of a load (the library can then serve
 // the load from bytes it has, e.g. the page's last published copy, instead of waiting for the GPU and opening the
