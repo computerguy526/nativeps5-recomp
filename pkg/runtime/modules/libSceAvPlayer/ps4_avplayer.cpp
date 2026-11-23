@@ -728,7 +728,22 @@ public:
             return m_last_audio_ts + (elapsed > 0 ? (uint64_t)elapsed : 0);
         }
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_start_time - m_total_pause_duration).count();
-        return elapsed > 0 ? (uint64_t)elapsed : 0;
+        return m_clock_base_ms.load() + (elapsed > 0 ? (uint64_t)elapsed : 0);
+    }
+
+    // sceAvPlayerJumpToTime: honoured while a source plays or is paused (ready/playing/paused on the console).
+    bool jump_to(uint64_t ms) {
+        const AvState st = m_state.load();
+        if (st != AvState::Play && st != AvState::Pause) return false;
+        if (m_is_eof.load()) return false; // the demuxer has finished this source (not looping)
+        // A paused player's frame buffers all wait in the ready queue and the decoder waits for one: give them back so
+        // it reaches the jump marker (frames decoded before the marker are dropped there).
+        if (m_video_codec_ctx) m_jump_inflight.store(true);
+        DecodedVideoFrame old;
+        while (m_ready_video_frames.try_pop(old)) m_free_video_buffers.push(std::move(old.buffer));
+        m_jump_request.store((int64_t)ms);
+        AVPLAYER_LOG("JumpToTime %llu ms", (unsigned long long)ms);
+        return true;
     }
 
     bool is_playing() { return m_state.load() == AvState::Play && is_active(); }
@@ -773,7 +788,22 @@ public:
     }
 
     bool get_video_data_ex(AvPlayerFrameInfoEx *info) {
-        if (!info || !is_active() || m_is_paused.load()) return false;
+        if (!info || !is_active()) return false;
+        if (m_is_paused.load()) {
+            // Paused: nothing, except the first frame after a jump (the picture at the new position).
+            if (!m_jump_frame_pending.load()) return false;
+            DecodedVideoFrame frame;
+            if (!m_ready_video_frames.try_pop(frame)) return false;
+            m_jump_frame_pending.store(false);
+            if (m_curr_video_buf.has_value()) {
+                release_fetched_buffer(std::move(*m_curr_video_buf));
+                m_curr_video_buf.reset();
+            }
+            *info = frame.info;
+            frame.buffer.fetch_ns = mono_ns();
+            m_curr_video_buf = std::move(frame.buffer);
+            return true;
+        }
 
         const uint64_t now_ms = current_time();
         const uint64_t t_ns = mono_ns();
@@ -998,11 +1028,22 @@ private:
     void demuxer_worker() {
         AVPLAYER_LOG("Demuxer worker started");
         while (!m_workers_stop.load()) {
+            const int64_t jump = m_jump_request.exchange(-1); // before the read-ahead limit: a paused player has full queues
+            if (jump >= 0) {
+                AVPacket *old = nullptr; // packets of the old position are not decoded at all
+                while (m_video_packets.try_pop(old)) av_packet_free(&old);
+                while (m_audio_packets.try_pop(old)) av_packet_free(&old);
+                const int64_t ts = jump * (AV_TIME_BASE / 1000);
+                if (avformat_seek_file(m_fmt_ctx, -1, INT64_MIN, ts, ts, 0) < 0) avformat_seek_file(m_fmt_ctx, -1, 0, 0, 0, 0);
+                if (m_video_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -2; mk->pts = jump; m_video_packets.push(std::move(mk)); }
+                else { m_clock_base_ms.store((uint64_t)jump); m_start_time = std::chrono::steady_clock::now(); m_total_pause_duration = std::chrono::steady_clock::duration(0); m_pause_time = m_start_time; }
+                if (m_audio_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -2; mk->pts = jump; m_audio_packets.push(std::move(mk)); }
+                continue;
+            }
             if (m_video_packets.size() > 30 || m_audio_packets.size() > 60) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-
             AVPacket *pkt = av_packet_alloc();
             int ret = av_read_frame(m_fmt_ctx, pkt);
             if (ret < 0) {
@@ -1015,7 +1056,7 @@ private:
                     // aborted the process): queue a flush marker (stream_index -1) behind the old packets instead.
                     // The video decoder flushes, drops the frames of the old pass and restarts the clock.
                     if (m_video_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_video_packets.push(std::move(mk)); }
-                    else { m_start_time = std::chrono::steady_clock::now(); m_total_pause_duration = std::chrono::steady_clock::duration(0); }
+                    else { m_clock_base_ms.store(0); m_start_time = std::chrono::steady_clock::now(); m_total_pause_duration = std::chrono::steady_clock::duration(0); }
                     if (m_audio_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_audio_packets.push(std::move(mk)); }
                     continue;
                 }
@@ -1052,13 +1093,22 @@ private:
                 continue;
             }
 
-            if (pkt->stream_index == -1) { // loop marker from the demuxer
+            if (pkt->stream_index == -1 || pkt->stream_index == -2) { // loop (-1) or jump (-2, pts = target ms) marker
+                const bool jump = pkt->stream_index == -2;
+                const uint64_t target = jump ? (uint64_t)pkt->pts : 0;
                 av_packet_free(&pkt);
                 avcodec_flush_buffers(m_video_codec_ctx);
                 DecodedVideoFrame old;
                 while (m_ready_video_frames.try_pop(old)) m_free_video_buffers.push(std::move(old.buffer));
+                m_skip_before_ms.store(target);
+                m_clock_base_ms.store(target);
                 m_start_time = std::chrono::steady_clock::now();
                 m_total_pause_duration = std::chrono::steady_clock::duration(0);
+                m_pause_time = m_start_time; // paused: the frozen clock reads the target
+                if (jump) {
+                    m_jump_frame_pending.store(true);
+                    m_jump_inflight.store(false);
+                }
                 continue;
             }
             int ret = avcodec_send_packet(m_video_codec_ctx, pkt);
@@ -1116,6 +1166,11 @@ private:
 
                 AVStream *st = m_fmt_ctx->streams[m_video_stream_idx];
                 uint64_t ts = frame_timestamp_millis(raw_frame, st->time_base);
+                if (ts < m_skip_before_ms.load()) { // decoded from the key frame before a jump target
+                    m_free_video_buffers.push(std::move(buf));
+                    av_frame_unref(raw_frame);
+                    continue;
+                }
 
                 DecodedVideoFrame frame{};
                 frame.buffer = std::move(buf);
@@ -1147,6 +1202,11 @@ private:
                     { std::lock_guard<std::mutex> lk(m_stats_mutex); m_vstats.decode_lead_ms.add(lead); }
                     AVPLAYER_LOG("[avvid] decoded t_ms=%.2f pts=%llu lead_ms=%.0f", (double)mono_ns() / 1e6, (unsigned long long)ts, lead);
                 }
+                if (m_jump_inflight.load()) { // decoded before the jump marker: stale, and a paused guest would never free it
+                    m_free_video_buffers.push(std::move(frame.buffer));
+                    av_frame_unref(raw_frame);
+                    continue;
+                }
                 m_ready_video_frames.push(std::move(frame));
                 av_frame_unref(raw_frame);
             }
@@ -1171,7 +1231,7 @@ private:
                 continue;
             }
 
-            if (pkt->stream_index == -1) { av_packet_free(&pkt); avcodec_flush_buffers(m_audio_codec_ctx); continue; }
+            if (pkt->stream_index == -1 || pkt->stream_index == -2) { av_packet_free(&pkt); avcodec_flush_buffers(m_audio_codec_ctx); continue; }
             int ret = avcodec_send_packet(m_audio_codec_ctx, pkt);
             av_packet_free(&pkt);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
@@ -1345,6 +1405,14 @@ private:
     std::chrono::steady_clock::time_point m_last_audio_time{};
 
     std::atomic<bool> m_is_paused{false};
+    // sceAvPlayerJumpToTime: the demuxer takes m_jump_request (ms, -1 = none), seeks and queues a jump marker
+    // (stream_index -2, pts = target); the decoders flush there, the clock restarts at the target, frames before it
+    // are dropped, and one frame is handed out even while paused (the guest sees where it jumped to).
+    std::atomic<int64_t> m_jump_request{-1};
+    std::atomic<uint64_t> m_skip_before_ms{0};
+    std::atomic<uint64_t> m_clock_base_ms{0};
+    std::atomic<bool> m_jump_frame_pending{false};
+    std::atomic<bool> m_jump_inflight{false}; // JumpToTime called, its marker not yet reached by the video decoder
     std::atomic<bool> m_is_looping{false};
     std::atomic<bool> m_is_eof{false};
     std::atomic<bool> m_eof_stop_event_sent{false};
@@ -1697,8 +1765,16 @@ void shim_sceAvPlayerSetLogCallback(GuestContext *ctx) {
     SHIM_RETURN();
 }
 
+// int32_t sceAvPlayerJumpToTime(SceAvPlayerHandle, uint64_t jumpTimeMsec): Unity's VideoPlayer prepares a clip with
+// Start, Pause, JumpToTime and waits for the frame at the new position (PPSA28997: it closed the clip after 10 s when
+// the old 0-returning stub never moved).
 void shim_sceAvPlayerJumpToTime(GuestContext *ctx) {
-    ctx->rax = 0;
+    AvPlayer *player = (AvPlayer *)ctx->rdi;
+    if (!player) {
+        ctx->rax = (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+        SHIM_RETURN();
+    }
+    ctx->rax = player->jump_to(ctx->rsi) ? 0 : (uint64_t)(int64_t)ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
     SHIM_RETURN();
 }
 

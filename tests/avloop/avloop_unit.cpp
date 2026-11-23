@@ -107,6 +107,34 @@ int main() {
     if (bad_ts) { printf("FAIL %llu frames with a timestamp beyond the clip\n", (unsigned long long)bad_ts); fails++; }
     delete p; // stops the workers: must not hang or crash either
   }
+  { // sceAvPlayerJumpToTime while paused (Unity's VideoPlayer prepare: Start, Pause, JumpToTime, wait for that frame).
+    // A 2 s clip: the demuxer reads at most 30 packets ahead, so it has not finished the source (a jump after the
+    // demuxer has ended a non-looping source is refused).
+    char clip2[300]; snprintf(clip2, sizeof clip2, "%s/clip2.mp4", dir);
+    snprintf(cmd, sizeof cmd, "ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=60 -frames:v 120 -an -c:v libx264 -g 30 -pix_fmt yuv420p '%s' >/dev/null 2>&1", clip2);
+    if (system(cmd) != 0) { printf("FAIL jump: clip\n"); fails++; }
+    AvPlayerInitData init{};
+    init.num_output_video_framebuffers = 8;
+    init.auto_start = true;
+    AvPlayer *p = new AvPlayer(&g_ctx, init);
+    p->set_av_sync_mode(AVPLAYER_AV_SYNC_MODE_NONE);
+    if (p->add_source(clip2) != 0) { printf("FAIL jump: add_source\n"); fails++; }
+    for (int i = 0; i < 200 && !p->is_playing(); i++) usleep(10000);
+    p->pause_playback();
+    AvPlayerFrameInfo fi{};
+    while (p->get_video_data(&fi)) {} // nothing while paused
+    if (!p->jump_to(200)) { printf("FAIL jump: refused\n"); fails++; }
+    bool got = false;
+    for (int i = 0; i < 200 && !got; i++) { got = p->get_video_data(&fi); if (!got) usleep(10000); }
+    if (!got || fi.timestamp < 200 || fi.timestamp > 217) { printf("FAIL jump: frame %d ts %llu (want 200..217)\n", got, (unsigned long long)fi.timestamp); fails++; }
+    if (p->get_video_data(&fi)) { printf("FAIL jump: a second frame while paused\n"); fails++; }
+    if (p->current_time() != 200) { printf("FAIL jump: clock %llu while paused (want 200)\n", (unsigned long long)p->current_time()); fails++; }
+    p->resume_playback();
+    got = false;
+    for (int i = 0; i < 100 && !got; i++) { got = p->get_video_data(&fi); if (!got) usleep(10000); }
+    if (!got || fi.timestamp < 200) { printf("FAIL jump: after resume frame %d ts %llu\n", got, (unsigned long long)fi.timestamp); fails++; }
+    delete p;
+  }
   snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir); system(cmd);
   printf(fails ? "avloop_unit: %d FAILURES\n" : "avloop_unit: all passed\n", fails);
   return fails ? 1 : 0;
