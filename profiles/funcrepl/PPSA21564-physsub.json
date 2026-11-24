@@ -64,6 +64,54 @@
             "sha256": "3998eb90b6edf0de5ab2adc0896a4d10f375362a8660dac543bd82ecbb64910b",
             "shim": "nps5_physsub_pcollide_step",
             "wrap": true
+        },
+        {
+            "name": "BigLeafPlant::Update",
+            "addr": "0x537a360",
+            "size": 5069,
+            "sha256": "afffcc89f20c5c008e3d0cb5541c14bbd246beb3a901e2f7842ad43cef13153c",
+            "shim": "nps5_physsub_dtclamp_0",
+            "wrap": true
+        },
+        {
+            "name": "SpringBone::Step",
+            "addr": "0x20de170",
+            "size": 7918,
+            "sha256": "b8cc727f9ca092e028c4c3eaea8e8a95996b52b764670c2291f08aaf19a59212",
+            "shim": "nps5_physsub_dtclamp_1",
+            "wrap": true
+        },
+        {
+            "name": "ApRope::Step",
+            "addr": "0x10d5e70",
+            "size": 5865,
+            "sha256": "b157b29ddb8e3129903ce3bd081700faa5f77886fe265cadbb15a02cb819e474",
+            "shim": "nps5_physsub_dtclamp_2",
+            "wrap": true
+        },
+        {
+            "name": "ApRopeB::Step",
+            "addr": "0x10d8b60",
+            "size": 7403,
+            "sha256": "ed143354de1305c2c47200cdecfbe9022bf6a84861a35d4040a62b2587c4ec0c",
+            "shim": "nps5_physsub_dtclamp_3",
+            "wrap": true
+        },
+        {
+            "name": "ApSoftBody::Step",
+            "addr": "0x10e9a50",
+            "size": 14035,
+            "sha256": "4ec6dbd8efd47bcf1aa3f1fb0b0f6911f6b18b11d8bc91a8b971028914d6ee93",
+            "shim": "nps5_physsub_dtclamp_4",
+            "wrap": true
+        },
+        {
+            "name": "ApSoftBodyBall::Step",
+            "addr": "0x10deca0",
+            "size": 7122,
+            "sha256": "24fb59ba1847369920f6fabc5cd33c5b483fa6b1aec42ff31771ce182c4748b4",
+            "shim": "nps5_physsub_dtclamp_5",
+            "wrap": true
         }
     ],
     "params": [
