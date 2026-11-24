@@ -1401,9 +1401,9 @@ static pthread_mutex_t g_rl_mu = PTHREAD_MUTEX_INITIALIZER;
 // "P\t<entry>\t<guest path>" line when an entry is first read. For building sparse copies of the title's
 // containers (only the byte ranges a run reads). NPS5_VFS_HOLE_CHECK=1: a read that touches a hole of a sparse
 // host file (lseek SEEK_HOLE) is fatal with the path and range, instead of returning zeros to the game.
-static FILE *g_rg_f;                        // under g_rl_mu
-static unsigned char *g_rg_named;           // entry seen in the range log, under g_rl_mu
-static int g_hole_check;                    // set once in the constructor
+static FILE *g_rg_f; // under g_rl_mu
+static unsigned char *g_rg_named; // entry seen in the range log, under g_rl_mu
+static int g_hole_check; // set once in the constructor
 
 static double rl_now(void) {
   struct timespec t;
@@ -1464,11 +1464,11 @@ static void rl_dump(void) {
   pthread_mutex_unlock(&g_rl_mu);
 }
 static void rl_dump_all(void) {
-  rl_dump();
-  lp_dump();
-  pthread_mutex_lock(&g_rl_mu);
-  if (g_rg_f) fflush(g_rg_f);
-  pthread_mutex_unlock(&g_rl_mu);
+    rl_dump();
+    lp_dump();
+    pthread_mutex_lock(&g_rl_mu);
+    if (g_rg_f) fflush(g_rg_f);
+    pthread_mutex_unlock(&g_rl_mu);
 }
 static void *rl_thread(void *a) { (void)a; for (;;) { sleep(2); rl_dump_all(); } return NULL; }
 // A name that does not fit is refused (a cut-off name would be another file).
@@ -1490,13 +1490,16 @@ __attribute__((constructor)) static void rl_init(void) {
   g_hole_check = getenv("NPS5_VFS_HOLE_CHECK") && atoi(getenv("NPS5_VFS_HOLE_CHECK")) > 0;
   const char *rg = getenv("NPS5_VFS_RANGELOG");
   if (rg && *rg) {
-    if (!g_rl_on) fprintf(stderr, "[vfs] NPS5_VFS_RANGELOG needs NPS5_VFS_READLOG; ignored\n");
-    else {
-      g_rg_f = fopen(rg, "w");
-      g_rg_named = calloc(RL_MAX, 1);
-      if (!g_rg_f || !g_rg_named) fprintf(stderr, "[vfs] NPS5_VFS_RANGELOG=%s: cannot open\n", rg);
-      else setvbuf(g_rg_f, NULL, _IOFBF, 1 << 20);
-    }
+      if (!g_rl_on)
+          fprintf(stderr, "[vfs] NPS5_VFS_RANGELOG needs NPS5_VFS_READLOG; ignored\n");
+      else {
+          g_rg_f = fopen(rg, "w");
+          g_rg_named = calloc(RL_MAX, 1);
+          if (!g_rg_f || !g_rg_named)
+              fprintf(stderr, "[vfs] NPS5_VFS_RANGELOG=%s: cannot open\n", rg);
+          else
+              setvbuf(g_rg_f, NULL, _IOFBF, 1 << 20);
+      }
   }
   if (!g_rl_on && !want_profile) return;
   atexit(rl_dump_all);
@@ -1521,18 +1524,20 @@ static void rl_open(int fd, const char *guest) {
 }
 // n bytes were read from fd at offset off (-1 = not known).
 static void vfs_hole_check(int fd, long long off, long long n) {
-  if (off < 0) off = (long long)lseek(fd, 0, SEEK_CUR) - n; // after a read(v) the position is past the data
-  if (off < 0) return;
-  const off_t h = lseek(fd, (off_t)off, SEEK_HOLE);
-  struct stat st;
-  if (h >= 0 && (long long)h < off + n && fstat(fd, &st) == 0 && h < st.st_size) {
-    char path[1024] = "?";
-    fcntl(fd, F_GETPATH, path);
-    fprintf(stderr, "FATAL: [vfs] NPS5_VFS_HOLE_CHECK: read of %s at 0x%llx+0x%llx touches a sparse hole at 0x%llx "
-                    "(this byte range was not copied to this box)\n", path, off, n, (long long)h);
-    fflush(stderr);
-    abort();
-  }
+    if (off < 0) off = (long long)lseek(fd, 0, SEEK_CUR) - n; // after a read(v) the position is past the data
+    if (off < 0) return;
+    const off_t h = lseek(fd, (off_t)off, SEEK_HOLE);
+    struct stat st;
+    if (h >= 0 && (long long)h < off + n && fstat(fd, &st) == 0 && h < st.st_size) {
+        char path[1024] = "?";
+        fcntl(fd, F_GETPATH, path);
+        fprintf(stderr,
+                "FATAL: [vfs] NPS5_VFS_HOLE_CHECK: read of %s at 0x%llx+0x%llx touches a sparse hole at 0x%llx "
+                "(this byte range was not copied to this box)\n",
+                path, off, n, (long long)h);
+        fflush(stderr);
+        abort();
+    }
 }
 void ps4_vfs_readlog_note(int fd, long long off, long long n) {
   if (n <= 0) return;
@@ -1550,10 +1555,13 @@ void ps4_vfs_readlog_note(int fd, long long off, long long n) {
     e->t_last = rl_now();
     if (off >= 0 && (uint64_t)off + (uint64_t)n > e->maxend) e->maxend = (uint64_t)off + (uint64_t)n;
     if (g_rg_f) {
-      long long o = off;
-      if (o < 0) o = (long long)lseek(fd, 0, SEEK_CUR) - n; // read/readv: the data ended at the new position
-      if (!g_rg_named[k - 1]) { g_rg_named[k - 1] = 1; fprintf(g_rg_f, "P\t%d\t%s\n", k - 1, e->path); }
-      fprintf(g_rg_f, "%d\t%lld\t%lld\n", k - 1, o, n);
+        long long o = off;
+        if (o < 0) o = (long long)lseek(fd, 0, SEEK_CUR) - n; // read/readv: the data ended at the new position
+        if (!g_rg_named[k - 1]) {
+            g_rg_named[k - 1] = 1;
+            fprintf(g_rg_f, "P\t%d\t%s\n", k - 1, e->path);
+        }
+        fprintf(g_rg_f, "%d\t%lld\t%lld\n", k - 1, o, n);
     }
   }
   pthread_mutex_unlock(&g_rl_mu);
@@ -1561,30 +1569,37 @@ void ps4_vfs_readlog_note(int fd, long long off, long long n) {
 
 // A read by path with a private fd (libSceAmpr opens the host file per request): hole check and range log.
 void ps4_vfs_readlog_note_path(const char *path, int fd, long long off, long long n) {
-  if (n <= 0 || !path) return;
-  atomic_fetch_add_explicit(&nps5_vfs_bytes_read, (unsigned long long)n, memory_order_relaxed);
-  if (g_hole_check && fd >= 0) vfs_hole_check(fd, off, n);
-  if (!g_rg_f) return;
-  pthread_mutex_lock(&g_rl_mu);
-  int idx = -1;
-  for (int i = 0; i < g_rl_n; i++) if (!strcmp(g_rl[i].path, path)) { idx = i; break; }
-  if (idx < 0 && g_rl_n < RL_MAX) {
-    idx = g_rl_n++;
-    snprintf(g_rl[idx].path, sizeof(g_rl[idx].path), "%s", path);
-    g_rl[idx].t_first = rl_now();
-    struct stat st;
-    if (fstat(fd, &st) == 0) g_rl[idx].size = (uint64_t)st.st_size;
-  }
-  if (idx >= 0) {
-    RlEnt *e = &g_rl[idx];
-    e->reads++;
-    e->bytes += (uint64_t)n;
-    e->t_last = rl_now();
-    if (off >= 0 && (uint64_t)off + (uint64_t)n > e->maxend) e->maxend = (uint64_t)off + (uint64_t)n;
-    if (!g_rg_named[idx]) { g_rg_named[idx] = 1; fprintf(g_rg_f, "P\t%d\t%s\n", idx, e->path); }
-    fprintf(g_rg_f, "%d\t%lld\t%lld\n", idx, off, n);
-  }
-  pthread_mutex_unlock(&g_rl_mu);
+    if (n <= 0 || !path) return;
+    atomic_fetch_add_explicit(&nps5_vfs_bytes_read, (unsigned long long)n, memory_order_relaxed);
+    if (g_hole_check && fd >= 0) vfs_hole_check(fd, off, n);
+    if (!g_rg_f) return;
+    pthread_mutex_lock(&g_rl_mu);
+    int idx = -1;
+    for (int i = 0; i < g_rl_n; i++)
+        if (!strcmp(g_rl[i].path, path)) {
+            idx = i;
+            break;
+        }
+    if (idx < 0 && g_rl_n < RL_MAX) {
+        idx = g_rl_n++;
+        snprintf(g_rl[idx].path, sizeof(g_rl[idx].path), "%s", path);
+        g_rl[idx].t_first = rl_now();
+        struct stat st;
+        if (fstat(fd, &st) == 0) g_rl[idx].size = (uint64_t)st.st_size;
+    }
+    if (idx >= 0) {
+        RlEnt *e = &g_rl[idx];
+        e->reads++;
+        e->bytes += (uint64_t)n;
+        e->t_last = rl_now();
+        if (off >= 0 && (uint64_t)off + (uint64_t)n > e->maxend) e->maxend = (uint64_t)off + (uint64_t)n;
+        if (!g_rg_named[idx]) {
+            g_rg_named[idx] = 1;
+            fprintf(g_rg_f, "P\t%d\t%s\n", idx, e->path);
+        }
+        fprintf(g_rg_f, "%d\t%lld\t%lld\n", idx, off, n);
+    }
+    pthread_mutex_unlock(&g_rl_mu);
 }
 
 static int ps4_vfs_open_impl(const char *guest_path, int host_flags, mode_t mode);

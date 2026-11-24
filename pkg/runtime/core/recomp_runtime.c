@@ -124,57 +124,64 @@ static bool crash_read_u64(uint64_t g, uint64_t *v) { return nps5_guest_safe_rea
 // guest memory overlap [a, a+len). Resolved at crash time by name; absent = no output.
 typedef int (*KytyJournalLookup)(uint64_t guest_addr, uint64_t len, char *out, size_t out_len);
 static void crash_journal(uint64_t a, uint64_t len, const char *indent) {
-  static KytyJournalLookup fn;
-  static int tried;
-  if (!tried) {
-    tried = 1;
-    // kyty_gpu.dylib is opened RTLD_LOCAL (nps5_kyty.c): ask its handle first.
-    extern void *nps5_kyty_lib_handle(void) __attribute__((weak));
-    void *h = nps5_kyty_lib_handle ? nps5_kyty_lib_handle() : NULL;
-    fn = (KytyJournalLookup)(h ? dlsym(h, "kyty_guest_write_journal_lookup") : NULL);
-    if (!fn) fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
-    Dl_info di;
-    if (fn && dladdr((void *)fn, &di))
-      fprintf(stderr, "Kyty guest-write journal: %s loaded at %p (atos -o <dylib> -l %p <caller>)\n", di.dli_fname,
-              di.dli_fbase, di.dli_fbase);
-  }
-  if (!fn) return;
-  char buf[2048];
-  buf[0] = 0;
-  const int n = fn(a, len, buf, sizeof buf);
-  if (n > 0) fprintf(stderr, "%s  Kyty wrote here (%d journal entries, newest first):\n%s%s", indent, n, buf,
-                     (buf[0] && buf[strlen(buf) - 1] != '\n') ? "\n" : "");
+    static KytyJournalLookup fn;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        // kyty_gpu.dylib is opened RTLD_LOCAL (nps5_kyty.c): ask its handle first.
+        extern void *nps5_kyty_lib_handle(void) __attribute__((weak));
+        void *h = nps5_kyty_lib_handle ? nps5_kyty_lib_handle() : NULL;
+        fn = (KytyJournalLookup)(h ? dlsym(h, "kyty_guest_write_journal_lookup") : NULL);
+        if (!fn) fn = (KytyJournalLookup)dlsym(RTLD_DEFAULT, "kyty_guest_write_journal_lookup");
+        Dl_info di;
+        if (fn && dladdr((void *)fn, &di))
+            fprintf(stderr, "Kyty guest-write journal: %s loaded at %p (atos -o <dylib> -l %p <caller>)\n",
+                    di.dli_fname, di.dli_fbase, di.dli_fbase);
+    }
+    if (!fn) return;
+    char buf[2048];
+    buf[0] = 0;
+    const int n = fn(a, len, buf, sizeof buf);
+    if (n > 0)
+        fprintf(stderr, "%s  Kyty wrote here (%d journal entries, newest first):\n%s%s", indent, n, buf,
+                (buf[0] && buf[strlen(buf) - 1] != '\n') ? "\n" : "");
 }
 
 static void crash_dump_one(const char *tag, uint64_t v, int depth) {
-  if (!g_current_ctx || v < 0x10000 || v >= g_current_ctx->mem_size) return;
-  GuestVMExtent e;
-  const bool have = recomp_vm_query(g_current_ctx, v, &e);
-  const int n = depth ? 4 : 16;
-  fprintf(stderr, "%s%s=0x%llx", depth ? "    " : "  ", tag, (unsigned long long)v);
-  if (have) fprintf(stderr, " [%s kind=%d 0x%llx+0x%llx%s]", e.name, e.kind, (unsigned long long)e.addr,
-                    (unsigned long long)e.size, e.is_free ? " FREE" : "");
-  else fprintf(stderr, " [no extent]");
-  uint64_t q[16];
-  int got = 0;
-  for (; got < n; got++) if (!crash_read_u64(v + (uint64_t)got * 8, &q[got])) break;
-  fprintf(stderr, ":");
-  for (int i = 0; i < got; i++) fprintf(stderr, " %016llx", (unsigned long long)q[i]);
-  fprintf(stderr, "\n");
-  if (got) crash_journal(v, (uint64_t)got * 8, depth ? "    " : "  ");
-  if (!depth)
-    for (int i = 0; i < got; i++) {
-      char t[32];
-      snprintf(t, sizeof t, "+0x%x", i * 8);
-      crash_dump_one(t, q[i], 1);
-    }
+    if (!g_current_ctx || v < 0x10000 || v >= g_current_ctx->mem_size) return;
+    GuestVMExtent e;
+    const bool have = recomp_vm_query(g_current_ctx, v, &e);
+    const int n = depth ? 4 : 16;
+    fprintf(stderr, "%s%s=0x%llx", depth ? "    " : "  ", tag, (unsigned long long)v);
+    if (have)
+        fprintf(stderr, " [%s kind=%d 0x%llx+0x%llx%s]", e.name, e.kind, (unsigned long long)e.addr,
+                (unsigned long long)e.size, e.is_free ? " FREE" : "");
+    else
+        fprintf(stderr, " [no extent]");
+    uint64_t q[16];
+    int got = 0;
+    for (; got < n; got++)
+        if (!crash_read_u64(v + (uint64_t)got * 8, &q[got])) break;
+    fprintf(stderr, ":");
+    for (int i = 0; i < got; i++)
+        fprintf(stderr, " %016llx", (unsigned long long)q[i]);
+    fprintf(stderr, "\n");
+    if (got) crash_journal(v, (uint64_t)got * 8, depth ? "    " : "  ");
+    if (!depth)
+        for (int i = 0; i < got; i++) {
+            char t[32];
+            snprintf(t, sizeof t, "+0x%x", i * 8);
+            crash_dump_one(t, q[i], 1);
+        }
 }
 #if defined(__APPLE__) && defined(__arm64__)
 static void crash_dump_regs(const uint64_t *x) {
-  static const char *names[] = {"RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RBP"};
-  static const int idx[] = {19, 20, 21, 22, 23, 24, 8, 9, 10, 11, 12, 13, 14, 15, 25};
-  fprintf(stderr, "Guest register dump (NPS5_CRASH_REGDUMP):\n");
-  for (int r = 0; r < 15; r++) crash_dump_one(names[r], x[idx[r]], 0);
+    static const char *names[] = {"RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "R8", "R9",
+                                  "R10", "R11", "R12", "R13", "R14", "R15", "RBP"};
+    static const int idx[] = {19, 20, 21, 22, 23, 24, 8, 9, 10, 11, 12, 13, 14, 15, 25};
+    fprintf(stderr, "Guest register dump (NPS5_CRASH_REGDUMP):\n");
+    for (int r = 0; r < 15; r++)
+        crash_dump_one(names[r], x[idx[r]], 0);
 }
 #endif
 
@@ -421,13 +428,19 @@ void shim_unresolved_stub(GuestContext *ctx) {
   // aborting, so a run gets past imports nobody has implemented yet. Each name is reported above every time
   // it is called until NPS5_UNRESOLVED_RET0_QUIET=1; the run summary still counts unresolved hits.
   {
-    static int ret0 = -1;
-    if (ret0 < 0) { const char *e = getenv("NPS5_UNRESOLVED_RET0"); ret0 = (e && e[0] == '1') ? 1 : 0; }
-    if (ret0 == 1) {
-      fflush(stderr);
-      if (ctx) { ctx->rax = 0; ctx->rsp += 8; }
-      return;
-    }
+      static int ret0 = -1;
+      if (ret0 < 0) {
+          const char *e = getenv("NPS5_UNRESOLVED_RET0");
+          ret0 = (e && e[0] == '1') ? 1 : 0;
+      }
+      if (ret0 == 1) {
+          fflush(stderr);
+          if (ctx) {
+              ctx->rax = 0;
+              ctx->rsp += 8;
+          }
+          return;
+      }
   }
   recomp_dump_guest_context(ctx);
   fflush(stderr);
