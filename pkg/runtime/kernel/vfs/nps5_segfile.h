@@ -7,7 +7,8 @@
 // The VFS presents such a directory to the guest as the original single file <name> (open, stat, read, pread, lseek,
 // fstat, mmap copy-in, readv, aio, AMPR, directory listings), when <name> itself is missing.
 //
-// NPS5_VFS_SEGFILES=1 turns it on (default off). NPS5_VFS_SEGFILES_FDS=<n> caps the segment fds kept open across all
+// Automatic: a path whose plain file is missing but whose <path>.nps5seg/manifest.json validates is served as the
+// segmented file, no setting needed; a plain file always wins. NPS5_VFS_SEGFILES=0 forces it off. NPS5_VFS_SEGFILES_FDS=<n> caps the segment fds kept open across all
 // segmented files (least recently used unpinned ones are closed first; default 64).
 // Log: "[vfs] segfile <path>: N segments" once per file when it is first used.
 #ifndef NPS5_SEGFILE_H

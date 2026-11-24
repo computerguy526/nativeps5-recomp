@@ -45,6 +45,8 @@ typedef struct SegDir { // one scanned host directory: its *.nps5seg entries (no
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static nps5_segfile *g_files;
+static char **g_bad; // segment directories whose manifest did not validate (logged once, not retried)
+static int g_nbad;
 static SegDir *g_dirs;
 static int g_open_fds;
 static uint64_t g_tick;
@@ -53,7 +55,7 @@ int nps5_segfile_enabled(void) {
   static int on = -1;
   if (on < 0) {
     const char *e = getenv("NPS5_VFS_SEGFILES");
-    on = (e && *e && *e != '0') ? 1 : 0;
+    on = (e && !strcmp(e, "0")) ? 0 : 1; // automatic: only NPS5_VFS_SEGFILES=0 forces it off
   }
   return on;
 }
@@ -202,11 +204,18 @@ nps5_segfile *nps5_segfile_lookup(const char *host) {
     if (stat(segdir, &ds) == 0 && S_ISDIR(ds.st_mode)) {
       for (nps5_segfile *f = g_files; f; f = f->next)
         if (f->dev == ds.st_dev && f->ino == ds.st_ino) { res = f; break; }
-      if (!res && (res = load_locked(segdir, host)) != NULL) {
-        res->dev = ds.st_dev;
-        res->ino = ds.st_ino;
-        res->next = g_files;
-        g_files = res;
+      int bad = 0;
+      for (int i = 0; !res && i < g_nbad; i++) if (!strcmp(g_bad[i], segdir)) bad = 1;
+      if (!res && !bad) {
+        if ((res = load_locked(segdir, host)) != NULL) {
+          res->dev = ds.st_dev;
+          res->ino = ds.st_ino;
+          res->next = g_files;
+          g_files = res;
+        } else {
+          char **nb = (char **)realloc(g_bad, (size_t)(g_nbad + 1) * sizeof(char *));
+          if (nb) { g_bad = nb; g_bad[g_nbad] = strdup(segdir); if (g_bad[g_nbad]) g_nbad++; }
+        }
       }
     }
   }
@@ -352,6 +361,10 @@ void nps5_segfile_reset(void) {
     for (int i = 0; i < d->n; i++) free(d->names[i]);
     free(d->names); free(d->dir); free(d);
   }
+  for (int i = 0; i < g_nbad; i++) free(g_bad[i]);
+  free(g_bad);
+  g_bad = NULL;
+  g_nbad = 0;
   g_files = NULL;
   g_dirs = NULL;
   g_open_fds = 0;

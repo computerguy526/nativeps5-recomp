@@ -1,7 +1,7 @@
 #!/bin/bash
 # Host unit test of gamepack segmented files (tests/segfile/segfile_unit.c): every guest read path of ps4_vfs, readv/preadv,
 # aio, AMPR and directory listings over a <file>.nps5seg/ directory must read exactly like the original file. Runs with
-# segments written by the test, then with NPS5_VFS_SEGFILES=0 (not visible). With GAMEPACK=<path to gamepack.py> it also
+# segments written by the test, then with no setting at all (automatic), then with NPS5_VFS_SEGFILES=0 (not visible). With GAMEPACK=<path to gamepack.py> it also
 # packs a file with the real tool (tiny segments, APFS compression where the tool can) and runs the test on that.
 # Native arm64 only; files live under a temp dir. Subsystems that are not linked get zero-returning stubs.
 set -u
@@ -17,7 +17,7 @@ if [ $rc -ne 0 ]; then
   if [ -s "$OUT.stubs.c" ]; then clang $FL $SRC "$OUT.stubs.c" -o "$OUT" 2> "$OUT.err2"; rc=$?; else cp "$OUT.err" "$OUT.err2"; fi
   [ $rc -ne 0 ] && head -30 "$OUT.err2"
 fi
-if [ $rc -eq 0 ]; then SEGFILE_TMP="${TMPDIR:-/tmp}" "$OUT" && SEGFILE_TMP="${TMPDIR:-/tmp}" "$OUT" off; rc=$?; fi
+if [ $rc -eq 0 ]; then SEGFILE_TMP="${TMPDIR:-/tmp}" "$OUT" && SEGFILE_TMP="${TMPDIR:-/tmp}" "$OUT" auto && SEGFILE_TMP="${TMPDIR:-/tmp}" "$OUT" off; rc=$?; fi
 if [ $rc -eq 0 ] && [ -n "${GAMEPACK:-}" ]; then
   # the real tool: pack, run the reader test on the packed tree, then unpack and compare bit for bit
   T=$(mktemp -d "${TMPDIR:-/tmp}/segfile_gp.XXXXXX"); mkdir -p "$T/app/Paks" "$T/app.orig"
