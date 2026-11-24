@@ -2,7 +2,7 @@
     "name": "PPSA28997",
     "base": "unity-ps5",
     "notes": [
-        "God of War Sons of Sparta (Unity PS5). Bring-up log: work/ppsa28997/BOOTLOG.md in the nativeps5 workspace.",
+        "God of War Sons of Sparta (Unity PS5).",
         "NPS5_NP_WEBAPI_INIT_OK (experiment, r17): with sce::Np::CppWebApi::Common::initialize failing (offline stub NOT_SIGNED_IN) the game's PS5 init stops after '@MEGACAT - Is primary user, breaking loop' and the title never fades in; with it the init runs to 'Finished Initializing PS5 Scripts'. Title-only until it is understood which caller needs it."
     ],
     "translate": {},
