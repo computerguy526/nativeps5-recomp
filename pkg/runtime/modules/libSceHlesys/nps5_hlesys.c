@@ -85,6 +85,65 @@ void shim__sceLibcInternalThreadAtexit(GuestContext *ctx) {
     RET32(ctx, 0);
 }
 
+// ---- libScePsml Mfsr2 (PSSR 2 upscaler, PS5 Pro only; PPSA07631) ----------------------------------------
+// Behaviour as upstream KytyPS5 (GPL-2.0, src/libs/libPsml.cpp, namespace Mfsr2) on a base console: Initialize
+// answers NOT_AVAILABLE (0x8a8a0012) outside Pro ("trinity") mode, every other entry NOT_INITIALIZED (0x8a8a0001),
+// so the title keeps its own upscaler. Bound by NID (no names in our NID table).
+void shim_psml_mfsr2_initialize(GuestContext *ctx) {
+  hs_once("scePsmlMfsr2Initialize", "base PS5: PSSR not available (0x8a8a0012)");
+  RET32(ctx, (int32_t)0x8a8a0012u);
+}
+void shim_psml_mfsr2_not_initialized(GuestContext *ctx) { RET32(ctx, (int32_t)0x8a8a0001u); }
+
+// ---- NpEntitlementAccess / NpManager account queries (PPSA07631) ----------------------------------------
+// Behaviour of upstream KytyPS5 (GPL-2.0: libNpEntitlementAccess.cpp, network.cpp) for an offline, signed-out
+// user: the game is the full SKU, no game trial, account age/language not available (SIGNED_OUT 0x80550006).
+void shim_sceNpEntitlementAccessGetSkuFlag(GuestContext *ctx) {
+  uint32_t *flag = ctx->rdi ? (uint32_t *)NPS5_G2H(ctx, ctx->rdi) : NULL;
+  if (!flag) RET32(ctx, (int32_t)0x817D0002u);
+  *flag = 3; // SKU_FLAG_FULL
+  hs_once("sceNpEntitlementAccessGetSkuFlag", "full SKU");
+  RET32(ctx, 0);
+}
+void shim_sceNpEntitlementAccessGetGameTrialsFlag(GuestContext *ctx) {
+  uint32_t *flag = ctx->rdi ? (uint32_t *)NPS5_G2H(ctx, ctx->rdi) : NULL;
+  if (!flag) RET32(ctx, (int32_t)0x817D0002u);
+  *flag = 0; // GAME_TRIALS_FLAG_OFF
+  RET32(ctx, 0);
+}
+void shim_sceNpGetAccountAge(GuestContext *ctx) {
+  uint8_t *age = ctx->rdx ? (uint8_t *)NPS5_G2H(ctx, ctx->rdx) : NULL;
+  if ((int32_t)ctx->rdi <= 0 || !age) RET32(ctx, (int32_t)0x80550003u);
+  *age = 0;
+  RET32(ctx, (int32_t)0x80550006u);
+}
+void shim_sceNpGetAccountLanguage2(GuestContext *ctx) {
+  uint8_t *code = ctx->rdx ? (uint8_t *)NPS5_G2H(ctx, ctx->rdx) : NULL;
+  if ((int32_t)ctx->rdi <= 0 || !code) RET32(ctx, (int32_t)0x80550003u);
+  RET32(ctx, (int32_t)0x80550006u);
+}
+
+// ---- SDK 11 audio / entitlement imports with no shim yet (PPSA07631) ------------------------------------------
+// Behaviour of upstream KytyPS5 (GPL-2.0, libAudio2.cpp / libAudio.cpp / libNpEntitlementAccess.cpp), ported, not
+// copied: mastering is a no-op that succeeds, 3D latency is accepted for outputs 0..2, the propagation path setter
+// and the decoder reset succeed, no entitlement key exists.
+void shim_sceAudioOut2MasteringInit(GuestContext *ctx) { hs_once("sceAudioOut2MasteringInit", "no-op"); RET32(ctx, 0); }
+void shim_sceAudioOut2MasteringSetParam(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudioOut2MasteringTerm(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudioOut2Set3DLatency(GuestContext *ctx) {
+  if ((uint32_t)ctx->rsi > 2) RET32(ctx, (int32_t)0x80268001u); // INVALID_PARAM
+  RET32(ctx, 0);
+}
+void shim_sceAudioPropagationSourceSetAudioPath(GuestContext *ctx) { RET32(ctx, 0); }
+void shim_sceAudiodecClearContext(GuestContext *ctx) {
+  if ((int32_t)ctx->rdi <= 0) RET32(ctx, (int32_t)0x807F000Fu); // INVALID_HANDLE
+  RET32(ctx, 0);
+}
+void shim_sceNpEntitlementAccessGetEntitlementKey(GuestContext *ctx) {
+  if (!ctx->rdi || !ctx->rdx) RET32(ctx, (int32_t)0x817D0002u); // PARAMETER
+  RET32(ctx, (int32_t)0x817D0007u);                         // NO_ENTITLEMENT
+}
+
 // ---- libScePad (adaptive triggers / vibration mode) --------------------------------------------
 // Host fallback for a build without a pad backend (`-gpu off`): there is no controller, so there is nothing to drive.
 // With `-gpu anyps5` the four imports below are rebound to AnyPS5's libScePad (shim_aps5_<name>, emitter.EnableAnyPS5Shims),

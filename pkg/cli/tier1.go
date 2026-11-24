@@ -55,6 +55,7 @@ type tier1Info struct {
 	CallModel        string   `json:"call_model"` // flat or nested: the lifter's model, fragments are lifted in it
 	X87              string   `json:"x87,omitempty"`
 	SimdLiveness     string   `json:"simd_liveness,omitempty"` // abi (also when absent), strict or off
+	TSOStrict        []uint64 `json:"tso_strict,omitempty"`    // functions whose vector/string accesses are fenced (NPS5_TSO_STRICT_FUNCS of the translation)
 	TSORelax         []uint64 `json:"tso_relax,omitempty"`     // functions lifted without ordering (NPS5_TSO_RELAX_FUNCS of the translation)
 	NoPeephole       bool     `json:"no_peephole,omitempty"`   // the translation ran with the peephole pass off (NPS5_NO_PEEPHOLE)
 	GPU              string   `json:"gpu,omitempty"`
@@ -129,7 +130,7 @@ func writeTier1Artifacts(cfg *Config, funcs []disasm.ReachableFunc) (cfile strin
 		ExcludeModules: cfg.ExcludeModules, HLEMalloc: cfg.HLEMalloc, HLEReplace: absOrEmpty(cfg.HLEReplace), Patches: absOrEmpty(cfg.Patches),
 		Translator: exe, TranslatorSHA256: exeSum,
 		AOTFuncs: "aot_funcs.bin", OutDir: outAbs, LoweringID: emitter.LoweringID(),
-		TSORelax: lifter.EnvTSORelax(), NoPeephole: !lifter.EnvPeephole(),
+		TSORelax: lifter.EnvTSORelax(), TSOStrict: lifter.EnvTSOStrict(), NoPeephole: !lifter.EnvPeephole(),
 	}
 	// Fragments are cached below the output directory unless -cache-dir names a shared place
 	// (a title translated into several directories then shares its tier-1 fragments).
@@ -230,6 +231,10 @@ func tier1Version(i *tier1Info) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%t|%t|%t|%s|%s|%s|%s|%x|%t|ic=%t,%t,%t,%t|cold=%t|layout=%s|abi=%d|simd=%s", i.ABI, i.LoweringID, i.AddrMode, i.CallModel, i.TSO,
 		i.AllowUnsupported, i.AllSymbols, i.X87, i.GPU, strings.Join(i.ExcludeModules, ","), i.Elf, i.TSORelax, i.NoPeephole,
 		i.CallIC, i.FpCmpFuse, i.PushPopFuse, i.JmpIC, i.ColdOutline, i.LayoutHash, i.CodeABI, i.SimdLiveness)))
+	if len(i.TSOStrict) != 0 {
+		// Only for a non-empty list: the version of a title without one is what it was before the option existed.
+		h = sha256.Sum256([]byte(fmt.Sprintf("%x|strict=%x", h, i.TSOStrict)))
+	}
 	if i.Patches != "" {
 		// The profile's content: a fragment that holds a patch point depends on it.
 		pb, _ := os.ReadFile(i.Patches)

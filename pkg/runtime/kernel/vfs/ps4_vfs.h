@@ -101,6 +101,7 @@ ssize_t ps4_vfs_read(int fd, void *buf, size_t count);
 const char *nps5_vfs_current_scene(void); // last scene directory a file was opened in ("" = none; menus skipped)
 void nps5_vfs_mark_first_picture(void);                        // presenter: the first picture is on screen
 void ps4_vfs_readlog_note(int fd, long long off, long long n); // n bytes were read from fd at off (-1 = not known)
+void ps4_vfs_readlog_note_path(const char *path, int fd, long long off, long long n); // same for a private fd of a host path
 ssize_t ps4_vfs_pread(int fd, void *buf, size_t count, off_t offset);
 off_t ps4_vfs_lseek(int fd, off_t offset, int whence);
 int ps4_vfs_fstat(int fd, struct stat *st);

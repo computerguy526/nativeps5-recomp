@@ -288,7 +288,7 @@ void nps5_log_compat(int subsys, int level, const char *tag, const char *fmt, ..
 
 // ------------------------------------------------------------------ HLE counters
 #define HLE_SLOTS 8192
-typedef struct { _Atomic(void *) fn; _Atomic uint64_t count; } HleSlot;
+typedef struct { _Atomic(void *) fn; _Atomic uint64_t count; _Atomic int trace; } HleSlot; // trace: 0 undecided, 1 log, 2 skip
 static HleSlot g_hle[HLE_SLOTS];
 static _Atomic uint64_t g_hle_total;
 static _Thread_local void *t_hle_current;
@@ -310,28 +310,107 @@ static const char *hle_name(void *fn, char *buf, size_t cap) {
   return buf;
 }
 
+// NPS5_TRACE_HLE_DUMP=<shim name>:<rdi|rsi|rdx|rcx>:<bytes> (diagnosis): after each call of that shim, the
+// guest buffer the register pointed to at entry is printed with the result whenever its contents differ from the
+// last print (a per-frame read shows only its changes).
+static char g_dump_name[96];
+static int g_dump_reg = -1, g_dump_len = 0;
+static _Atomic(void *) g_dump_fn;
+static _Thread_local uint64_t t_dump_ptr;
+static _Thread_local int t_dump_armed;
+static unsigned char g_dump_last[256];
+static int g_dump_have_last;
+static pthread_mutex_t g_dump_mu = PTHREAD_MUTEX_INITIALIZER;
+static void hle_dump_exit(void *vctx, void *fn) {
+  if (!t_dump_armed || fn != atomic_load(&g_dump_fn)) return;
+  t_dump_armed = 0;
+  GuestContext *c = (GuestContext *)vctx;
+  if (!t_dump_ptr) return;
+  const unsigned char *p = (const unsigned char *)(uintptr_t)(c->mem_base + t_dump_ptr);
+  pthread_mutex_lock(&g_dump_mu);
+  if (!g_dump_have_last || memcmp(g_dump_last, p, (size_t)g_dump_len) != 0) {
+    memcpy(g_dump_last, p, (size_t)g_dump_len);
+    g_dump_have_last = 1;
+    char hex[3 * 256 + 1];
+    int o = 0;
+    for (int i = 0; i < g_dump_len; i++) o += snprintf(hex + o, sizeof hex - (size_t)o, "%02x%s", p[i], (i % 4 == 3) ? " " : "");
+    fprintf(stderr, "[hle-dump] %s rax=0x%llx buf@0x%llx: %s\n", g_dump_name, (unsigned long long)c->rax, (unsigned long long)t_dump_ptr, hex);
+  }
+  pthread_mutex_unlock(&g_dump_mu);
+}
+static void hle_dump_init(void) {
+  const char *e = getenv("NPS5_TRACE_HLE_DUMP");
+  if (!e || !*e) return;
+  char reg[8] = {0};
+  int len = 0;
+  if (sscanf(e, "%95[^:]:%7[^:]:%d", g_dump_name, reg, &len) != 3 || len <= 0) return;
+  g_dump_len = len > 256 ? 256 : len;
+  g_dump_reg = !strcmp(reg, "rdi") ? 0 : !strcmp(reg, "rsi") ? 1 : !strcmp(reg, "rdx") ? 2 : !strcmp(reg, "rcx") ? 3 : -1;
+  if (g_dump_reg < 0) return;
+  if (!g_nps5_hle_exit_hook) g_nps5_hle_exit_hook = hle_dump_exit;
+  nps5_lean_require_hooks();
+}
+static void hle_dump_enter(void *vctx, void *fn, const char *nm) {
+  GuestContext *c = (GuestContext *)vctx;
+  if (!atomic_load(&g_dump_fn)) {
+    if (strcmp(nm, g_dump_name) != 0) return;
+    atomic_store(&g_dump_fn, fn);
+  }
+  if (fn != atomic_load(&g_dump_fn)) return;
+  t_dump_ptr = g_dump_reg == 0 ? c->rdi : g_dump_reg == 1 ? c->rsi : g_dump_reg == 2 ? c->rdx : c->rcx;
+  t_dump_armed = 1;
+}
+
+static int g_trace_hle_first = -1; // NPS5_TRACE_HLE_FIRST=1: one line the first time each shim is called (order of first use)
 static void hle_hook(void *ctx, void *fn) {
   t_hle_current = fn;
   if (g_nps5_perf_hle_enter) g_nps5_perf_hle_enter(fn);
   atomic_store_explicit(&g_hle_last, fn, memory_order_relaxed);
   atomic_fetch_add_explicit(&g_hle_total, 1, memory_order_relaxed);
   size_t h = ((uintptr_t)fn >> 2) % HLE_SLOTS;
+  HleSlot *slot = NULL;
+  int claimed = 0;
   for (size_t i = 0; i < HLE_SLOTS; i++) {
     HleSlot *s = &g_hle[(h + i) % HLE_SLOTS];
     void *cur = atomic_load_explicit(&s->fn, memory_order_acquire);
     if (!cur) {
       void *exp = NULL;
-      if (!atomic_compare_exchange_strong(&s->fn, &exp, fn)) cur = exp; else cur = fn;
+      if (!atomic_compare_exchange_strong(&s->fn, &exp, fn)) cur = exp; else { cur = fn; claimed = 1; }
     }
     if (cur == fn) {
       atomic_fetch_add_explicit(&s->count, 1, memory_order_relaxed);
+      slot = s;
       break;
     }
   }
+  if (g_dump_len > 0) {
+    void *df = atomic_load_explicit(&g_dump_fn, memory_order_relaxed);
+    if (df == fn) hle_dump_enter(ctx, fn, "");
+    else if (!df && claimed) { char dn[160]; hle_dump_enter(ctx, fn, hle_name(fn, dn, sizeof dn)); }
+  }
+  if (claimed) {
+    if (g_trace_hle_first < 0) { const char *e = getenv("NPS5_TRACE_HLE_FIRST"); g_trace_hle_first = e && e[0] == '1'; }
+    if (g_trace_hle_first) {
+      char nm[160], th[32] = {0};
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      pthread_getname_np(pthread_self(), th, sizeof th);
+      fprintf(stderr, "[hle-first] %.3f '%s' %s\n",
+              (double)(now.tv_sec - g_t0.tv_sec) + (double)(now.tv_nsec - g_t0.tv_nsec) / 1e9, th, hle_name(fn, nm, sizeof nm));
+    }
+  }
   if (g_trace_hle[0] && g_nps5_level[NPS5_S_HLE] <= NPS5_L_TRACE + 1) {
+    // The match is decided once per shim (dladdr + fnmatch on every call made a global trace crawl).
+    int tr = slot ? atomic_load_explicit(&slot->trace, memory_order_relaxed) : 0;
     char nm[160];
-    hle_name(fn, nm, sizeof nm);
-    if (fnmatch(g_trace_hle, nm, 0) == 0 || strstr(g_trace_hle, nm)) {
+    if (tr == 0) {
+      hle_name(fn, nm, sizeof nm);
+      tr = (fnmatch(g_trace_hle, nm, 0) == 0 || strstr(g_trace_hle, nm)) ? 1 : 2;
+      if (slot) atomic_store_explicit(&slot->trace, tr, memory_order_relaxed);
+    } else if (tr == 1) {
+      hle_name(fn, nm, sizeof nm);
+    }
+    if (tr == 1) {
       GuestContext *c = (GuestContext *)ctx;
       nps5_log(NPS5_S_HLE, NPS5_L_INFO, "hle %s rdi=0x%llx rsi=0x%llx rdx=0x%llx rcx=0x%llx r8=0x%llx r9=0x%llx", nm,
                (unsigned long long)c->rdi, (unsigned long long)c->rsi, (unsigned long long)c->rdx,
@@ -1682,6 +1761,8 @@ __attribute__((constructor)) static void nps5_diag_init(void) {
     strlcpy(g_trace_hle, th, sizeof g_trace_hle);
     nps5_lean_require_hooks(); // the trace is a bridge hook: lean calls must run it
   }
+  if (getenv("NPS5_TRACE_HLE_FIRST")) nps5_lean_require_hooks(); // same: first calls of lean shims too
+  hle_dump_init();
   make_bundle();
   g_started = 1;
   load_pcmap();

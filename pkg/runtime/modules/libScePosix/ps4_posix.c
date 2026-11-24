@@ -385,8 +385,22 @@ void shim_getpid(GuestContext *ctx) {
     SHIM_RETURN();
 }
 
+// POSIX pthread_exit is the same exit as scePthreadExit: TLS destructors, cleanup handlers, the
+// return value and the wake-up of a joiner. A bare host pthread_exit left the guest thread "running"
+// for pthread_join forever (PPSA07631: UE main thread joined a FRunnable thread that had exited).
+// Opt-in (NPS5_PTHREAD_EXIT_SCE=1, set in the PPSA07631 profile): titles without the switch keep the
+// bare host exit they were validated with.
+extern void shim_scePthreadExit(GuestContext *ctx);
 void shim_pthread_exit(GuestContext *ctx) {
-    (void)ctx;
+    static int sce = -1;
+    if (sce < 0) {
+        const char *e = getenv("NPS5_PTHREAD_EXIT_SCE");
+        sce = (e && e[0] == '1') ? 1 : 0;
+    }
+    if (sce == 1) {
+        shim_scePthreadExit(ctx);
+        return;
+    }
     pthread_exit(NULL);
 }
 

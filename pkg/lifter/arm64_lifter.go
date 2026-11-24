@@ -198,6 +198,9 @@ type Arm64Lifter struct {
 	noTSO bool
 	// tsoRelax: entry addresses of functions lifted without acquire/release (SetTSORelax).
 	tsoRelax map[uint64]bool
+	// tsoStrict: entry addresses of functions whose vector, FP and string accesses are fenced like x86 TSO
+	// (SetTSOStrict; empty by default, the lowering is then byte-identical).
+	tsoStrict map[uint64]bool
 	// tsoElide selects which stack accesses stay plain (SetTSOElide); stackPriv holds the
 	// stack privacy bits of the instruction being lowered (disasm.Instruction.StackPriv).
 	tsoElide  TSOElideMode
@@ -448,6 +451,7 @@ func NewArm64Lifter(knownFuncs map[uint64]bool) *Arm64Lifter {
 		knownFuncs: knownFuncs,
 		noPeephole: !peepholeDefault || os.Getenv("NPS5_NO_PEEPHOLE") != "",
 		tsoRelax:   parseTSORelax(os.Getenv("NPS5_TSO_RELAX_FUNCS")),
+		tsoStrict:  parseTSORelax(os.Getenv("NPS5_TSO_STRICT_FUNCS")),
 	}
 }
 
@@ -891,6 +895,9 @@ func (l *Arm64Lifter) LiftInstructionToBuf(inst disasm.Instruction, nextPC uint6
 		lines = l.peephole(lines, start)
 		if !l.noTSO && !(fn != nil && l.tsoRelax[fn.EntryAddr]) {
 			lines = l.applyTSO(inst, lines, start)
+			if len(l.tsoStrict) != 0 && fn != nil && l.tsoStrict[fn.EntryAddr] {
+				lines = l.applyTSOStrict(inst, lines, start)
+			}
 		}
 	}
 	if err == nil && isValueSite {
@@ -1791,7 +1798,8 @@ func (l *Arm64Lifter) liftInstructionInternal(inst disasm.Instruction, nextPC ui
 	case x86asm.VPSLLVD, x86asm.VPSLLVQ, x86asm.VPSRLVD, x86asm.VPSRLVQ, x86asm.VPSRAVD:
 		return l.liftVpshiftv(inst, nextPC, lines)
 
-	case x86asm.VFMADD132SS, x86asm.VFMADD132SD, x86asm.VFMADD132PS, x86asm.VFMADD132PD, x86asm.VFMADD213SS, x86asm.VFMADD213SD, x86asm.VFMADD213PS, x86asm.VFMADD213PD, x86asm.VFMADD231SS, x86asm.VFMADD231SD, x86asm.VFMADD231PS, x86asm.VFMADD231PD, x86asm.VFNMADD132SS, x86asm.VFNMADD132SD, x86asm.VFNMADD132PS, x86asm.VFNMADD132PD, x86asm.VFNMADD213SS, x86asm.VFNMADD213SD, x86asm.VFNMADD213PS, x86asm.VFNMADD213PD, x86asm.VFNMADD231SS, x86asm.VFNMADD231SD, x86asm.VFNMADD231PS, x86asm.VFNMADD231PD, x86asm.VFMSUB132SS, x86asm.VFMSUB132SD, x86asm.VFMSUB132PS, x86asm.VFMSUB132PD, x86asm.VFMSUB213SS, x86asm.VFMSUB213SD, x86asm.VFMSUB213PS, x86asm.VFMSUB213PD, x86asm.VFMSUB231SS, x86asm.VFMSUB231SD, x86asm.VFMSUB231PS, x86asm.VFMSUB231PD, x86asm.VFNMSUB132SS, x86asm.VFNMSUB132SD, x86asm.VFNMSUB132PS, x86asm.VFNMSUB132PD, x86asm.VFNMSUB213SS, x86asm.VFNMSUB213SD, x86asm.VFNMSUB213PS, x86asm.VFNMSUB213PD, x86asm.VFNMSUB231SS, x86asm.VFNMSUB231SD, x86asm.VFNMSUB231PS, x86asm.VFNMSUB231PD:
+	case x86asm.VFMADD132SS, x86asm.VFMADD132SD, x86asm.VFMADD132PS, x86asm.VFMADD132PD, x86asm.VFMADD213SS, x86asm.VFMADD213SD, x86asm.VFMADD213PS, x86asm.VFMADD213PD, x86asm.VFMADD231SS, x86asm.VFMADD231SD, x86asm.VFMADD231PS, x86asm.VFMADD231PD, x86asm.VFNMADD132SS, x86asm.VFNMADD132SD, x86asm.VFNMADD132PS, x86asm.VFNMADD132PD, x86asm.VFNMADD213SS, x86asm.VFNMADD213SD, x86asm.VFNMADD213PS, x86asm.VFNMADD213PD, x86asm.VFNMADD231SS, x86asm.VFNMADD231SD, x86asm.VFNMADD231PS, x86asm.VFNMADD231PD, x86asm.VFMSUB132SS, x86asm.VFMSUB132SD, x86asm.VFMSUB132PS, x86asm.VFMSUB132PD, x86asm.VFMSUB213SS, x86asm.VFMSUB213SD, x86asm.VFMSUB213PS, x86asm.VFMSUB213PD, x86asm.VFMSUB231SS, x86asm.VFMSUB231SD, x86asm.VFMSUB231PS, x86asm.VFMSUB231PD, x86asm.VFNMSUB132SS, x86asm.VFNMSUB132SD, x86asm.VFNMSUB132PS, x86asm.VFNMSUB132PD, x86asm.VFNMSUB213SS, x86asm.VFNMSUB213SD, x86asm.VFNMSUB213PS, x86asm.VFNMSUB213PD, x86asm.VFNMSUB231SS, x86asm.VFNMSUB231SD, x86asm.VFNMSUB231PS, x86asm.VFNMSUB231PD,
+		x86asm.VFMADDSUB132PS, x86asm.VFMADDSUB132PD, x86asm.VFMADDSUB213PS, x86asm.VFMADDSUB213PD, x86asm.VFMADDSUB231PS, x86asm.VFMADDSUB231PD, x86asm.VFMSUBADD132PS, x86asm.VFMSUBADD132PD, x86asm.VFMSUBADD213PS, x86asm.VFMSUBADD213PD, x86asm.VFMSUBADD231PS, x86asm.VFMSUBADD231PD:
 		return l.liftFma(inst, nextPC, lines)
 
 	case x86asm.VPMULHUW:
@@ -2430,6 +2438,10 @@ func (l *Arm64Lifter) ConfigKey() string {
 	if l.tsoElide != TSOElideOff {
 		// Appended only when elision is on: the key of the "off" configuration is what it was before the option existed.
 		key += " elide=" + l.tsoElide.String() + " priv=" + disasm.StackPrivRulesID()
+	}
+	if len(l.tsoStrict) != 0 {
+		// Appended only when the list is non-empty: the key of a title without one is what it was before the option existed.
+		key += fmt.Sprintf(" strict=%x", l.TSOStrict())
 	}
 	key += lift2Key(l.tsoElide != TSOElideOff)
 	return key

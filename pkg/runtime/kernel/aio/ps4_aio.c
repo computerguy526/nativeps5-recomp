@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "ps4_vfs.h"
 #include "ps4_aio.h"
 #include "recomp_runtime.h"
 #include <errno.h>
@@ -351,6 +352,7 @@ static void execute_read_request(GuestContext *ctx, const OrbisKernelAioRWReques
     off_t offset = (off_t)req->offset;
 
     ssize_t ret = nps5_kpread(fd, buf, nbyte, offset);
+    if (ret > 0) ps4_vfs_readlog_note(fd, (long long)offset, (long long)ret); // read log / range log / hole check
 
     if (req->result) {
         OrbisKernelAioResult *res = (OrbisKernelAioResult *)(ctx->mem_base + req->result);

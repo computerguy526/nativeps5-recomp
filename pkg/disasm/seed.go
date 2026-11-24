@@ -3,6 +3,7 @@ package disasm
 import (
 	"debug/elf"
 	"encoding/binary"
+	"os"
 
 	"ps4-recomp/pkg/elfloader"
 
@@ -243,7 +244,13 @@ func seedWritableData(loaded *elfloader.LoadedELF, addPtr func(uint64), add func
 				// pointer into a function body (resume address, jump slot) or an integer.
 				continue
 			}
-			if val&15 != 0 || !plausibleEntry(img, val) {
+			if seedAfterUD2 {
+				// Packed layout: the same entry test as relocation targets (behind padding or a terminator).
+				if !gapEntryOK(img, val) {
+					rep.Rejected["data_scan"]++
+					continue
+				}
+			} else if val&15 != 0 || !plausibleEntry(img, val) {
 				rep.Rejected["data_scan"]++
 				continue
 			}
@@ -318,10 +325,31 @@ func prologueByte(b byte) bool {
 // methods and getters start with whatever their first statement is (cmp/test on a member, xor
 // eax, movzx, a VEX load) and are reached through vtables and callbacks only; filtered out,
 // they and everything only they call are missing from the translation.
+var seedAfterUD2 = os.Getenv("NPS5_SEED_AFTER_UD2") == "1"
+
 func gapEntryOK(img *elfloader.Image, addr uint64) bool {
 	prev := img.Bytes(addr-1, 1)
 	afterPad := len(prev) == 1 && (prev[0] == 0xCC || prev[0] == 0x90 || prev[0] == 0xC3)
-	if addr&15 == 0 && afterPad {
+	// A ud2 (0F 0B) ends the previous function in titles built without function alignment (clang trap
+	// after a noreturn call / unreachable; PPSA07631: 257 of 308 tier-1 misses sat right behind one).
+	// Opt-in (translate-time env NPS5_SEED_AFTER_UD2=1) so other titles' discovery is unchanged.
+	if !afterPad && seedAfterUD2 {
+		if p2 := img.Bytes(addr-2, 2); len(p2) == 2 && p2[0] == 0x0F && p2[1] == 0x0B {
+			afterPad = true
+		}
+		// The same packed layout also ends a function with an unconditional jmp (rel8 back edge or rel32 tail
+		// jump; PPSA07631 r8: 551 of 598 misses behind `pop rbp; jmp short <back>`). Code right after an
+		// unconditional jmp is only reached by branches, so a relocation pointing there is an entry.
+		if p2 := img.Bytes(addr-2, 2); !afterPad && len(p2) == 2 && p2[0] == 0xEB && p2[1]&0x80 != 0 {
+			afterPad = true
+		}
+		if p5 := img.Bytes(addr-5, 5); !afterPad && len(p5) == 5 && p5[0] == 0xE9 {
+			afterPad = true
+		}
+	}
+	// Packed layout (opt-in): behind any padding or terminator the first-byte prologue filter does not
+	// apply either (small methods start with a VEX load, cmp, xor ...): only the clean run is required.
+	if afterPad && (addr&15 == 0 || seedAfterUD2) {
 		code := img.From(addr)
 		// Padding itself is not an entry (a pointer into an int3/nop run).
 		return len(code) > 0 && code[0] != 0xCC && cleanRun(img, addr)

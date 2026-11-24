@@ -405,12 +405,29 @@ static int do_thread_join(RecompThread *t, void **thread_return) {
   }
   pthread_mutex_unlock(&t->lock);
 
+  // ue2boot: NPS5_TRACE_JOIN=1 names both sides of every join (diagnosis of joins that never return), and the return.
+  static int tj = -1;
+  {
+    if (tj < 0) { const char *e = getenv("NPS5_TRACE_JOIN"); tj = (e && e[0] == '1') ? 1 : 0; }
+    if (tj == 1) {
+      uint64_t mt = 0; // the id `sample` prints as Thread_<id>
+      pthread_threadid_np(t->host_thread, &mt);
+      fprintf(stderr, "[join] '%s' (tid %d) joins '%s' (tid %d, entry 0x%llx, host %p, Thread_%llu)\n", g_current_thread ? g_current_thread->name : "?",
+              g_current_thread ? (int)g_current_thread->thread_id : -1, t->name, atomic_load_explicit(&t->tid, memory_order_relaxed),
+              (unsigned long long)t->start_routine, (void *)t->host_thread, (unsigned long long)mt);
+      fflush(stderr);
+    }
+  }
   // Wait for the target thread to signal termination via join_wait_cv
   pthread_mutex_lock(&t->join_wait_mutex);
   while (atomic_load_explicit(&t->tid, memory_order_acquire) != TID_TERMINATED) {
     pthread_cond_wait(&t->join_wait_cv, &t->join_wait_mutex);
   }
   pthread_mutex_unlock(&t->join_wait_mutex);
+  if (tj == 1) {
+    fprintf(stderr, "[join] '%s' joined '%s' (returned)\n", g_current_thread ? g_current_thread->name : "?", t->name);
+    fflush(stderr);
+  }
 
   if (g_current_thread) {
     g_current_thread->join_target = NULL;
@@ -478,6 +495,14 @@ static int do_create_thread(GuestContext *ctx, uint64_t thread_ptr_addr, const P
   t->thread_id = (uint64_t)tid;
   t->start_routine = start_routine;
   t->arg = arg;
+  {
+    const char *e = getenv("NPS5_TRACE_JOIN");
+    if (e && e[0] == '1') {
+      fprintf(stderr, "[thread] create tid %d '%s' entry 0x%llx arg 0x%llx by '%s' (tid %d)\n", tid, name ? name : "",
+              (unsigned long long)start_routine, (unsigned long long)arg, g_current_thread ? g_current_thread->name : "?",
+              g_current_thread ? (int)g_current_thread->thread_id : -1);
+    }
+  }
 
   uint64_t stack_size = 2 * 1024 * 1024;
   if (attr) {
