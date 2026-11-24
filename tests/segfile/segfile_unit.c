@@ -354,13 +354,51 @@ static void test_bad_manifest(const char *root) {
   struct stat st;
   CHECK(ps4_vfs_stat("/app0/Paks/broken.bin", &st) == -1 && errno == ENOENT);
   CHECK(open_ro("/app0/Paks/broken.bin") == -1);
-  printf("segfile: bad manifest refused ok\n");
+  CHECK(open_ro("/app0/Paks/broken.bin") == -1);
+  // an invalid manifest is logged once, however often the game asks (negative cache)
+  fflush(stderr);
+  char lp[1200];
+  snprintf(lp, sizeof lp, "%s.stderr", root);
+  const int saved = dup(2);
+  FILE *lf = freopen(lp, "w", stderr);
+  (void)lf;
+  for (int i = 0; i < 5; i++) CHECK(ps4_vfs_stat("/app0/Paks/badjson.bin", &st) == -1 && errno == ENOENT);
+  fflush(stderr);
+  dup2(saved, 2);
+  close(saved);
+  clearerr(stderr);
+  FILE *rf = fopen(lp, "r");
+  char line[512];
+  int logged = 0;
+  while (rf && fgets(line, sizeof line, rf)) if (strstr(line, "badjson.bin") && strstr(line, "not used")) logged++;
+  if (rf) fclose(rf);
+  unlink(lp);
+  CHECK(logged == 1);
+  printf("segfile: bad manifest refused, logged once ok\n");
+}
+
+// the plain file always wins over a segment directory next to it
+static void test_plain_wins(const char *root) {
+  char d[1100], p[1200];
+  snprintf(d, sizeof d, "%s/Paks", root);
+  snprintf(p, sizeof p, "%s/plain.bin", d);
+  write_file(p, "plainfile", 9);
+  make_segfile(d, "plain.bin", orig, SEG + 5, SEG);
+  struct stat st;
+  CHECK(ps4_vfs_stat("/app0/Paks/plain.bin", &st) == 0 && st.st_size == 9);
+  int fd = open_ro("/app0/Paks/plain.bin");
+  uint8_t b[16];
+  CHECK(fd >= 0 && ps4_vfs_pread(fd, b, 16, 0) == 9 && !memcmp(b, "plainfile", 9));
+  ps4_vfs_close(fd);
+  printf("segfile: plain file wins ok\n");
 }
 
 int main(int argc, char **argv) {
   const int off_mode = argc > 1 && !strcmp(argv[1], "off");
   const char *packed = (argc > 2 && !strcmp(argv[1], "dir")) ? argv[2] : NULL;
-  setenv("NPS5_VFS_SEGFILES", off_mode ? "0" : "1", 1);
+  const int auto_mode = argc > 1 && !strcmp(argv[1], "auto"); // no setting at all: the feature is automatic
+  if (auto_mode) unsetenv("NPS5_VFS_SEGFILES");
+  else setenv("NPS5_VFS_SEGFILES", off_mode ? "0" : "1", 1);
   setenv("NPS5_VFS_SEGFILES_FDS", "3", 1);
   char root[600];
   C = calloc(1, sizeof(GuestContext));
@@ -391,6 +429,13 @@ int main(int argc, char **argv) {
     orig3 = malloc(3 * SEG);
     for (size_t i = 0; i < 3 * SEG; i++) orig3[i] = (uint8_t)(rnd() >> 16);
     make_segfile(d, "exact3.bin", orig3, 3 * SEG, SEG);
+    { // a segment directory whose manifest is not JSON at all (the directory scan is cached, so it exists up front)
+      char bd[800], bm[900];
+      snprintf(bd, sizeof bd, "%s/badjson.bin.nps5seg", d);
+      mkdir(bd, 0755);
+      snprintf(bm, sizeof bm, "%s/manifest.json", bd);
+      write_file(bm, "{ not a manifest", 16);
+    }
   }
   { char ud[700]; snprintf(ud, sizeof ud, "%s.ud0", root); setenv("NPS5_USERDATA_DIR", ud, 1); setenv("NPS5_TITLE_ID", "TESTSEG00", 1); }
   ps4_vfs_init(root);
@@ -421,6 +466,7 @@ int main(int argc, char **argv) {
     if (!packed) {
       test_listing(root);
       test_bad_manifest(root);
+      test_plain_wins(root);
     }
   }
   if (!packed) {
