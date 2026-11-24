@@ -9,5 +9,9 @@
             "-hle-replace",
             "profiles/funcrepl/PPSA21564-physsub.json"
         ]
+    },
+    "env": {
+        "NPS5_PHYS_SUBSTEP_WORLD_CLAMP": "1",
+        "NPS5_PHYS_DTCLAMP_OBJ": "all"
     }
 }
