@@ -77,20 +77,24 @@ int main(void) {
     CHECK(nps5_ps_clamp_writeback(1, 1, 0.04f, 0.05f), "clamp write-back opt-in");
     CHECK(!nps5_ps_clamp_writeback(0, 1, 0.04f, 0.05f), "clamp write-back needs dtfix");
     CHECK(!nps5_ps_clamp_writeback(1, 1, 0.01f, 0.01f), "no write-back of an unclamped step");
-    {   // clamp does not touch the stored step dt when the write-back is off
+    { // clamp does not touch the stored step dt when the write-back is off
         float w[2] = {(float)(1.0 / 25), 25.0f};
         float c = nps5_ps_clamp(0.05f, 25);
         if (nps5_ps_clamp_writeback(1, 0, c, 0.05f)) nps5_ps_frame_dt(0.05f, w, NULL);
-        CHECK(c == (float)(1.0 / 25) && w[0] == (float)(1.0 / 25) && w[1] == 25.0f, "clamped dt kept in the stored step dt");
+        CHECK(c == (float)(1.0 / 25) && w[0] == (float)(1.0 / 25) && w[1] == 25.0f,
+              "clamped dt kept in the stored step dt");
     }
     // backtrace walker on a synthetic stack (guest "memory" = a host buffer, addresses = offsets)
     {
         static uint64_t mem[256]; // 2 KiB
         const uint64_t sz = sizeof mem;
-        mem[0x100 / 8] = 0xAAA;                    // [rsp] = caller return
-        mem[0x200 / 8] = 0x300;  mem[0x208 / 8] = 0x111; // frame 1: next rbp 0x300, ret 0x111
-        mem[0x300 / 8] = 0x400;  mem[0x308 / 8] = 0x222;
-        mem[0x400 / 8] = 0x0;    mem[0x408 / 8] = 0x333; // last frame (next rbp 0)
+        mem[0x100 / 8] = 0xAAA; // [rsp] = caller return
+        mem[0x200 / 8] = 0x300;
+        mem[0x208 / 8] = 0x111; // frame 1: next rbp 0x300, ret 0x111
+        mem[0x300 / 8] = 0x400;
+        mem[0x308 / 8] = 0x222;
+        mem[0x400 / 8] = 0x0;
+        mem[0x408 / 8] = 0x333; // last frame (next rbp 0)
         uint64_t out[8];
         int n = nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, out, 8);
         CHECK(n == 4 && out[0] == 0xAAA && out[1] == 0x111 && out[2] == 0x222 && out[3] == 0x333, "walk n=%d", n);
@@ -103,37 +107,56 @@ int main(void) {
         CHECK(n == 3, "stops on an out-of-range rbp (n=%d)", n);
         CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0, 0x203, out, 8) == 0, "misaligned rbp / no rsp");
         CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x7fc, 0x7f8, out, 8) == 0, "rsp/rbp at the end of memory");
-        CHECK(nps5_ps_bt_walk(NULL, sz, 0x100, 0x200, out, 8) == 0 && nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, out, 0) == 0, "bad args");
+        CHECK(nps5_ps_bt_walk(NULL, sz, 0x100, 0x200, out, 8) == 0 &&
+                  nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, out, 0) == 0,
+              "bad args");
     }
     // poison groups: each scales only its own fields, default (0 groups) writes nothing
     {
         float blk[0x680 / 4];
-        for (int i = 0; i < 0x680 / 4; i++) blk[i] = 1.0f;
+        for (int i = 0; i < 0x680 / 4; i++)
+            blk[i] = 1.0f;
         CHECK(nps5_ps_poison((uint8_t *)blk, 0) == 0 && blk[0x560 / 4] == 1.0f, "no groups writes nothing");
-        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_DT) == 8 && blk[0x560 / 4] == 0.5f && blk[0x573 / 4] == 2.0f && blk[0x590 / 4] == 1.0f, "dt group");
-        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_RATIO | NPS5_PS_POI_MAXDT) == 3 && blk[0x590 / 4] == 0.5f && blk[0x5a0 / 4] == 0.5f && blk[0x5b0 / 4] == 0.5f && blk[0x5c0 / 4] == 1.0f, "ratio+maxdt");
-        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_SUBSTEP | NPS5_PS_POI_GRAV) == 10 && blk[0x5c0 / 4] == 0.5f && blk[0x5d0 / 4] == 2.0f && blk[0x650 / 4] == 0.5f && blk[0x66c / 4] == 0.5f && blk[0x670 / 4] == 1.0f, "substep+grav");
+        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_DT) == 8 && blk[0x560 / 4] == 0.5f && blk[0x573 / 4] == 2.0f &&
+                  blk[0x590 / 4] == 1.0f,
+              "dt group");
+        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_RATIO | NPS5_PS_POI_MAXDT) == 3 && blk[0x590 / 4] == 0.5f &&
+                  blk[0x5a0 / 4] == 0.5f && blk[0x5b0 / 4] == 0.5f && blk[0x5c0 / 4] == 1.0f,
+              "ratio+maxdt");
+        CHECK(nps5_ps_poison((uint8_t *)blk, NPS5_PS_POI_SUBSTEP | NPS5_PS_POI_GRAV) == 10 && blk[0x5c0 / 4] == 0.5f &&
+                  blk[0x5d0 / 4] == 2.0f && blk[0x650 / 4] == 0.5f && blk[0x66c / 4] == 0.5f && blk[0x670 / 4] == 1.0f,
+              "substep+grav");
         CHECK(nps5_ps_poison(NULL, 31) == 0, "NULL block");
-        CHECK(nps5_ps_poison_group("dt") == 1 && nps5_ps_poison_group("grav") == 16 && nps5_ps_poison_group("x") == 0 && nps5_ps_poison_group(NULL) == 0, "group names");
-        CHECK(nps5_ps_poison_phase(0, 100, 3) == 0 && nps5_ps_poison_phase(100, 100, 3) == 1 && nps5_ps_poison_phase(399, 100, 3) == 3 && nps5_ps_poison_phase(400, 100, 3) == 0 &&
-                  nps5_ps_poison_phase(5, 0, 3) == 0 && nps5_ps_poison_phase(500, 100, 0) == 0, "poison phases");
+        CHECK(nps5_ps_poison_group("dt") == 1 && nps5_ps_poison_group("grav") == 16 && nps5_ps_poison_group("x") == 0 &&
+                  nps5_ps_poison_group(NULL) == 0,
+              "group names");
+        CHECK(nps5_ps_poison_phase(0, 100, 3) == 0 && nps5_ps_poison_phase(100, 100, 3) == 1 &&
+                  nps5_ps_poison_phase(399, 100, 3) == 3 && nps5_ps_poison_phase(400, 100, 3) == 0 &&
+                  nps5_ps_poison_phase(5, 0, 3) == 0 && nps5_ps_poison_phase(500, 100, 0) == 0,
+              "poison phases");
     }
     // dtclamp selection
     {
         static const char *const nm[4] = {"bigleafplant", "springbone", "aprope", "slingshot"};
         int bad = 0;
-        CHECK(nps5_ps_dtclamp_select(NULL, nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("0", nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("", nm, 4, &bad) == 0 && bad == 0, "off");
+        CHECK(nps5_ps_dtclamp_select(NULL, nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("0", nm, 4, &bad) == 0 &&
+                  nps5_ps_dtclamp_select("", nm, 4, &bad) == 0 && bad == 0,
+              "off");
         CHECK(nps5_ps_dtclamp_select("all", nm, 4, &bad) == 15 && bad == 0, "all");
         CHECK(nps5_ps_dtclamp_select("springbone,SlingShot", nm, 4, &bad) == 10 && bad == 0, "list, case-insensitive");
         CHECK(nps5_ps_dtclamp_select("aprope,nope", nm, 4, &bad) == 4 && bad == 1, "unknown item counted");
         CHECK(nps5_ps_dtclamp_select("all", nm, 32, NULL) == ~0u, "32 slots");
-        CHECK(nps5_ps_dtclamp_hz("springbone=45,aprope=x,bigleafplant=1000", "springbone", 30, &bad) == 45 && bad == 1, "hz item");
+        CHECK(nps5_ps_dtclamp_hz("springbone=45,aprope=x,bigleafplant=1000", "springbone", 30, &bad) == 45 && bad == 1,
+              "hz item");
         CHECK(nps5_ps_dtclamp_hz("springbone=45", "aprope", 30, &bad) == 30, "hz default");
         bad = 0;
-        CHECK(nps5_ps_dtclamp_hz("bigleafplant=1000,bigleafplant", "bigleafplant", 60, &bad) == 60 && bad == 2, "hz out of range / no '='");
+        CHECK(nps5_ps_dtclamp_hz("bigleafplant=1000,bigleafplant", "bigleafplant", 60, &bad) == 60 && bad == 2,
+              "hz out of range / no '='");
         CHECK(nps5_ps_dtclamp_hz(NULL, "x", 7, NULL) == 7, "hz NULL list");
         // the clamp the shim applies: 26.8 ms at 60 -> 1/60, 10 ms unchanged, NaN / 0 / negative pass through
-        CHECK(nps5_ps_clamp(0.0268f, 60) == (float)(1.0 / 60) && nps5_ps_clamp(0.01f, 60) == 0.01f && nps5_ps_clamp(-1.0f, 60) == -1.0f, "dtclamp values");
+        CHECK(nps5_ps_clamp(0.0268f, 60) == (float)(1.0 / 60) && nps5_ps_clamp(0.01f, 60) == 0.01f &&
+                  nps5_ps_clamp(-1.0f, 60) == -1.0f,
+              "dtclamp values");
     }
     if (fails) {
         printf("physsub_unit: %d FAILED\n", fails);

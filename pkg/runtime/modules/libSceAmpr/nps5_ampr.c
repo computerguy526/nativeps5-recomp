@@ -260,10 +260,10 @@ static int apr_resolve(const char *guest, uint32_t *id, uint64_t *size) {
   struct stat st;
   if (!guest || ps4_vfs_resolve(guest, host, sizeof(host)) != 0) return 0;
   if (stat(host, &st) != 0) { // gamepack segmented file (<host>.nps5seg/): read through nps5_segfile in apr_read_file
-    nps5_segfile *sf = nps5_segfile_lookup(host);
-    if (!sf) return 0;
-    st.st_mode = S_IFREG;
-    st.st_size = (off_t)nps5_segfile_size(sf);
+      nps5_segfile *sf = nps5_segfile_lookup(host);
+      if (!sf) return 0;
+      st.st_mode = S_IFREG;
+      st.st_size = (off_t)nps5_segfile_size(sf);
   }
   if (!S_ISREG(st.st_mode)) return 0;
   pthread_mutex_lock(&g_files_lock);
@@ -336,18 +336,18 @@ static void apr_read_file(uint32_t id, uint64_t dst, uint64_t size, uint64_t off
   int fd = open(path, O_RDONLY);
   nps5_segfile *sf = (fd < 0 && errno == ENOENT) ? nps5_segfile_lookup(path) : NULL;
   if (sf) {
-    uint8_t *sout = (uint8_t *)NPS5_G2H(&g_xlat, dst);
-    const ssize_t n = nps5_segfile_pread(sf, sout, (size_t)size, off, apr_kpread);
-    const uint64_t got = n > 0 ? (uint64_t)n : 0;
-    if (n < 0 || (got < size && off + got < nps5_segfile_size(sf))) {
-      g_read_errors++;
-      NPS5_LOG(NPS5_S_HLE, NPS5_L_ERROR, "apr: read failed on segmented %s at 0x%llx (errno %d)", path,
-               (unsigned long long)(off + got), errno);
-    }
-    if (got < size) memset(sout + got, 0, size - got); // past EOF reads as zeros
-    g_reads_done++;
-    g_bytes_read += got;
-    return;
+      uint8_t *sout = (uint8_t *)NPS5_G2H(&g_xlat, dst);
+      const ssize_t n = nps5_segfile_pread(sf, sout, (size_t)size, off, apr_kpread);
+      const uint64_t got = n > 0 ? (uint64_t)n : 0;
+      if (n < 0 || (got < size && off + got < nps5_segfile_size(sf))) {
+          g_read_errors++;
+          NPS5_LOG(NPS5_S_HLE, NPS5_L_ERROR, "apr: read failed on segmented %s at 0x%llx (errno %d)", path,
+                   (unsigned long long)(off + got), errno);
+      }
+      if (got < size) memset(sout + got, 0, size - got); // past EOF reads as zeros
+      g_reads_done++;
+      g_bytes_read += got;
+      return;
   }
   if (fd < 0) {
     g_read_errors++;

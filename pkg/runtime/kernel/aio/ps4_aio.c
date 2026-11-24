@@ -354,7 +354,8 @@ static void execute_read_request(GuestContext *ctx, const OrbisKernelAioRWReques
     // a virtual fd (pak entry, gamepack segmented file) has no host descriptor: through the VFS
     const int vfd = ps4_vfs_is_virtual_fd(fd);
     ssize_t ret = vfd ? ps4_vfs_pread(fd, buf, nbyte, offset) : nps5_kpread(fd, buf, nbyte, offset);
-    if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, (long long)offset, (long long)ret); // read log / range log / hole check
+    if (ret > 0 && !vfd)
+        ps4_vfs_readlog_note(fd, (long long)offset, (long long)ret); // read log / range log / hole check
 
     if (req->result) {
         OrbisKernelAioResult *res = (OrbisKernelAioResult *)(ctx->mem_base + req->result);

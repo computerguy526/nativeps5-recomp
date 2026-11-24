@@ -99,14 +99,15 @@ static _Thread_local float t_ps_frame_dt; // last other owner id seen holding th
 // inner split: switch; this thread is inside a world step that splits its engine step (1) and inside an inner wrap (depth)
 static int g_ps_inner = 0;
 static int g_ps_wclamp = 0;
-static unsigned g_ps_poison;           // NPS5_PHYS_SUBSTEP_POISON groups (dtexec probe, default off)
+static unsigned g_ps_poison; // NPS5_PHYS_SUBSTEP_POISON groups (dtexec probe, default off)
 static int g_ps_poison_n;
 static unsigned g_ps_poison_list[5];
 static unsigned g_ps_poison_period = 100;
-static int g_ps_bt;                    // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace at world step g_ps_bt_at
+static int g_ps_bt; // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace at world step g_ps_bt_at
 static uint64_t g_ps_bt_at = 600;
 static _Atomic uint64_t g_ps_world_n;
-static int g_ps_clamp_dtfix = 0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
+static int g_ps_clamp_dtfix =
+    0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
 static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
@@ -178,35 +179,48 @@ static void ps_init(void) {
         if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_CLAMP_DTFIX"), 0, 1, &v))
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: 0|1\n");
         g_ps_clamp_dtfix = v == 1.0;
-        {   // dtexec probes
+        { // dtexec probes
             const char *e = getenv("NPS5_PHYS_SUBSTEP_POISON");
             char buf[128];
             if (e && *e && g_ps_engine_ptr && g_ps_engine_dt == 0x560 + 1) {
                 snprintf(buf, sizeof buf, "%s", e);
-                for (char *sv = NULL, *t = strtok_r(buf, ",", &sv); t && g_ps_poison_n < 5; t = strtok_r(NULL, ",", &sv)) {
+                for (char *sv = NULL, *t = strtok_r(buf, ",", &sv); t && g_ps_poison_n < 5;
+                     t = strtok_r(NULL, ",", &sv)) {
                     const unsigned g = nps5_ps_poison_group(t);
-                    if (!g) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON: unknown group '%s' (dt,ratio,maxdt,substep,grav)\n", t);
-                    else g_ps_poison_list[g_ps_poison_n++] = g, g_ps_poison |= g;
+                    if (!g)
+                        fprintf(
+                            stderr,
+                            "[physsub] W NPS5_PHYS_SUBSTEP_POISON: unknown group '%s' (dt,ratio,maxdt,substep,grav)\n",
+                            t);
+                    else
+                        g_ps_poison_list[g_ps_poison_n++] = g, g_ps_poison |= g;
                 }
                 double pv = 100;
                 if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_POISON_PERIOD"), 1, 100000, &pv))
                     fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON_PERIOD: 1..100000\n");
                 g_ps_poison_period = (unsigned)pv;
-                fprintf(stderr, "[physsub] poison probe: %d groups, phase length %u world steps (phase 0 = clean)\n", g_ps_poison_n, g_ps_poison_period);
+                fprintf(stderr, "[physsub] poison probe: %d groups, phase length %u world steps (phase 0 = clean)\n",
+                        g_ps_poison_n, g_ps_poison_period);
             } else if (e && *e)
-                fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON needs the physsub.world.engine / solver_dt (0x560) params\n");
+                fprintf(
+                    stderr,
+                    "[physsub] W NPS5_PHYS_SUBSTEP_POISON needs the physsub.world.engine / solver_dt (0x560) params\n");
             double bv = 0;
-            if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT"), 0, 1, &bv)) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT: 0|1\n");
+            if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT"), 0, 1, &bv))
+                fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT: 0|1\n");
             g_ps_bt = bv == 1.0;
             if (g_ps_bt) {
                 double at = 600;
-                if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT_AT"), 1, 1e9, &at)) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT_AT: world step number\n");
+                if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT_AT"), 1, 1e9, &at))
+                    fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT_AT: world step number\n");
                 g_ps_bt_at = (uint64_t)at;
             }
         }
         if (g_ps_wclamp)
-            fprintf(stderr, "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split, dt write-back %s)\n",
-                    g_ps_clamp_dtfix ? "on" : "off");
+            fprintf(
+                stderr,
+                "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split, dt write-back %s)\n",
+                g_ps_clamp_dtfix ? "on" : "off");
     }
     {
         double v = 0;
@@ -418,9 +432,12 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         uint64_t bt[24];
         const uint64_t hi = g_nps5_arena.guest_hi > ctx->mem_size ? g_nps5_arena.guest_hi : ctx->mem_size;
         const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), hi, ctx->rsp, ctx->rbp, bt, 24);
-        fprintf(stderr, "[physsub] backtrace at world step %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:", (unsigned long long)wn,
-                (void *)pthread_self(), (unsigned long long)ctx->rsp, (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
-        for (int i = 0; i < k; i++) fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
+        fprintf(stderr,
+                "[physsub] backtrace at world step %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:",
+                (unsigned long long)wn, (void *)pthread_self(), (unsigned long long)ctx->rsp,
+                (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
+        for (int i = 0; i < k; i++)
+            fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
         fprintf(stderr, "\n");
     }
     const int clamp = g_ps.on && g_ps.world && g_ps_wclamp;
@@ -430,7 +447,8 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_call(ctx, &g_w_world, &a, c);
         if (c != dt) {
             atomic_fetch_add_explicit(&g_ps_wclamped, 1, memory_order_relaxed);
-            if (nps5_ps_clamp_writeback(g_ps_dtfix, g_ps_clamp_dtfix, c, dt)) { // old behaviour (CLAMP_DTFIX=1): readers see the frame dt
+            if (nps5_ps_clamp_writeback(g_ps_dtfix, g_ps_clamp_dtfix, c,
+                                        dt)) { // old behaviour (CLAMP_DTFIX=1): readers see the frame dt
                 float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
                 float *e = NULL;
                 if (g_ps_engine_ptr && g_ps_engine_dt) {
@@ -508,7 +526,8 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         const int ph = nps5_ps_poison_phase(wn, g_ps_poison_period, g_ps_poison_n);
         static _Atomic int last_ph = -1;
         if (atomic_exchange_explicit(&last_ph, ph, memory_order_relaxed) != ph)
-            fprintf(stderr, "[physsub] poison phase %d (%s) at world step %llu\n", ph, ph ? "poisoned" : "clean", (unsigned long long)wn);
+            fprintf(stderr, "[physsub] poison phase %d (%s) at world step %llu\n", ph, ph ? "poisoned" : "clean",
+                    (unsigned long long)wn);
         if (ph > 0 && g_ps_engine_ptr) {
             const uint64_t eng = *(const uint64_t *)NPS5_G2H(ctx, a.rdi + g_ps_engine_ptr - 1);
             if (eng && eng < ctx->mem_size) nps5_ps_poison((uint8_t *)NPS5_G2H(ctx, eng), g_ps_poison_list[ph - 1]);
@@ -905,24 +924,34 @@ void nps5_astro_texname_guard(GuestContext *ctx) {
 
 // ---- NPS5_PHYS_DTCLAMP_OBJ: table-driven dt clamp for single objects (see nps5_physsub_logic.h) ----------------------------------------------
 #define PS_DC_SLOTS 8
-static const char *const g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone", "aprope", "aprope_b", "apsoftbody", "apsoftbody_ball", "slingshot", "stretchplatform"};
+static const char *const g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone",      "aprope",    "aprope_b",
+                                                    "apsoftbody",   "apsoftbody_ball", "slingshot", "stretchplatform"};
 static const double g_dc_def_hz[PS_DC_SLOTS] = {60, 30, 30, 30, 30, 30, 30, 30};
 static pthread_once_t g_dc_once = PTHREAD_ONCE_INIT;
 static unsigned g_dc_mask;
 static double g_dc_hz[PS_DC_SLOTS];
-static PsWrap g_dc_w[PS_DC_SLOTS] = {{.shim = "nps5_physsub_dtclamp_0"}, {.shim = "nps5_physsub_dtclamp_1"}, {.shim = "nps5_physsub_dtclamp_2"}, {.shim = "nps5_physsub_dtclamp_3"},
-                                     {.shim = "nps5_physsub_dtclamp_4"}, {.shim = "nps5_physsub_dtclamp_5"}, {.shim = "nps5_physsub_dtclamp_6"}, {.shim = "nps5_physsub_dtclamp_7"}};
+static PsWrap g_dc_w[PS_DC_SLOTS] = {{.shim = "nps5_physsub_dtclamp_0"}, {.shim = "nps5_physsub_dtclamp_1"},
+                                     {.shim = "nps5_physsub_dtclamp_2"}, {.shim = "nps5_physsub_dtclamp_3"},
+                                     {.shim = "nps5_physsub_dtclamp_4"}, {.shim = "nps5_physsub_dtclamp_5"},
+                                     {.shim = "nps5_physsub_dtclamp_6"}, {.shim = "nps5_physsub_dtclamp_7"}};
 static _Atomic uint64_t g_dc_calls[PS_DC_SLOTS], g_dc_clamped[PS_DC_SLOTS];
 static void dc_init(void) {
     int bad = 0;
     g_dc_mask = nps5_ps_dtclamp_select(getenv("NPS5_PHYS_DTCLAMP_OBJ"), g_dc_names, PS_DC_SLOTS, &bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
         g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i], g_dc_def_hz[i], &bad);
-    if (bad) fprintf(stderr, "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform; hz 5..240)\n", bad);
+    if (bad)
+        fprintf(stderr,
+                "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: "
+                "all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform; hz "
+                "5..240)\n",
+                bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
         if (g_dc_mask & (1u << i))
             fprintf(stderr, "[physsub] dtclamp on: %s update dt clamped to 1/%.0f s%s\n", g_dc_names[i], g_dc_hz[i],
-                    nps5_repl_wrap_body(g_dc_w[i].shim, &(uint64_t){0}) ? "" : " (W: no table entry in this build: no effect)");
+                    nps5_repl_wrap_body(g_dc_w[i].shim, &(uint64_t){0})
+                        ? ""
+                        : " (W: no table entry in this build: no effect)");
 }
 static void dc_step(GuestContext *ctx, int slot) {
     pthread_once(&g_dc_once, dc_init);
@@ -935,12 +964,15 @@ static void dc_step(GuestContext *ctx, int slot) {
         if (c != dt) {
             const uint64_t k = atomic_fetch_add_explicit(&g_dc_clamped[slot], 1, memory_order_relaxed) + 1;
             if ((k & (k - 1)) == 0) // 1, 2, 4, 8 ...: first clamps are logged, then ever rarer
-                fprintf(stderr, "[physsub] dtclamp %s: clamped %llu of %llu calls (dt %.4f -> %.4f)\n", g_dc_names[slot], (unsigned long long)k,
-                        (unsigned long long)atomic_load_explicit(&g_dc_calls[slot], memory_order_relaxed), (double)dt, (double)c);
+                fprintf(stderr, "[physsub] dtclamp %s: clamped %llu of %llu calls (dt %.4f -> %.4f)\n",
+                        g_dc_names[slot], (unsigned long long)k,
+                        (unsigned long long)atomic_load_explicit(&g_dc_calls[slot], memory_order_relaxed), (double)dt,
+                        (double)c);
         }
     }
     ps_call(ctx, &g_dc_w[slot], &a, c);
     SHIM_RETURN();
 }
-#define PS_DC_SHIM(i) void nps5_physsub_dtclamp_##i(GuestContext *ctx) { dc_step(ctx, i); }
+#define PS_DC_SHIM(i)                                                                                                  \
+    void nps5_physsub_dtclamp_##i(GuestContext *ctx) { dc_step(ctx, i); }
 PS_DC_SHIM(0) PS_DC_SHIM(1) PS_DC_SHIM(2) PS_DC_SHIM(3) PS_DC_SHIM(4) PS_DC_SHIM(5) PS_DC_SHIM(6) PS_DC_SHIM(7)

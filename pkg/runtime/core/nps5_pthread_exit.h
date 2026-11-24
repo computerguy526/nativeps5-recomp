@@ -6,8 +6,6 @@
 #define NPS5_PTHREAD_EXIT_H
 #include <stddef.h>
 
-static inline int nps5_pthread_exit_sce_enabled(const char *env) {
-    return env != NULL && env[0] == '1';
-}
+static inline int nps5_pthread_exit_sce_enabled(const char *env) { return env != NULL && env[0] == '1'; }
 
 #endif

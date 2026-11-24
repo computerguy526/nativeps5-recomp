@@ -398,7 +398,8 @@ void shim_readv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  const bool vfd = ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
+  const bool vfd =
+      ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
   ssize_t ret = vfd ? ps4_vfs_readv_virtual(fd, host_iov, iovcnt, -1) : nps5_kreadv(fd, host_iov, iovcnt);
   if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
@@ -447,7 +448,8 @@ void shim_sceKernelReadv(GuestContext *ctx) {
     host_iov[i].iov_len = (size_t)guest_iov[i].iov_len;
   }
 
-  const bool vfd = ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
+  const bool vfd =
+      ps4_vfs_is_virtual_fd(fd); // a pak entry or segmented file: no host descriptor (read log done inside)
   ssize_t ret = vfd ? ps4_vfs_readv_virtual(fd, host_iov, iovcnt, -1) : nps5_kreadv(fd, host_iov, iovcnt);
   if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, -1, ret);
   if (ret < 0) {
@@ -505,8 +507,9 @@ void shim_sceKernelPreadv(GuestContext *ctx) {
 
   ssize_t ret;
   const bool vfd = ps4_vfs_is_virtual_fd(fd);
-  PS4_HITCH_TIMED(PS4_HITCH_IO, ret = vfd ? (offset < 0 ? (errno = EINVAL, -1) : ps4_vfs_readv_virtual(fd, host_iov, iovcnt, offset))
-                                          : nps5_kpreadv(fd, host_iov, iovcnt, offset));
+  PS4_HITCH_TIMED(PS4_HITCH_IO,
+                  ret = vfd ? (offset < 0 ? (errno = EINVAL, -1) : ps4_vfs_readv_virtual(fd, host_iov, iovcnt, offset))
+                            : nps5_kpreadv(fd, host_iov, iovcnt, offset));
   if (ret > 0 && !vfd) ps4_vfs_readlog_note(fd, (long long)offset, ret);
   if (ret < 0) {
     int err = errno;
@@ -1276,7 +1279,8 @@ static GuestDirCache *guest_dir_cache_get(int fd) {
         ps4_vfs_resolve_dirent_type(dirfd(d), e->d_name, e->d_type, NULL); // dirfix: symlinks report the target's type
     if (dtype == 0xFF) continue; // dangling link: hidden
     char segname[256];
-    const int seg = nps5_segfile_dirent(dirfd(d), e->d_name, dtype, segname, sizeof segname); // gamepack <file>.nps5seg/
+    const int seg =
+        nps5_segfile_dirent(dirfd(d), e->d_name, dtype, segname, sizeof segname); // gamepack <file>.nps5seg/
     if (seg < 0) continue;
     if (seg > 0) dtype = 8; // DT_REG: listed as the original file
     slot->names[slot->count] = strdup(seg > 0 ? segname : e->d_name);
