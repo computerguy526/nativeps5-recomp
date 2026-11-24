@@ -480,9 +480,14 @@ static void nps5_framerate_tick(GuestContext *ctx) {
 }
 
 void nps5_rscale_flip(void); // core/nps5_rscale.c
+int nps5_tick_in_root(void) __attribute__((weak));               // nps5_physsub.c: this thread is inside the F2 update root (dtscan section 4.3 gate)
+void nps5_tick_agc_note(const char *name) __attribute__((weak)); // records the sceAgc* call made inside the root
+void nps5_tick_flip_bt(GuestContext *ctx) __attribute__((weak)); // NPS5_PHYS_FLIP_BT=1: one guest backtrace at the 600th flip
 void nps5_anyps5_enter(GuestContext *ctx, const char *name) {
+    if (nps5_tick_in_root && nps5_tick_in_root()) nps5_tick_agc_note(name);
     if (name[3] == 'A' && !strcmp(name, "sceAgcDcbSetFlip")) {
         if (g_fr.state >= 0) nps5_framerate_tick(ctx);
+        if (nps5_tick_flip_bt) nps5_tick_flip_bt(ctx);
         nps5_rscale_flip(); // core/nps5_rscale.c: render-scale controller (no-op unless the profile's render_scale is live)
     }
   nps5_hostcall_enter(ctx); // AnyPS5 calls guest callbacks (Agc command buffer out-of-space) by pointer

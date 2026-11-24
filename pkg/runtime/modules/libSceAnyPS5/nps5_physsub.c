@@ -106,8 +106,19 @@ static unsigned g_ps_poison_period = 100;
 static int g_ps_bt; // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace at world step g_ps_bt_at
 static uint64_t g_ps_bt_at = 600;
 static _Atomic uint64_t g_ps_world_n;
-static int g_ps_clamp_dtfix =
-    0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
+static _Thread_local int t_ps_in_world; // this thread is inside the world shim (dtauto probe: calls inside / outside the step window)
+static void pr_dump_maybe(void);
+// one guest backtrace line (rbp chain, see nps5_ps_bt_walk): who = label
+static void ps_bt_print(const GuestContext *ctx, const char *who, uint64_t at) {
+    uint64_t bt[24];
+    const uint64_t hi = g_nps5_arena.guest_hi > ctx->mem_size ? g_nps5_arena.guest_hi : ctx->mem_size;
+    const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), hi, ctx->rsp, ctx->rbp, bt, 24);
+    fprintf(stderr, "[physsub] backtrace %s at %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:", who, (unsigned long long)at, (void *)pthread_self(),
+            (unsigned long long)ctx->rsp, (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
+    for (int i = 0; i < k; i++) fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
+    fprintf(stderr, "\n");
+}
+static int g_ps_clamp_dtfix = 0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
 static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
@@ -343,6 +354,28 @@ static void ps_call(GuestContext *ctx, PsWrap *w, const PsArgs *a, float dt) {
     ctx->rsp = a->rsp;
 }
 
+// Pass-through call of the kept guest body with the entry arguments incl. the first 8 stack arguments (the callee gets its own frame as in ps_call).
+// set_dt: also write dt into xmm0[0]; else xmm0 stays as the caller passed it. Returns with ctx->rsp restored; the callee's rax / xmm0 stay in ctx.
+static void ps_call_raw(GuestContext *ctx, PsWrap *w, const PsArgs *a, int set_dt, float dt) {
+    void *body = ps_body(w);
+    ctx->rdi = a->rdi;
+    ctx->rsi = a->rsi;
+    ctx->rdx = a->rdx;
+    ctx->rcx = a->rcx;
+    ctx->r8 = a->r8;
+    ctx->r9 = a->r9;
+    for (int i = 0; i < 8; i++)
+        ctx->xmm[i] = a->xmm[i];
+    if (set_dt) ctx->xmm[0].f32[0] = dt;
+    uint64_t sp = ((a->rsp - 128 - 64) & ~15ULL) - 8;
+    nps5_pr_copy_stack_args((uint64_t *)NPS5_G2H(ctx, sp), (const uint64_t *)NPS5_G2H(ctx, a->rsp));
+    *(uint64_t *)NPS5_G2H(ctx, sp) = 0;
+    ctx->rsp = sp;
+    ctx->rip = w->guest;
+    recomp_call_entry(ctx, (recomp_fn_t)body);
+    ctx->rsp = a->rsp;
+}
+
 static void ps_note_dt(int k, float dt) {
     uint32_t bits;
     memcpy(&bits, &dt, 4);
@@ -428,17 +461,9 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     ps_save(ctx, &a);
     const float dt = a.xmm[0].f32[0];
     const uint64_t wn = atomic_fetch_add_explicit(&g_ps_world_n, 1, memory_order_relaxed);
+    t_ps_in_world++;
     if (g_ps_bt && wn == g_ps_bt_at) {
-        uint64_t bt[24];
-        const uint64_t hi = g_nps5_arena.guest_hi > ctx->mem_size ? g_nps5_arena.guest_hi : ctx->mem_size;
-        const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), hi, ctx->rsp, ctx->rbp, bt, 24);
-        fprintf(stderr,
-                "[physsub] backtrace at world step %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:",
-                (unsigned long long)wn, (void *)pthread_self(), (unsigned long long)ctx->rsp,
-                (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
-        for (int i = 0; i < k; i++)
-            fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
-        fprintf(stderr, "\n");
+        ps_bt_print(ctx, "world step", wn);
     }
     const int clamp = g_ps.on && g_ps.world && g_ps_wclamp;
     const int n = g_ps.on && g_ps.world && !clamp ? nps5_ps_steps(dt, g_ps.world_hz, g_ps.max) : 1;
@@ -540,6 +565,8 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_note_dt(0, dt);
         if (g_ps.log) ps_log();
     }
+    t_ps_in_world--;
+    pr_dump_maybe();
     SHIM_RETURN();
 }
 
@@ -923,31 +950,43 @@ void nps5_astro_texname_guard(GuestContext *ctx) {
 }
 
 // ---- NPS5_PHYS_DTCLAMP_OBJ: table-driven dt clamp for single objects (see nps5_physsub_logic.h) ----------------------------------------------
-#define PS_DC_SLOTS 8
-static const char *const g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone",      "aprope",    "aprope_b",
-                                                    "apsoftbody",   "apsoftbody_ball", "slingshot", "stretchplatform"};
-static const double g_dc_def_hz[PS_DC_SLOTS] = {60, 30, 30, 30, 30, 30, 30, 30};
+// Slots 0..7 are the named, verified ones ("all" selects exactly these). Slots 8..39 are the generated auto slots (dtauto, work/dtscan/dtprobe.py): their
+// table params physsub.dtclamp.addr.<k> (function address, the name is "a<hex>") and physsub.dtclamp.hz.<k> (default hz) name them; they are OFF unless
+// selected by that name (NPS5_PHYS_DTCLAMP_OBJ=all,a537a360) until verified.
+#define PS_DC_NAMED 8
+#define PS_DC_SLOTS 40
+static const char *g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone", "aprope", "aprope_b", "apsoftbody", "apsoftbody_ball", "slingshot", "stretchplatform"};
+static char g_dc_auto_name[PS_DC_SLOTS][20];
+static const double g_dc_def_hz[PS_DC_NAMED] = {60, 30, 30, 30, 30, 30, 30, 30};
 static pthread_once_t g_dc_once = PTHREAD_ONCE_INIT;
-static unsigned g_dc_mask;
+static uint64_t g_dc_mask;
+static int g_dc_bt; // NPS5_PHYS_DTCLAMP_BT=1: one guest backtrace at the 3000th call of each dtclamp slot
 static double g_dc_hz[PS_DC_SLOTS];
-static PsWrap g_dc_w[PS_DC_SLOTS] = {{.shim = "nps5_physsub_dtclamp_0"}, {.shim = "nps5_physsub_dtclamp_1"},
-                                     {.shim = "nps5_physsub_dtclamp_2"}, {.shim = "nps5_physsub_dtclamp_3"},
-                                     {.shim = "nps5_physsub_dtclamp_4"}, {.shim = "nps5_physsub_dtclamp_5"},
-                                     {.shim = "nps5_physsub_dtclamp_6"}, {.shim = "nps5_physsub_dtclamp_7"}};
+#define PS_DCW(i) {.shim = "nps5_physsub_dtclamp_" #i}
+static PsWrap g_dc_w[PS_DC_SLOTS] = {PS_DCW(0),  PS_DCW(1),  PS_DCW(2),  PS_DCW(3),  PS_DCW(4),  PS_DCW(5),  PS_DCW(6),  PS_DCW(7),  PS_DCW(8),  PS_DCW(9),
+                                     PS_DCW(10), PS_DCW(11), PS_DCW(12), PS_DCW(13), PS_DCW(14), PS_DCW(15), PS_DCW(16), PS_DCW(17), PS_DCW(18), PS_DCW(19),
+                                     PS_DCW(20), PS_DCW(21), PS_DCW(22), PS_DCW(23), PS_DCW(24), PS_DCW(25), PS_DCW(26), PS_DCW(27), PS_DCW(28), PS_DCW(29),
+                                     PS_DCW(30), PS_DCW(31), PS_DCW(32), PS_DCW(33), PS_DCW(34), PS_DCW(35), PS_DCW(36), PS_DCW(37), PS_DCW(38), PS_DCW(39)};
 static _Atomic uint64_t g_dc_calls[PS_DC_SLOTS], g_dc_clamped[PS_DC_SLOTS];
 static void dc_init(void) {
     int bad = 0;
-    g_dc_mask = nps5_ps_dtclamp_select(getenv("NPS5_PHYS_DTCLAMP_OBJ"), g_dc_names, PS_DC_SLOTS, &bad);
+    char key[48];
+    for (int i = PS_DC_NAMED; i < PS_DC_SLOTS; i++) {
+        uint64_t addr = 0, hz = 0;
+        snprintf(key, sizeof key, "physsub.dtclamp.addr.%d", i - PS_DC_NAMED);
+        if (!nps5_repl_param(key, &addr)) continue;
+        snprintf(g_dc_auto_name[i], sizeof g_dc_auto_name[i], "a%llx", (unsigned long long)addr);
+        g_dc_names[i] = g_dc_auto_name[i];
+        snprintf(key, sizeof key, "physsub.dtclamp.hz.%d", i - PS_DC_NAMED);
+        g_dc_hz[i] = nps5_repl_param(key, &hz) && hz >= 5 && hz <= 240 ? (double)hz : 30.0;
+    }
+    g_dc_bt = getenv("NPS5_PHYS_DTCLAMP_BT") && *getenv("NPS5_PHYS_DTCLAMP_BT") == '1';
+    g_dc_mask = nps5_ps_dtclamp_select(getenv("NPS5_PHYS_DTCLAMP_OBJ"), g_dc_names, PS_DC_SLOTS, PS_DC_NAMED, &bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
-        g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i], g_dc_def_hz[i], &bad);
-    if (bad)
-        fprintf(stderr,
-                "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: "
-                "all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform; hz "
-                "5..240)\n",
-                bad);
+        if (g_dc_names[i]) g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i], i < PS_DC_NAMED ? g_dc_def_hz[i] : g_dc_hz[i], &bad);
+    if (bad) fprintf(stderr, "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform,a<hex addr> (auto); hz 5..240)\n", bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
-        if (g_dc_mask & (1u << i))
+        if (g_dc_names[i] && (g_dc_mask & (1ull << i)))
             fprintf(stderr, "[physsub] dtclamp on: %s update dt clamped to 1/%.0f s%s\n", g_dc_names[i], g_dc_hz[i],
                     nps5_repl_wrap_body(g_dc_w[i].shim, &(uint64_t){0})
                         ? ""
@@ -959,7 +998,7 @@ static void dc_step(GuestContext *ctx, int slot) {
     ps_save(ctx, &a);
     float dt = a.xmm[0].f32[0], c = dt;
     atomic_fetch_add_explicit(&g_dc_calls[slot], 1, memory_order_relaxed);
-    if (g_dc_mask & (1u << slot)) {
+    if (g_dc_mask & (1ull << slot)) {
         c = nps5_ps_clamp(dt, g_dc_hz[slot]);
         if (c != dt) {
             const uint64_t k = atomic_fetch_add_explicit(&g_dc_clamped[slot], 1, memory_order_relaxed) + 1;
@@ -970,9 +1009,211 @@ static void dc_step(GuestContext *ctx, int slot) {
                         (double)c);
         }
     }
+    if (g_dc_bt && atomic_load_explicit(&g_dc_calls[slot], memory_order_relaxed) == 3000) {
+        char who[48];
+        snprintf(who, sizeof who, "dtclamp %s", g_dc_names[slot] ? g_dc_names[slot] : "?");
+        ps_bt_print(ctx, who, 3000);
+    }
     ps_call(ctx, &g_dc_w[slot], &a, c);
     SHIM_RETURN();
 }
 #define PS_DC_SHIM(i)                                                                                                  \
     void nps5_physsub_dtclamp_##i(GuestContext *ctx) { dc_step(ctx, i); }
 PS_DC_SHIM(0) PS_DC_SHIM(1) PS_DC_SHIM(2) PS_DC_SHIM(3) PS_DC_SHIM(4) PS_DC_SHIM(5) PS_DC_SHIM(6) PS_DC_SHIM(7)
+
+// ---- NPS5_PHYS_PROBE=1: counting-wrap probe (see nps5_physsub_logic.h; slots nps5_physsub_probe_0..1023) ------------------------------------
+// Pass-through shim for each wrapped candidate; counts per function (Nps5PrRow). Frame = world step number (one per frame under WORLD_CLAMP),
+// frame dt = float at table param physsub.probe.frame_dt (guest address of the framerate block's dt; absent = 0, argfr stays 0). Every 10 s one
+// "[physprobe]" line per active slot (cumulative counts) is printed from the world shim; the last line per slot wins.
+#define PS_PR_SLOTS 1024
+static int g_pr_on = -1;
+static uint64_t g_pr_dtaddr;
+static Nps5PrRow g_pr_row[PS_PR_SLOTS];
+static atomic_flag g_pr_lock[PS_PR_SLOTS];
+static PsWrap g_pr_w[PS_PR_SLOTS];
+static char g_pr_shim_name[PS_PR_SLOTS][32];
+static _Atomic uint64_t g_pr_dumped_at;
+static uint64_t g_pr_every_ns = 10000000000ull; // NPS5_PHYS_PROBE_EVERY_S (0 = at every world step; tests)
+static pthread_once_t g_pr_once = PTHREAD_ONCE_INIT;
+static unsigned char g_pr_bt[PS_PR_SLOTS]; // NPS5_PHYS_PROBE_BT=<slot,..>: one guest backtrace at the NPS5_PHYS_PROBE_BT_AT-th (3000) call of each (who calls the object updates)
+static uint64_t g_pr_bt_at = 3000; // NPS5_PHYS_PROBE_BT_AT
+static void pr_init(void) {
+    const char *e = getenv("NPS5_PHYS_PROBE");
+    g_pr_on = e && *e == '1';
+    double ev = 10;
+    if (nps5_ps_num(getenv("NPS5_PHYS_PROBE_EVERY_S"), 0, 3600, &ev)) ev = 10;
+    g_pr_every_ns = (uint64_t)(ev * 1e9);
+    uint64_t off = 0;
+    if (nps5_repl_param("physsub.probe.frame_dt", &off)) g_pr_dtaddr = off;
+    for (int i = 0; i < PS_PR_SLOTS; i++) {
+        snprintf(g_pr_shim_name[i], sizeof g_pr_shim_name[i], "nps5_physsub_probe_%d", i);
+        g_pr_w[i].shim = g_pr_shim_name[i];
+    }
+    double at = 3000;
+    if (nps5_ps_num(getenv("NPS5_PHYS_PROBE_BT_AT"), 1, 1e9, &at)) at = 3000;
+    g_pr_bt_at = (uint64_t)at;
+    const char *bl = getenv("NPS5_PHYS_PROBE_BT");
+    if (bl && *bl) {
+        char buf[1024], *sv = NULL;
+        snprintf(buf, sizeof buf, "%s", bl);
+        for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+            const int k = atoi(t);
+            if (k >= 0 && k < PS_PR_SLOTS) g_pr_bt[k] = 1;
+        }
+    }
+    if (g_pr_on) fprintf(stderr, "[physprobe] on (frame dt addr 0x%llx)\n", (unsigned long long)g_pr_dtaddr);
+}
+static void pr_step(GuestContext *ctx, int slot) {
+    pthread_once(&g_pr_once, pr_init);
+    PsArgs a;
+    ps_save(ctx, &a);
+    if (g_pr_on) {
+        float fdt = 0.0f;
+        if (g_pr_dtaddr && g_pr_dtaddr + 4 <= ctx->mem_size) fdt = *(const float *)NPS5_G2H(ctx, g_pr_dtaddr);
+        while (atomic_flag_test_and_set_explicit(&g_pr_lock[slot], memory_order_acquire)) {
+        }
+        nps5_pr_note(&g_pr_row[slot], atomic_load_explicit(&g_ps_world_n, memory_order_relaxed), t_ps_in_world, (uint64_t)(uintptr_t)pthread_self(), a.rdi, a.xmm[0].f32[0], fdt);
+        const uint64_t cc = g_pr_row[slot].calls;
+        atomic_flag_clear_explicit(&g_pr_lock[slot], memory_order_release);
+        if (g_pr_bt[slot] && cc == g_pr_bt_at) {
+            char who[32];
+            snprintf(who, sizeof who, "probe slot %d", slot);
+            ps_bt_print(ctx, who, cc);
+        }
+    }
+    ps_call_raw(ctx, &g_pr_w[slot], &a, 0, 0.0f);
+    SHIM_RETURN();
+}
+// called from the world shim: every 10 s the rows, then the named dtclamp counters
+static void pr_dump_maybe(void) {
+    if (g_pr_on != 1) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, last = atomic_load_explicit(&g_pr_dumped_at, memory_order_relaxed);
+    if (now - last < g_pr_every_ns || !atomic_compare_exchange_strong_explicit(&g_pr_dumped_at, &(uint64_t){last}, now, memory_order_relaxed, memory_order_relaxed)) return;
+    char line[520];
+    fprintf(stderr, "[physprobe] dump world_steps=%llu\n", (unsigned long long)atomic_load_explicit(&g_ps_world_n, memory_order_relaxed));
+    for (int i = 0; i < PS_PR_SLOTS; i++) {
+        while (atomic_flag_test_and_set_explicit(&g_pr_lock[i], memory_order_acquire)) {
+        }
+        Nps5PrRow r = g_pr_row[i];
+        atomic_flag_clear_explicit(&g_pr_lock[i], memory_order_release);
+        if (!r.calls) continue;
+        nps5_pr_format(&r, i, line, sizeof line);
+        fprintf(stderr, "%s\n", line);
+    }
+    for (int i = 0; i < PS_DC_SLOTS; i++)
+        if (g_dc_names[i] && atomic_load_explicit(&g_dc_calls[i], memory_order_relaxed))
+            fprintf(stderr, "[physprobe] dtclamp %s calls=%llu clamped=%llu\n", g_dc_names[i], (unsigned long long)atomic_load_explicit(&g_dc_calls[i], memory_order_relaxed),
+                    (unsigned long long)atomic_load_explicit(&g_dc_clamped[i], memory_order_relaxed));
+}
+#define PS_PR_SHIM(i) void nps5_physsub_probe_##i(GuestContext *ctx) { pr_step(ctx, i); }
+#include "nps5_physprobe_shims.h"
+
+// NPS5_PHYS_FLIP_BT=1: one guest backtrace at the 600th sceAgcDcbSetFlip (the render / frame-loop thread's chain; nps5_anyps5_enter calls this)
+void nps5_tick_flip_bt(GuestContext *ctx) {
+    static int on = -1;
+    static _Atomic uint64_t n;
+    if (on < 0) on = getenv("NPS5_PHYS_FLIP_BT") && *getenv("NPS5_PHYS_FLIP_BT") == '1';
+    if (!on) return;
+    const uint64_t k = atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) + 1;
+    if (k == 600) ps_bt_print(ctx, "flip", k);
+}
+
+// ---- F2: whole-update tick split (dtauto spike; see nps5_physsub_logic.h, NPS5_TICK_SPLIT=0|split|fixed, default off) -------------------------------
+// nps5_physsub_tick_root wraps the game's update root (the function whose subtree holds the physics manager, the object updates and the fluid manager but
+// no render submit). It reads the frame dt from the framerate block (table param physsub.tick.block = guest address of the block {f64 fps, f32 dt, u64
+// period us}), asks nps5_tick_plan for n ticks and calls the original n times; for the duration of each call the block holds the tick (dt f32 at +8,
+// period us at +16, fps at +0) so accessor readers and, with physsub.tick.arg=1 / NPS5_TICK_ARG=1, the dt argument (xmm0[0]) agree; the block is restored
+// afterwards. While a tick runs the world / cloth / spring shims see dt <= 1/hz and pass through. Gate (doc dtscan section 4.3): every sceAgc* entry inside
+// the root is recorded (nps5_tick_agc_note, called from nps5_anyps5_enter); the first 16 distinct names are logged, a non-zero count = the root is not
+// separable. NPS5_TICK_LOG=1: every 5 s calls / ticks / time per root call (the cost of an extra tick = the average).
+static PsWrap g_w_tick = {.shim = "nps5_physsub_tick_root"};
+static pthread_once_t g_tk_once = PTHREAD_ONCE_INIT;
+static Nps5Tick g_tk = {0, 60, 3, 0};
+static uint64_t g_tk_block;
+static int g_tk_arg, g_tk_log;
+static _Thread_local int t_tk_depth;
+static _Atomic uint64_t g_tk_calls, g_tk_ticks, g_tk_split, g_tk_ns, g_tk_agc, g_tk_last_log;
+static char g_tk_agc_names[16][48];
+static _Atomic int g_tk_agc_n;
+int nps5_tick_in_root(void) { return t_tk_depth > 0; }
+void nps5_tick_agc_note(const char *name) {
+    atomic_fetch_add_explicit(&g_tk_agc, 1, memory_order_relaxed);
+    const int n = atomic_load_explicit(&g_tk_agc_n, memory_order_relaxed);
+    if (n >= 16) return;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(g_tk_agc_names[i], name)) return;
+    if (atomic_compare_exchange_strong_explicit(&g_tk_agc_n, &(int){n}, n + 1, memory_order_relaxed, memory_order_relaxed)) {
+        snprintf(g_tk_agc_names[n], sizeof g_tk_agc_names[n], "%s", name);
+        fprintf(stderr, "[tick] GATE: %s called inside the update root (the root is not separable from the render side)\n", name);
+    }
+}
+static void tk_init(void) {
+    const char *e = getenv("NPS5_TICK_SPLIT");
+    const int m = nps5_tick_mode(e);
+    if (m < 0) fprintf(stderr, "[tick] W NPS5_TICK_SPLIT=%s: 0|split|fixed (staying off)\n", e);
+    g_tk.mode = m < 0 ? 0 : m;
+    double v = g_tk.hz;
+    if (nps5_ps_num(getenv("NPS5_TICK_HZ"), 20, 240, &v)) fprintf(stderr, "[tick] W NPS5_TICK_HZ: 20..240\n");
+    g_tk.hz = v;
+    v = g_tk.max;
+    if (nps5_ps_num(getenv("NPS5_TICK_MAX"), 1, 8, &v)) fprintf(stderr, "[tick] W NPS5_TICK_MAX: 1..8\n");
+    g_tk.max = (int)v;
+    uint64_t off = 0;
+    if (nps5_repl_param("physsub.tick.block", &off)) g_tk_block = off;
+    if (nps5_repl_param("physsub.tick.arg", &off)) g_tk_arg = off != 0;
+    v = g_tk_arg;
+    if (nps5_ps_num(getenv("NPS5_TICK_ARG"), 0, 1, &v)) fprintf(stderr, "[tick] W NPS5_TICK_ARG: 0|1\n");
+    g_tk_arg = (int)v;
+    g_tk_log = getenv("NPS5_TICK_LOG") && *getenv("NPS5_TICK_LOG") == '1';
+    if (g_tk.mode > 0 || g_tk_log)
+        fprintf(stderr, "[tick] %s hz %.0f max %d, block 0x%llx, dt argument %s%s\n", g_tk.mode == 1 ? "split" : g_tk.mode == 2 ? "fixed" : "timing only (off)", g_tk.hz, g_tk.max,
+                (unsigned long long)g_tk_block, g_tk_arg ? "yes" : "no", g_tk_block ? "" : " (W: no physsub.tick.block param: no split)");
+}
+static uint64_t tk_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+void nps5_physsub_tick_root(GuestContext *ctx) {
+    pthread_once(&g_tk_once, tk_init);
+    PsArgs a;
+    ps_save(ctx, &a);
+    uint8_t *blk = g_tk_block && g_tk_block + 24 <= ctx->mem_size ? (uint8_t *)NPS5_G2H(ctx, g_tk_block) : NULL;
+    const float dt = blk ? *(const float *)(blk + 8) : 0.0f;
+    float tick = dt;
+    const int n = blk && g_tk.mode > 0 ? nps5_tick_plan(&g_tk, dt, &tick) : 1;
+    uint8_t save[24];
+    if (blk && n > 1) memcpy(save, blk, 24);
+    const uint64_t t0 = g_tk_log ? tk_now() : 0;
+    t_tk_depth++;
+    for (int i = 0; i < n; i++) {
+        if (blk && n > 1) {
+            *(float *)(blk + 8) = tick;
+            *(uint64_t *)(blk + 16) = (uint64_t)((double)tick * 1e6 + 0.5);
+            *(double *)blk = 1.0 / (double)tick;
+        }
+        ps_call_raw(ctx, &g_w_tick, &a, n > 1 && g_tk_arg, tick);
+    }
+    t_tk_depth--;
+    if (blk && n > 1) memcpy(blk, save, 24);
+    atomic_fetch_add_explicit(&g_tk_calls, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_tk_ticks, (uint64_t)n, memory_order_relaxed);
+    if (n > 1) atomic_fetch_add_explicit(&g_tk_split, 1, memory_order_relaxed);
+    if (g_tk_log) {
+        const uint64_t now = tk_now();
+        atomic_fetch_add_explicit(&g_tk_ns, now - t0, memory_order_relaxed);
+        const uint64_t last = atomic_load_explicit(&g_tk_last_log, memory_order_relaxed);
+        if (now - last > 5000000000ull && atomic_compare_exchange_strong_explicit(&g_tk_last_log, &(uint64_t){last}, now, memory_order_relaxed, memory_order_relaxed)) {
+            const uint64_t c = atomic_load_explicit(&g_tk_calls, memory_order_relaxed);
+            fprintf(stderr, "[tick] root calls %llu ticks %llu (split %llu) avg %.3f ms per root call (%.3f ms per tick), sceAgc calls inside the root: %llu, last dt %.4f tick %.4f\n", (unsigned long long)c,
+                    (unsigned long long)atomic_load_explicit(&g_tk_ticks, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_tk_split, memory_order_relaxed),
+                    c ? (double)atomic_load_explicit(&g_tk_ns, memory_order_relaxed) / (double)c / 1e6 : 0.0,
+                    (double)atomic_load_explicit(&g_tk_ns, memory_order_relaxed) / (double)(atomic_load_explicit(&g_tk_ticks, memory_order_relaxed) ? atomic_load_explicit(&g_tk_ticks, memory_order_relaxed) : 1) / 1e6,
+                    (unsigned long long)atomic_load_explicit(&g_tk_agc, memory_order_relaxed),
+                    (double)dt, (double)tick);
+        }
+    }
+    SHIM_RETURN();
+}

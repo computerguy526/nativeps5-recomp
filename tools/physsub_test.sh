@@ -21,8 +21,12 @@ fa() { local l; l=$(llvm-nm -S "$elf" | awk -v s="$2" '$4==s {print $1, $2; exit
   printf '{"name":"%s","addr":"0x%s","size":%d,"shim":"%s","wrap":true}' "$1" "${l% *}" "$((16#${l#* }))" "$3"; }
 W=$(fa world_step world_step nps5_physsub_world_step); C=$(fa cloth_step cloth_step nps5_physsub_cloth_step)
 [ -n "$W" ] && [ -n "$C" ] || { echo "symbols not found"; exit 2; }
+# dtauto: counting-wrap probe slot 0 on probe_fn (8 integer arguments, 2 on the stack) and auto dtclamp slot 8 on auto_upd (selected by its name a<hex addr>)
+PR=$(fa probe_fn probe_fn nps5_physsub_probe_0); AU=$(fa auto_upd auto_upd nps5_physsub_dtclamp_8)
+[ -n "$PR" ] && [ -n "$AU" ] || { echo "probe symbols not found"; exit 2; }
+AUADDR=$(llvm-nm -S "$elf" | awk '$4=="auto_upd" {print $1; exit}'); AUNAME="a$(echo "$AUADDR" | sed 's/^0*//' | tr 'A-F' 'a-f')"
 cat > "$B/table.json" <<JSON
-{"name":"t_physsub","funcs":[ $W, $C ], "params":[{"key":"physsub.cloth.skip_flag","value":"0x195"}]}
+{"name":"t_physsub","funcs":[ $W, $C, $PR, $AU ], "params":[{"key":"physsub.cloth.skip_flag","value":"0x195"},{"key":"physsub.dtclamp.addr.0","value":"0x$AUADDR"},{"key":"physsub.dtclamp.hz.0","value":"60"}]}
 JSON
 d="$B/work"; rm -rf "$d"; mkdir -p "$d"
 "$BIN" -compile=false -hle-replace "$B/table.json" -hle-replace-unverified -o "$d/out" "$elf" > "$d/translate.log" 2>&1 || { echo "TRANSLATE-FAIL ($(grep -m1 -iE 'error' "$d/translate.log" | cut -c1-200))"; exit 1; }
@@ -46,4 +50,11 @@ check on   "NPS5_PHYS_SUBSTEP=1" world_calls=7 world_sum_us=~160000 world_max_us
 check sub  "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_SUBSTEP_CLOTH=substep NPS5_PHYS_SUBSTEP_HZ=30" world_calls=7 world_sum_us=~160000 world_max_us=~25000 cloth_calls=4 cloth_sum_us=~100000 cloth_max_us=~25000 posed_calls=1
 # world clamp (F1): one call per frame, dt = min(dt, 1/25 s), no split (4 calls, 3 x 50 ms -> 40 ms + the 10 ms one)
 check clamp "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_SUBSTEP_WORLD_CLAMP=1" world_calls=4 world_sum_us=~130000 world_max_us=~40000 world_bad=0 cloth_calls=2
+# dtauto: probe + auto dtclamp. probe_fn: arguments intact (3 calls x 205 = 615, stack args copied), 3 calls counted, pass-through with the probe on or off.
+# auto_upd (2 calls of 50 ms): unchanged by default and by "all" (auto slots are never part of all); clamped to 1/60 only when named.
+check probeon  "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_PROBE=1 NPS5_PHYS_PROBE_EVERY_S=0" probe_ret=615 probe_calls=3 auto_calls=2 auto_sum_us=~100000 world_calls=7
+check probeoff "NPS5_PHYS_SUBSTEP=1" probe_ret=615 probe_calls=3 auto_sum_us=~100000
+check autoall  "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_DTCLAMP_OBJ=all" auto_sum_us=~100000 auto_max_us=~50000
+check autoname "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_DTCLAMP_OBJ=$AUNAME" auto_calls=2 auto_sum_us=~33333 auto_max_us=~16667
+grep -q '^\[physprobe\] s=0 calls=3 frames=[0-9]* maxpf=[0-9]* inst=1 maxpt=3 over=0 inw=0 mt=0 argok=3 argfr=0 amin=0.01670 amax=0.05000 bins=0,0,1,0,0,2,0' "$d/stderr.probeon" && echo "probe line: PASS" || { echo "probe line: FAIL $(grep -m1 physprobe "$d/stderr.probeon" | cut -c1-200)"; fail=1; }
 exit $fail

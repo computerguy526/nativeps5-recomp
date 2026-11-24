@@ -33,6 +33,21 @@ __attribute__((noinline)) void cloth_step(Obj *o, float dt) {
     if (dt < o->min) o->min = dt;
 }
 
+// dtauto: a candidate with 8 integer arguments (2 on the stack) and a float dt, for the counting probe (nps5_physsub_probe_0): arguments must arrive intact
+__attribute__((noinline)) long probe_fn(Obj *o, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8, float dt) {
+    o->calls++;
+    o->sum += dt;
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + (o != 0);
+}
+// dtauto: an auto dtclamp candidate (nps5_physsub_dtclamp_8), void f(this, float dt)
+__attribute__((noinline)) void auto_upd(Obj *o, float dt) {
+    o->calls++;
+    o->sum += dt;
+    if (dt > o->max) o->max = dt;
+}
+long (*volatile g_probe)(Obj *, long, long, long, long, long, long, long, long, float) = probe_fn;
+void (*volatile g_auto)(Obj *, float) = auto_upd;
+
 __attribute__((noinline)) void tail_world(Obj *o, float dt) { world_step(o, 0x1111, 0x2222, dt); }
 
 void (*volatile g_world)(Obj *, uint64_t, uint64_t, float) = world_step;
@@ -64,6 +79,20 @@ int main(void) {
     world_step(&w, 0x1111, 0x2222, g_dt); // direct
     g_world(&w, 0x1111, 0x2222, g_dt); // pointer
     tail_world(&w, g_dt); // tail call
+    static Obj q, u;
+    reset(&q);
+    long ret = 0;
+    ret += probe_fn(&q, 1, 2, 3, 4, 5, 6, 7, 8, g_dt);
+    ret += g_probe(&q, 1, 2, 3, 4, 5, 6, 7, 8, 0.0167f);
+    ret += g_probe(&q, 1, 2, 3, 4, 5, 6, 7, 8, g_dt);
+    t_str("probe_");
+    t_dec("ret", ret);
+    t_str("probe_");
+    t_dec("calls", q.calls);
+    reset(&u);
+    auto_upd(&u, g_dt);
+    g_auto(&u, g_dt);
+    report("auto", &u);
     world_step(&w, 0x1111, 0x2222, 0.01f); // short: never split
     report("world", &w);
     reset(&c);

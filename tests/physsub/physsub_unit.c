@@ -107,9 +107,9 @@ int main(void) {
         CHECK(n == 3, "stops on an out-of-range rbp (n=%d)", n);
         CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0, 0x203, out, 8) == 0, "misaligned rbp / no rsp");
         CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x7fc, 0x7f8, out, 8) == 0, "rsp/rbp at the end of memory");
-        CHECK(nps5_ps_bt_walk(NULL, sz, 0x100, 0x200, out, 8) == 0 &&
-                  nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, out, 0) == 0,
-              "bad args");
+        CHECK(nps5_ps_bt_walk((const uint8_t *)mem, 1ull << 30, 0x100, 0x4000100, out, 8) == 1, "rbp more than 32 MiB above rsp is not followed (only [rsp])");
+        CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x200, 0x100, out, 8) == 1, "rbp below rsp is not followed");
+        CHECK(nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, NULL, 8) == 0 && nps5_ps_bt_walk((const uint8_t *)mem, sz, 0x100, 0x200, out, 0) == 0, "bad args");
     }
     // poison groups: each scales only its own fields, default (0 groups) writes nothing
     {
@@ -139,15 +139,23 @@ int main(void) {
     {
         static const char *const nm[4] = {"bigleafplant", "springbone", "aprope", "slingshot"};
         int bad = 0;
-        CHECK(nps5_ps_dtclamp_select(NULL, nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("0", nm, 4, &bad) == 0 &&
-                  nps5_ps_dtclamp_select("", nm, 4, &bad) == 0 && bad == 0,
-              "off");
-        CHECK(nps5_ps_dtclamp_select("all", nm, 4, &bad) == 15 && bad == 0, "all");
-        CHECK(nps5_ps_dtclamp_select("springbone,SlingShot", nm, 4, &bad) == 10 && bad == 0, "list, case-insensitive");
-        CHECK(nps5_ps_dtclamp_select("aprope,nope", nm, 4, &bad) == 4 && bad == 1, "unknown item counted");
-        CHECK(nps5_ps_dtclamp_select("all", nm, 32, NULL) == ~0u, "32 slots");
-        CHECK(nps5_ps_dtclamp_hz("springbone=45,aprope=x,bigleafplant=1000", "springbone", 30, &bad) == 45 && bad == 1,
-              "hz item");
+        CHECK(nps5_ps_dtclamp_select(NULL, nm, 4, 4, &bad) == 0 && nps5_ps_dtclamp_select("0", nm, 4, 4, &bad) == 0 && nps5_ps_dtclamp_select("", nm, 4, 4, &bad) == 0 && bad == 0, "off");
+        CHECK(nps5_ps_dtclamp_select("all", nm, 4, 4, &bad) == 15 && bad == 0, "all");
+        CHECK(nps5_ps_dtclamp_select("springbone,SlingShot", nm, 4, 4, &bad) == 10 && bad == 0, "list, case-insensitive");
+        CHECK(nps5_ps_dtclamp_select("aprope,nope", nm, 4, 4, &bad) == 4 && bad == 1, "unknown item counted");
+        CHECK(nps5_ps_dtclamp_select("all", nm, 32, 32, NULL) == 0xffffffffull, "32 slots");
+        CHECK(nps5_ps_dtclamp_select("all", nm, 64, 64, NULL) == ~0ull, "64 slots");
+        // auto slots (dtauto): "all" selects only the first nall (named) slots, auto ones only by name; a NULL name (unused slot) never matches
+        {
+            const char *const an[6] = {"bigleafplant", "springbone", "a537a360", "a1234", NULL, "a99"};
+            CHECK(nps5_ps_dtclamp_select("all", an, 6, 2, &bad) == 3, "all = named only");
+            CHECK(nps5_ps_dtclamp_select("all,A537A360", an, 6, 2, &bad) == 7, "all + one auto slot (case-insensitive)");
+            CHECK(nps5_ps_dtclamp_select("a99", an, 6, 2, &bad) == 32, "auto slot alone");
+            bad = 0;
+            CHECK(nps5_ps_dtclamp_select("a1234,", an, 6, 2, &bad) == 8 && bad == 0, "trailing comma");
+            CHECK(nps5_ps_dtclamp_select("nothere", an, 6, 2, &bad) == 0 && bad == 1, "unknown auto name counted");
+        }
+        CHECK(nps5_ps_dtclamp_hz("springbone=45,aprope=x,bigleafplant=1000", "springbone", 30, &bad) == 45 && bad == 1, "hz item");
         CHECK(nps5_ps_dtclamp_hz("springbone=45", "aprope", 30, &bad) == 30, "hz default");
         bad = 0;
         CHECK(nps5_ps_dtclamp_hz("bigleafplant=1000,bigleafplant", "bigleafplant", 60, &bad) == 60 && bad == 2,
@@ -157,6 +165,54 @@ int main(void) {
         CHECK(nps5_ps_clamp(0.0268f, 60) == (float)(1.0 / 60) && nps5_ps_clamp(0.01f, 60) == 0.01f &&
                   nps5_ps_clamp(-1.0f, 60) == -1.0f,
               "dtclamp values");
+    }
+    // counting-wrap probe rows (dtauto)
+    {
+        Nps5PrRow r;
+        memset(&r, 0, sizeof r);
+        // frame 1: 1 call, dt arg = frame dt; frame 2: 3 calls of the SAME object (a sub-stepped function), dt arg 1/60; frame 3: 1 call from another thread
+        // (in the world window, another object), dt 40 ms
+        nps5_pr_note(&r, 1, 0, 7, 0x1000, 0.0268f, 0.0268f);
+        nps5_pr_note(&r, 2, 0, 7, 0x1000, 1.0f / 60, 0.0268f);
+        nps5_pr_note(&r, 2, 0, 7, 0x1000, 1.0f / 60, 0.0268f);
+        nps5_pr_note(&r, 2, 0, 7, 0x1000, 1.0f / 60, 0.0268f);
+        nps5_pr_note(&r, 3, 1, 8, 0x2000, 0.040f, 0.040f);
+        CHECK(r.calls == 5 && r.frames == 3 && nps5_pr_maxpf(&r) == 3 && r.in_world == 1 && r.multi_thread == 1, "counts: calls %llu frames %llu maxpf %llu inw %llu mt %d", (unsigned long long)r.calls,
+              (unsigned long long)r.frames, (unsigned long long)nps5_pr_maxpf(&r), (unsigned long long)r.in_world, r.multi_thread);
+        CHECK(r.maxpt == 3 && nps5_pr_maxinst(&r) == 1 && r.inst_over == 0, "same object 3x in a frame: maxpt %u inst %u", r.maxpt, nps5_pr_maxinst(&r));
+        CHECK(r.argok == 5 && r.argframe == 2 && r.bins[4] == 1 && r.bins[2] == 3 && r.bins[5] == 1 && r.bins[0] == 0, "dt histogram: argok %llu argfr %llu", (unsigned long long)r.argok, (unsigned long long)r.argframe);
+        CHECK(r.amin < 0.0167f && r.amin > 0.0166f && r.amax == 0.040f, "min/max");
+        // many objects, one call each per frame: per-instance, maxpt 1; the table is cleared between frames
+        Nps5PrRow m;
+        memset(&m, 0, sizeof m);
+        for (int f = 0; f < 3; f++)
+            for (uint64_t o = 0; o < 40; o++) nps5_pr_note(&m, 10 + (uint64_t)f, 0, 1, 0x10000 + o * 0x230, 0.0167f, 0.0167f);
+        CHECK(m.calls == 120 && m.frames == 3 && nps5_pr_maxpf(&m) == 40 && nps5_pr_maxinst(&m) == 40 && m.maxpt == 1 && m.inst_over == 0, "40 objects: maxpt %u inst %u over %u", m.maxpt, nps5_pr_maxinst(&m), m.inst_over);
+        // more objects than the table tracks: counted as over, maxpt stays correct for the tracked ones
+        Nps5PrRow big;
+        memset(&big, 0, sizeof big);
+        for (uint64_t o = 0; o < 400; o++) nps5_pr_note(&big, 1, 0, 1, 0x40000 + o * 0x10, 0.0167f, 0.0167f);
+        CHECK(big.inst_over > 0 && nps5_pr_maxinst(&big) <= NPS5_PR_INST && big.maxpt == 1 && big.calls == 400, "table overflow: over %u inst %u", big.inst_over, nps5_pr_maxinst(&big));
+        // not a dt: NaN, 0, negative, a pointer reinterpreted as float (huge), 2 s: counted as a call, not as a dt
+        Nps5PrRow q;
+        memset(&q, 0, sizeof q);
+        nps5_pr_note(&q, 5, 0, 1, 1, NAN, 0.0167f);
+        nps5_pr_note(&q, 5, 0, 1, 2, 0.0f, 0.0167f);
+        nps5_pr_note(&q, 5, 0, 1, 3, -0.02f, 0.0167f);
+        nps5_pr_note(&q, 5, 0, 1, 4, 3.0e9f, 0.0167f);
+        nps5_pr_note(&q, 5, 0, 1, 5, 2.0f, 0.0167f);
+        CHECK(q.calls == 5 && q.argok == 0 && q.frames == 1 && nps5_pr_maxpf(&q) == 5 && q.multi_thread == 0 && q.maxpt == 1, "non-dt arguments");
+        nps5_pr_note(&q, 6, 0, 1, 1, 0.01f, 0.0f);
+        CHECK(q.argok == 1 && q.argframe == 0 && q.frames == 2 && q.maxpf == 5, "unknown frame dt: argfr stays 0");
+        CHECK(nps5_pr_bin(0.007f) == 0 && nps5_pr_bin(0.012f) == 1 && nps5_pr_bin(0.0167f) == 2 && nps5_pr_bin(0.02f) == 3 && nps5_pr_bin(0.03f) == 4 && nps5_pr_bin(0.05f) == 5 && nps5_pr_bin(0.1f) == 6, "bins");
+        char line[520];
+        const int n = nps5_pr_format(&r, 17, line, sizeof line);
+        CHECK(n > 0 && n < (int)sizeof line && !strncmp(line, "[physprobe] s=17 calls=5 frames=3 maxpf=3 inst=1 maxpt=3 over=0 inw=1 mt=1 argok=5 argfr=2 amin=0.01667 amax=0.04000 bins=0,0,3,0,1,1,0", 135), "line: %s", line);
+        // stack arguments: 8 qwords above the return address are copied, the return slot (index 0) is not
+        uint64_t src[10], dst[10];
+        for (int i = 0; i < 10; i++) src[i] = 100 + i, dst[i] = 0;
+        nps5_pr_copy_stack_args(dst, src);
+        CHECK(dst[0] == 0 && dst[1] == 101 && dst[8] == 108 && dst[9] == 0, "stack args copy");
     }
     if (fails) {
         printf("physsub_unit: %d FAILED\n", fails);

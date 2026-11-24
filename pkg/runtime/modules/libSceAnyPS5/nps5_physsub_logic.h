@@ -47,6 +47,7 @@
 #pragma once
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -160,16 +161,17 @@ static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
 
 // ---- dtexec probes (default off, diagnostics only) ----------------------------------------------------------------------------------------
 // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace from the world shim (the virtual call chain from the main loop to the physics manager).
-// Walks the rbp chain: [rsp] = the caller's return address, then ret = [rbp+8], rbp = [rbp]. Bounds-checked against the guest memory size, stops on
-// a null / misaligned / out-of-range rbp, on an rbp that does not increase, and at max entries. Returns the number of return addresses written.
-static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out,
-                                  int max) {
+// Walks the rbp chain: [rsp] = the caller's return address, then ret = [rbp+8], rbp = [rbp]. mem = host address of guest address 0 (NULL in the identity
+// address mode: guest pointer == host pointer, as in the title builds), bounds-checked against mem_size, stops on a null / misaligned / out-of-range rbp,
+// on an rbp that does not increase or lies more than 32 MiB above rsp (a stale chain must not walk into unmapped memory), and at max entries.
+// Returns the number of return addresses written.
+static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out, int max) {
     int n = 0;
-    if (!mem || max <= 0) return 0;
+    if (!out || max <= 0) return 0;
     if (rsp && !(rsp & 7) && rsp + 8 <= mem_size) out[n++] = *(const uint64_t *)(mem + rsp);
     uint64_t prev = 0;
     while (n < max) {
-        if (!rbp || (rbp & 7) || rbp + 16 > mem_size || rbp <= prev) break;
+        if (!rbp || (rbp & 7) || rbp + 16 > mem_size || rbp <= prev || rbp < rsp || rbp - rsp > (32ull << 20)) break;
         const uint64_t ret = *(const uint64_t *)(mem + rbp + 8);
         const uint64_t next = *(const uint64_t *)(mem + rbp);
         if (!ret) break;
@@ -237,10 +239,13 @@ static inline int nps5_ps_poison_phase(uint64_t step, unsigned period, int ngrou
 // Objects whose update takes the frame dt in xmm0[0] and is only stable / only looks right at <= 1/hz (delayed feedback gain grows with dt: the
 // armadillo BigLeafPlant, SpringBone dampers, ropes, soft bodies). The shim calls the original ONCE with min(dt, 1/hz); only that object runs
 // slower than real time below hz fps. NPS5_PHYS_DTCLAMP_OBJ=all | name,name,... | 0 (default off); NPS5_PHYS_DTCLAMP_HZ=name=hz,name=hz (5..240).
-// Names are matched case-insensitively. Returns the bit mask of selected slots; *bad = number of unknown / malformed items.
-static inline unsigned nps5_ps_dtclamp_select(const char *sel, const char *const *names, int n, int *bad) {
-    unsigned m = 0;
-    char buf[256], *sv = NULL;
+// Names are matched case-insensitively. Returns the bit mask of selected slots (up to 64); *bad = number of unknown / malformed items.
+// "all" selects only the first nall slots (the verified, named ones); the generated auto slots (dtauto) are selected one by one by name.
+static inline uint64_t nps5_ps_dtclamp_select(const char *sel, const char *const *names, int n, int nall, int *bad) {
+    uint64_t m = 0;
+    char buf[512], *sv = NULL;
+    if (n > 64) n = 64;
+    if (nall > n) nall = n;
     if (!sel || !*sel || !strcmp(sel, "0")) return 0;
     if (strlen(sel) >= sizeof buf) {
         if (bad) (*bad)++;
@@ -249,19 +254,19 @@ static inline unsigned nps5_ps_dtclamp_select(const char *sel, const char *const
     strcpy(buf, sel);
     for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
         if (!strcasecmp(t, "all")) {
-            m |= n >= 32 ? ~0u : ((1u << n) - 1u);
+            m |= nall >= 64 ? ~0ull : ((1ull << nall) - 1ull);
             continue;
         }
         int hit = 0;
         for (int i = 0; i < n; i++)
-            if (!strcasecmp(t, names[i])) m |= 1u << i, hit = 1;
+            if (names[i] && !strcasecmp(t, names[i])) m |= 1ull << i, hit = 1;
         if (!hit && bad) (*bad)++;
     }
     return m;
 }
 // hz for one slot: the "name=hz" item of the list, else def. A malformed / out of range item counts in *bad and is ignored.
 static inline double nps5_ps_dtclamp_hz(const char *list, const char *name, double def, int *bad) {
-    char buf[256], *sv = NULL;
+    char buf[512], *sv = NULL;
     double r = def;
     if (!list || !*list || strlen(list) >= sizeof buf) return def;
     strcpy(buf, list);
@@ -281,4 +286,134 @@ static inline double nps5_ps_dtclamp_hz(const char *list, const char *name, doub
             r = v;
     }
     return r;
+}
+
+
+
+// ---- counting-wrap probe (dtauto, NPS5_PHYS_PROBE=1; table slots nps5_physsub_probe_0..1023) ----------------------------------------------------
+// One generic pass-through shim per wrapped candidate function (every object update that may read the frame dt: the callers of the dt accessors and
+// the Update virtual of every vtable). It counts, per function: calls, distinct frames with a call (frame = world step number), the most calls in one
+// frame, calls made inside the world step window, whether more than one thread called, and the histogram of xmm0[0] read as a float (the dt
+// argument of Update(this, dt)), incl. how often it equals the block's frame dt. tools: work/dtscan/dtprobe.py classifies the rows
+// (per-step / per-frame / sparse, dt-arg yes/no) and writes the candidate rows of the DTCLAMP table.
+#define NPS5_PR_BINS 7
+#define NPS5_PR_INST 64
+// Per row: this-pointers (rdi) seen in the CURRENT frame with their call counts, so "the same object updated twice in one frame" (a per-step function,
+// sub-stepped by the caller) is told from "many objects, one update each" (per-instance, once per frame). The table is cleared at each new frame; with
+// more than NPS5_PR_INST instances in a frame the extra ones are not tracked (inst_over), so maxpt can only be underestimated.
+typedef struct {
+    uint64_t calls, frames, maxpf, curpf, last_frame, in_world, argok, argframe;
+    uint64_t bins[NPS5_PR_BINS];
+    float amin, amax;
+    uint64_t tid0;
+    int multi_thread, started;
+    uint64_t thisv[NPS5_PR_INST];
+    uint32_t cnt[NPS5_PR_INST];
+    uint32_t ninst, maxinst, maxpt, inst_over;
+} Nps5PrRow;
+// dt histogram bin of an argument in seconds: <8 ms, <15.5, <18 (the 1/60 step), <24, <34, <60, >= 60 ms.
+static inline int nps5_pr_bin(float a) {
+    const float ms = a * 1000.0f;
+    return ms < 8.0f ? 0 : ms < 15.5f ? 1 : ms < 18.0f ? 2 : ms < 24.0f ? 3 : ms < 34.0f ? 4 : ms < 60.0f ? 5 : 6;
+}
+static inline void nps5_pr_this(Nps5PrRow *r, uint64_t self) {
+    unsigned h = (unsigned)(((self >> 4) * 0x9E3779B97F4A7C15ull) >> 58); // 6 bits
+    for (int k = 0; k < 8; k++) {
+        const unsigned i = (h + (unsigned)k) & (NPS5_PR_INST - 1);
+        if (r->cnt[i] && r->thisv[i] == self) {
+            if (++r->cnt[i] > r->maxpt) r->maxpt = r->cnt[i];
+            return;
+        }
+        if (!r->cnt[i]) {
+            r->thisv[i] = self;
+            r->cnt[i] = 1;
+            r->ninst++;
+            if (r->maxpt < 1) r->maxpt = 1;
+            return;
+        }
+    }
+    r->inst_over++;
+}
+// One call of the wrapped function. frame = the world step counter, tid = any per-thread id, self = rdi, arg = xmm0[0] as a float, frame_dt = the block's dt (0 = unknown).
+static inline void nps5_pr_note(Nps5PrRow *r, uint64_t frame, int in_world, uint64_t tid, uint64_t self, float arg, float frame_dt) {
+    r->calls++;
+    if (in_world) r->in_world++;
+    if (!r->started) r->tid0 = tid;
+    else if (tid != r->tid0) r->multi_thread = 1;
+    if (!r->started || frame != r->last_frame) {
+        if (r->curpf > r->maxpf) r->maxpf = r->curpf;
+        if (r->ninst > r->maxinst) r->maxinst = r->ninst;
+        r->frames++;
+        r->curpf = 0;
+        r->ninst = 0;
+        memset(r->cnt, 0, sizeof r->cnt);
+        r->last_frame = frame;
+    }
+    r->started = 1;
+    r->curpf++;
+    nps5_pr_this(r, self);
+    if (isfinite(arg) && arg > 1e-4f && arg < 0.5f) {
+        if (!r->argok || arg < r->amin) r->amin = arg;
+        if (!r->argok || arg > r->amax) r->amax = arg;
+        r->argok++;
+        r->bins[nps5_pr_bin(arg)]++;
+        if (frame_dt > 0.0f && fabsf(arg - frame_dt) <= 2e-4f * frame_dt) r->argframe++;
+    }
+}
+static inline uint64_t nps5_pr_maxpf(const Nps5PrRow *r) { return r->curpf > r->maxpf ? r->curpf : r->maxpf; }
+static inline uint32_t nps5_pr_maxinst(const Nps5PrRow *r) { return r->ninst > r->maxinst ? r->ninst : r->maxinst; }
+// The log line (one per active slot; parsed by dtprobe.py). Returns the length written (snprintf semantics).
+static inline int nps5_pr_format(const Nps5PrRow *r, int slot, char *buf, size_t n) {
+    return snprintf(buf, n,
+                    "[physprobe] s=%d calls=%llu frames=%llu maxpf=%llu inst=%u maxpt=%u over=%u inw=%llu mt=%d argok=%llu argfr=%llu amin=%.5f amax=%.5f bins=%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+                    slot, (unsigned long long)r->calls, (unsigned long long)r->frames, (unsigned long long)nps5_pr_maxpf(r), nps5_pr_maxinst(r), r->maxpt, r->inst_over,
+                    (unsigned long long)r->in_world, r->multi_thread, (unsigned long long)r->argok, (unsigned long long)r->argframe, (double)r->amin, (double)r->amax,
+                    (unsigned long long)r->bins[0], (unsigned long long)r->bins[1], (unsigned long long)r->bins[2], (unsigned long long)r->bins[3], (unsigned long long)r->bins[4],
+                    (unsigned long long)r->bins[5], (unsigned long long)r->bins[6]);
+}
+// Stack arguments for a pass-through call: a candidate may have more than 6 integer arguments, the callee gets its own frame (as ps_call), so the first
+// 8 qwords above the return address are copied. dst/src are host pointers of the new / old frame at the return-address slot.
+static inline void nps5_pr_copy_stack_args(uint64_t *dst, const uint64_t *src) {
+    for (int i = 1; i <= 8; i++) dst[i] = src[i];
+}
+
+
+// ---- F2 whole-update tick split (dtauto spike, NPS5_TICK_SPLIT=0|split|fixed, NPS5_TICK_HZ=60, NPS5_TICK_MAX=3) -----------------------------------
+// The game's update root is called n times per frame with the block's dt = tick instead of once with the frame dt. split: n = ceil(dt * hz), tick = dt / n
+// (total = dt, every tick <= 1/hz). fixed: exact 1/hz ticks from an accumulator (n = floor(acc / tick), at least 1 for a frame longer than one tick; the carry
+// never exceeds one tick; more than max ticks drops the excess time). A dt that is not a positive finite number is one pass-through call.
+typedef struct {
+    int mode; // 0 off, 1 split, 2 fixed
+    double hz;
+    int max;
+    double acc; // fixed mode carry, seconds
+} Nps5Tick;
+static inline int nps5_tick_mode(const char *s) {
+    if (!s || !*s || !strcmp(s, "0") || !strcasecmp(s, "off")) return 0;
+    if (!strcmp(s, "1") || !strcasecmp(s, "split")) return 1;
+    if (!strcasecmp(s, "fixed")) return 2;
+    return -1; // unknown: the caller warns and stays off
+}
+// Returns n (>= 1) and writes the dt of each tick to *tick_dt. dt <= 1/hz (the console step) is never split.
+static inline int nps5_tick_plan(Nps5Tick *t, double dt, float *tick_dt) {
+    *tick_dt = (float)dt;
+    if (!t || t->mode <= 0 || !(dt > 0.0) || !isfinite(dt) || !(t->hz > 0.0) || t->max < 1) return 1;
+    const double tick = 1.0 / t->hz;
+    if (t->mode == 1) {
+        const int n = nps5_ps_steps(dt, t->hz, t->max);
+        *tick_dt = (float)(dt / n);
+        return n;
+    }
+    if (dt * t->hz <= 1.001) { // a frame no longer than one tick: nothing to split, keep the carry
+        return 1;
+    }
+    t->acc += dt;
+    int n = (int)floor(t->acc / tick + 1e-6);
+    if (n < 1) n = 1;
+    if (n > t->max) n = t->max;
+    t->acc -= n * tick;
+    if (t->acc < 0.0) t->acc = 0.0;
+    if (t->acc > tick) t->acc = 0.0; // dropped time (more than max ticks late)
+    *tick_dt = (float)tick;
+    return n;
 }
