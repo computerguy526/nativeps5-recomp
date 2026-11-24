@@ -157,3 +157,71 @@ static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
             engine8[4 + k] = inv;
         }
 }
+
+// ---- dtexec probes (default off, diagnostics only) ----------------------------------------------------------------------------------------
+// NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace from the world shim (the virtual call chain from the main loop to the physics manager).
+// Walks the rbp chain: [rsp] = the caller's return address, then ret = [rbp+8], rbp = [rbp]. Bounds-checked against the guest memory size, stops on
+// a null / misaligned / out-of-range rbp, on an rbp that does not increase, and at max entries. Returns the number of return addresses written.
+static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out, int max) {
+    int n = 0;
+    if (!mem || max <= 0) return 0;
+    if (rsp && !(rsp & 7) && rsp + 8 <= mem_size) out[n++] = *(const uint64_t *)(mem + rsp);
+    uint64_t prev = 0;
+    while (n < max) {
+        if (!rbp || (rbp & 7) || rbp + 16 > mem_size || rbp <= prev) break;
+        const uint64_t ret = *(const uint64_t *)(mem + rbp + 8);
+        const uint64_t next = *(const uint64_t *)(mem + rbp);
+        if (!ret) break;
+        out[n++] = ret;
+        prev = rbp;
+        rbp = next;
+    }
+    return n;
+}
+
+// NPS5_PHYS_SUBSTEP_POISON=dt,ratio,maxdt,substep,grav: after an UNSPLIT world step the groups of dt-derived solver-info fields (hknp world block,
+// engine pointer + 0x560 = dt) are scaled by what a 2-way split leaves behind (dt/2, 2/dt). Which per-frame reader moves a tile = which group.
+enum { NPS5_PS_POI_DT = 1, NPS5_PS_POI_RATIO = 2, NPS5_PS_POI_MAXDT = 4, NPS5_PS_POI_SUBSTEP = 8, NPS5_PS_POI_GRAV = 16 };
+static inline unsigned nps5_ps_poison_group(const char *name) {
+    static const char *const n[5] = {"dt", "ratio", "maxdt", "substep", "grav"};
+    if (!name) return 0;
+    for (int i = 0; i < 5; i++)
+        if (!strcmp(name, n[i])) return 1u << i;
+    return 0;
+}
+// hk = host pointer of the block that holds the solver info at hk + 0x560 .. 0x66f (the hknpWorld). Returns the number of floats written.
+static inline int nps5_ps_poison(uint8_t *hk, unsigned groups) {
+    int w = 0;
+    if (!hk) return 0;
+#define PS_SCALE(off, cnt, f)                                                                                          \
+    do {                                                                                                               \
+        float *q = (float *)(hk + (off));                                                                              \
+        for (int k_ = 0; k_ < (cnt); k_++) q[k_] *= (f);                                                               \
+        w += (cnt);                                                                                                    \
+    } while (0)
+    if (groups & NPS5_PS_POI_DT) {
+        PS_SCALE(0x560, 4, 0.5f); // dt
+        PS_SCALE(0x570, 4, 2.0f); // 1/dt
+    }
+    if (groups & NPS5_PS_POI_RATIO) PS_SCALE(0x590, 1, 0.5f);
+    if (groups & NPS5_PS_POI_MAXDT) {
+        PS_SCALE(0x5a0, 1, 0.5f);
+        PS_SCALE(0x5b0, 1, 0.5f);
+    }
+    if (groups & NPS5_PS_POI_SUBSTEP) {
+        PS_SCALE(0x5c0, 1, 0.5f);
+        PS_SCALE(0x5d0, 1, 2.0f);
+    }
+    if (groups & NPS5_PS_POI_GRAV) {
+        PS_SCALE(0x650, 4, 0.5f);
+        PS_SCALE(0x660, 4, 0.5f);
+    }
+#undef PS_SCALE
+    return w;
+}
+// Cycle: phase 0 = clean baseline, phase k = group k-1 of the list, each lasting `period` world steps; returns the phase of world step `step`.
+static inline int nps5_ps_poison_phase(uint64_t step, unsigned period, int ngroups) {
+    if (period == 0 || ngroups <= 0) return 0;
+    return (int)((step / period) % (uint64_t)(ngroups + 1));
+}
+

@@ -99,6 +99,13 @@ static _Thread_local float t_ps_frame_dt; // last other owner id seen holding th
 // inner split: switch; this thread is inside a world step that splits its engine step (1) and inside an inner wrap (depth)
 static int g_ps_inner = 0;
 static int g_ps_wclamp = 0;
+static unsigned g_ps_poison;           // NPS5_PHYS_SUBSTEP_POISON groups (dtexec probe, default off)
+static int g_ps_poison_n;
+static unsigned g_ps_poison_list[5];
+static unsigned g_ps_poison_period = 100;
+static int g_ps_bt;                    // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace at world step g_ps_bt_at
+static uint64_t g_ps_bt_at = 600;
+static _Atomic uint64_t g_ps_world_n;
 static int g_ps_clamp_dtfix = 0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
 static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
@@ -171,6 +178,32 @@ static void ps_init(void) {
         if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_CLAMP_DTFIX"), 0, 1, &v))
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: 0|1\n");
         g_ps_clamp_dtfix = v == 1.0;
+        {   // dtexec probes
+            const char *e = getenv("NPS5_PHYS_SUBSTEP_POISON");
+            char buf[128];
+            if (e && *e && g_ps_engine_ptr && g_ps_engine_dt == 0x560 + 1) {
+                snprintf(buf, sizeof buf, "%s", e);
+                for (char *sv = NULL, *t = strtok_r(buf, ",", &sv); t && g_ps_poison_n < 5; t = strtok_r(NULL, ",", &sv)) {
+                    const unsigned g = nps5_ps_poison_group(t);
+                    if (!g) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON: unknown group '%s' (dt,ratio,maxdt,substep,grav)\n", t);
+                    else g_ps_poison_list[g_ps_poison_n++] = g, g_ps_poison |= g;
+                }
+                double pv = 100;
+                if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_POISON_PERIOD"), 1, 100000, &pv))
+                    fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON_PERIOD: 1..100000\n");
+                g_ps_poison_period = (unsigned)pv;
+                fprintf(stderr, "[physsub] poison probe: %d groups, phase length %u world steps (phase 0 = clean)\n", g_ps_poison_n, g_ps_poison_period);
+            } else if (e && *e)
+                fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_POISON needs the physsub.world.engine / solver_dt (0x560) params\n");
+            double bv = 0;
+            if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT"), 0, 1, &bv)) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT: 0|1\n");
+            g_ps_bt = bv == 1.0;
+            if (g_ps_bt) {
+                double at = 600;
+                if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_BT_AT"), 1, 1e9, &at)) fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_BT_AT: world step number\n");
+                g_ps_bt_at = (uint64_t)at;
+            }
+        }
         if (g_ps_wclamp)
             fprintf(stderr, "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split, dt write-back %s)\n",
                     g_ps_clamp_dtfix ? "on" : "off");
@@ -380,6 +413,14 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     PsArgs a;
     ps_save(ctx, &a);
     const float dt = a.xmm[0].f32[0];
+    const uint64_t wn = atomic_fetch_add_explicit(&g_ps_world_n, 1, memory_order_relaxed);
+    if (g_ps_bt && wn == g_ps_bt_at) {
+        uint64_t bt[24];
+        const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), ctx->mem_size, ctx->rsp, ctx->rbp, bt, 24);
+        fprintf(stderr, "[physsub] backtrace at world step %llu (thread %p), %d frames:", (unsigned long long)wn, (void *)pthread_self(), k);
+        for (int i = 0; i < k; i++) fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
+        fprintf(stderr, "\n");
+    }
     const int clamp = g_ps.on && g_ps.world && g_ps_wclamp;
     const int n = g_ps.on && g_ps.world && !clamp ? nps5_ps_steps(dt, g_ps.world_hz, g_ps.max) : 1;
     if (clamp) {
@@ -459,6 +500,16 @@ void nps5_physsub_world_step(GuestContext *ctx) {
                 if (eng) e = (float *)NPS5_G2H(ctx, eng + g_ps_engine_dt - 1);
             }
             nps5_ps_frame_dt(dt, w, e);
+        }
+    }
+    if (g_ps_poison_n && (clamp || n == 1)) { // unsplit step: leave the solver info as a 2-way split would
+        const int ph = nps5_ps_poison_phase(wn, g_ps_poison_period, g_ps_poison_n);
+        static _Atomic int last_ph = -1;
+        if (atomic_exchange_explicit(&last_ph, ph, memory_order_relaxed) != ph)
+            fprintf(stderr, "[physsub] poison phase %d (%s) at world step %llu\n", ph, ph ? "poisoned" : "clean", (unsigned long long)wn);
+        if (ph > 0 && g_ps_engine_ptr) {
+            const uint64_t eng = *(const uint64_t *)NPS5_G2H(ctx, a.rdi + g_ps_engine_ptr - 1);
+            if (eng && eng < ctx->mem_size) nps5_ps_poison((uint8_t *)NPS5_G2H(ctx, eng), g_ps_poison_list[ph - 1]);
         }
     }
     if (g_ps.on) {
