@@ -262,6 +262,13 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 					}
 					c.Slot, c.Ctor, c.Flags = SlotDirect, uint64(int64(next)+int64(rel)), uint32(regs[r8].v)
 					c.Type = "int"
+					// The constructor's body calls the IConsoleManager registration slot of its
+					// template type (TAutoConsoleVariable<T> / FAutoConsoleVariableRef<T>): that
+					// vtable offset says bool/int/float. Without it every direct-ctor cvar was "int"
+					// and a float cvar was written as an integer by NPS5_UECVAR_SET.
+					if info, ok := ctorSlotInfo(m, c.Ctor); ok && info.Type != "string" && info.Type != "strarray" {
+						c.Type = info.Type
+					}
 					if regs[rdx].k == 2 && !stackPtr[rdx] {
 						c.Kind, c.Storage = KindRef, regs[rdx].v
 					} else {
@@ -431,6 +438,39 @@ func analyze(m Memory, code Range, site, nameAddr uint64, name string) (Cvar, bo
 		p = next
 	}
 	return c, false
+}
+
+// ctorSlotInfo decodes the start of a direct registration constructor and returns the slotInfo
+// entry of the first "call qword ptr [reg+disp]" whose displacement is a known registration slot.
+func ctorSlotInfo(m Memory, ctor uint64) (struct {
+	Type string
+	Kind Kind
+}, bool) {
+	var none struct {
+		Type string
+		Kind Kind
+	}
+	b := m.Bytes(ctor, 192)
+	for p := 0; p < len(b); {
+		in, err := x86asm.Decode(b[p:], 64)
+		if err != nil {
+			p++
+			continue
+		}
+		p += in.Len
+		if in.Op == x86asm.RET {
+			break
+		}
+		if in.Op != x86asm.CALL {
+			continue
+		}
+		if mem, ok := in.Args[0].(x86asm.Mem); ok && mem.Base != 0 && mem.Base != x86asm.RIP {
+			if info, ok := slotInfo[int(mem.Disp)]; ok {
+				return info, true
+			}
+		}
+	}
+	return none, false
 }
 
 func itoa(v int32) string { return strconv.Itoa(int(v)) }

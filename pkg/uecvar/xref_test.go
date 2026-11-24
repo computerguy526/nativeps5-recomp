@@ -184,3 +184,26 @@ func TestXrefDirectCtor(t *testing.T) {
 		t.Errorf("direct ref: %+v", r)
 	}
 }
+
+// The direct constructors' type comes from the registration slot they call (float = 0x10 TACV,
+// 0x38 Ref): a float cvar must not be listed as int.
+func TestXrefDirectCtorSlotType(t *testing.T) {
+	mem := make(fakeMem, 0x10000)
+	copy(mem[0x8000:], u16le("r.Direct.Float"))
+	copy(mem[0x8300:], u16le("help"))
+	a := &asm{base: 0x1000}
+	a.rip([]byte{0x4c, 0x8d, 0x35}, 0xa000) // lea r14,[obj]
+	a.rip([]byte{0x48, 0x8d, 0x35}, 0x8000) // lea rsi,name
+	a.rip([]byte{0x48, 0x8d, 0x0d}, 0x8300) // lea rcx,help
+	a.raw(0x4c, 0x89, 0xea)                 // mov rdx,r13
+	a.raw(0x41, 0xb8, 0x20, 0, 0, 0)        // mov r8d,0x20
+	a.raw(0x4c, 0x89, 0xf7)                 // mov rdi,r14
+	a.raw(0xe8, 0x00, 0x01, 0, 0)           // call ctor (0x1000+len+0x100)
+	copy(mem[0x1000:], a.b)
+	ctor := 0x1000 + len(a.b) + 0x100
+	copy(mem[ctor:], []byte{0x55, 0x48, 0x89, 0xe5, 0xff, 0x50, 0x10, 0xc3}) // push rbp; mov rbp,rsp; call [rax+0x10]; ret
+	cv := Xref(mem, Range{0x1000, 0x2000}, map[uint64]string{0x8000: "r.Direct.Float"})
+	if len(cv) != 1 || cv[0].Type != "float" || cv[0].Slot != SlotDirect {
+		t.Errorf("direct float ctor: %+v", cv)
+	}
+}
