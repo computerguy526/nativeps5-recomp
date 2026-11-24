@@ -13,7 +13,8 @@
         "KYTY_DISPATCHER_TREE": "1",
         "KYTY_VRAM_BUDGET_MB": "8000",
         "KYTY_VRAM_IDLE_FRAMES": "150",
-        "NPS5_UECVAR_SET": "r.Nanite.PersistentThreadsCulling=0,r.RayTracing.Enable=0,r.Nanite.PrimShaderRasterization=0,r.Nanite.MeshShaderRasterization=0",
+        "NPS5_UECVAR_SET":
+            "r.Nanite.PersistentThreadsCulling=0,r.RayTracing.Enable=0,r.Nanite.PrimShaderRasterization=0,r.Nanite.MeshShaderRasterization=0",
         "NPS5_UECVAR_SET_FOR": "100000",
         "KYTY_PREDICATION_NO_DRAIN": "2",
         "KYTY_GDS_EOP_MODE": "defer",

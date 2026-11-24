@@ -17,12 +17,18 @@ extern "C" {
 #include <cstring>
 #include <vector>
 
-struct Pic { int w, h; int64_t pts; std::vector<uint8_t> y, uv; };
+struct Pic {
+    int w, h;
+    int64_t pts;
+    std::vector<uint8_t> y, uv;
+};
 
 static int sw_threads_after = 0;
-static bool decode_all(const char *path, bool vt, int mode, std::vector<Pic> &out, bool *used_hw, bool *fell_back = nullptr) {
+static bool decode_all(const char *path, bool vt, int mode, std::vector<Pic> &out, bool *used_hw,
+                       bool *fell_back = nullptr) {
     AVFormatContext *fc = nullptr;
-    if (avformat_open_input(&fc, path, nullptr, nullptr) < 0 || avformat_find_stream_info(fc, nullptr) < 0) return false;
+    if (avformat_open_input(&fc, path, nullptr, nullptr) < 0 || avformat_find_stream_info(fc, nullptr) < 0)
+        return false;
     int vi = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (vi < 0) return false;
     const AVCodec *dec = avcodec_find_decoder(fc->streams[vi]->codecpar->codec_id);
@@ -32,7 +38,8 @@ static bool decode_all(const char *path, bool vt, int mode, std::vector<Pic> &ou
     bool hw = false;
     if (!avplayer_open_video_codec(&cc, dec, fc->streams[vi]->codecpar, vt, 1, &hw)) return false;
     if (used_hw) *used_hw = hw;
-    AvplayerVtGuard guard; bool wait_key = false;
+    AvplayerVtGuard guard;
+    bool wait_key = false;
     AVFrame *f = av_frame_alloc(), *tmp = av_frame_alloc(), *nv = av_frame_alloc();
     AVPacket *pkt = av_packet_alloc();
     SwsContext *sws = nullptr;
@@ -44,7 +51,9 @@ static bool decode_all(const char *path, bool vt, int mode, std::vector<Pic> &ou
                 printf("  software format on a VideoToolbox context after %zu delivered frames\n", out.size());
                 if (!avplayer_open_video_codec(&cc, dec, fc->streams[vi]->codecpar, false, 4, &hw)) return;
                 sw_threads_after = cc->thread_count;
-                wait_key = true; guard = AvplayerVtGuard{}; if (fell_back) *fell_back = true;
+                wait_key = true;
+                guard = AvplayerVtGuard{};
+                if (fell_back) *fell_back = true;
                 return;
             }
             if (f->format == AV_PIX_FMT_VIDEOTOOLBOX) {
@@ -55,101 +64,193 @@ static bool decode_all(const char *path, bool vt, int mode, std::vector<Pic> &ou
                     if (guard.failed()) {
                         printf("  fallback after %zu delivered frames\n", out.size());
                         if (!avplayer_open_video_codec(&cc, dec, fc->streams[vi]->codecpar, false, 1, &hw)) return;
-                        wait_key = true; guard = AvplayerVtGuard{}; if (fell_back) *fell_back = true;
+                        wait_key = true;
+                        guard = AvplayerVtGuard{};
+                        if (fell_back) *fell_back = true;
                         return;
                     }
                     continue;
                 }
                 guard.ok();
             }
-            Pic p; p.w = f->width; p.h = f->height; p.pts = f->pts;
+            Pic p;
+            p.w = f->width;
+            p.h = f->height;
+            p.pts = f->pts;
             AVFrame *src = f;
             std::vector<uint8_t> uvbuf;
             if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
                 // what the player does (no scaler, no range conversion): interleave U and V
                 uvbuf.resize((size_t)f->width * ((f->height + 1) / 2));
                 for (int r = 0; r < (f->height + 1) / 2; r++)
-                    for (int x = 0; x < f->width / 2; x++) { uvbuf[(size_t)r * f->width + 2 * x] = f->data[1][(size_t)r * f->linesize[1] + x]; uvbuf[(size_t)r * f->width + 2 * x + 1] = f->data[2][(size_t)r * f->linesize[2] + x]; }
+                    for (int x = 0; x < f->width / 2; x++) {
+                        uvbuf[(size_t)r * f->width + 2 * x] = f->data[1][(size_t)r * f->linesize[1] + x];
+                        uvbuf[(size_t)r * f->width + 2 * x + 1] = f->data[2][(size_t)r * f->linesize[2] + x];
+                    }
                 p.y.resize((size_t)p.w * p.h);
-                for (int r = 0; r < p.h; r++) memcpy(&p.y[(size_t)r * p.w], f->data[0] + (size_t)r * f->linesize[0], p.w);
+                for (int r = 0; r < p.h; r++)
+                    memcpy(&p.y[(size_t)r * p.w], f->data[0] + (size_t)r * f->linesize[0], p.w);
                 p.uv = std::move(uvbuf);
                 out.push_back(std::move(p));
                 av_frame_unref(f);
                 continue;
             }
             if (f->format != AV_PIX_FMT_NV12) {
-                sws = sws_getCachedContext(sws, f->width, f->height, (AVPixelFormat)f->format, f->width, f->height, AV_PIX_FMT_NV12, SWS_POINT, nullptr, nullptr, nullptr);
-                av_frame_unref(nv); nv->format = AV_PIX_FMT_NV12; nv->width = f->width; nv->height = f->height; av_frame_get_buffer(nv, 0);
+                sws = sws_getCachedContext(sws, f->width, f->height, (AVPixelFormat)f->format, f->width, f->height,
+                                           AV_PIX_FMT_NV12, SWS_POINT, nullptr, nullptr, nullptr);
+                av_frame_unref(nv);
+                nv->format = AV_PIX_FMT_NV12;
+                nv->width = f->width;
+                nv->height = f->height;
+                av_frame_get_buffer(nv, 0);
                 sws_scale(sws, f->data, f->linesize, 0, f->height, nv->data, nv->linesize);
                 src = nv;
             }
-            p.y.resize((size_t)p.w * p.h); p.uv.resize((size_t)p.w * ((p.h + 1) / 2));
-            for (int r = 0; r < p.h; r++) memcpy(&p.y[(size_t)r * p.w], src->data[0] + (size_t)r * src->linesize[0], p.w);
-            for (int r = 0; r < (p.h + 1) / 2; r++) memcpy(&p.uv[(size_t)r * p.w], src->data[1] + (size_t)r * src->linesize[1], p.w);
+            p.y.resize((size_t)p.w * p.h);
+            p.uv.resize((size_t)p.w * ((p.h + 1) / 2));
+            for (int r = 0; r < p.h; r++)
+                memcpy(&p.y[(size_t)r * p.w], src->data[0] + (size_t)r * src->linesize[0], p.w);
+            for (int r = 0; r < (p.h + 1) / 2; r++)
+                memcpy(&p.uv[(size_t)r * p.w], src->data[1] + (size_t)r * src->linesize[1], p.w);
             out.push_back(std::move(p));
             av_frame_unref(f);
         }
     };
     while (av_read_frame(fc, pkt) >= 0) {
-        if (pkt->stream_index == vi && wait_key && !(pkt->flags & AV_PKT_FLAG_KEY)) { av_packet_unref(pkt); continue; }
+        if (pkt->stream_index == vi && wait_key && !(pkt->flags & AV_PKT_FLAG_KEY)) {
+            av_packet_unref(pkt);
+            continue;
+        }
         if (pkt->stream_index == vi) wait_key = false;
         if (pkt->stream_index == vi && avcodec_send_packet(cc, pkt) >= 0) drain();
         av_packet_unref(pkt);
     }
-    avcodec_send_packet(cc, nullptr); drain();
+    avcodec_send_packet(cc, nullptr);
+    drain();
     sws_freeContext(sws);
-    av_packet_free(&pkt); av_frame_free(&f); av_frame_free(&tmp); av_frame_free(&nv);
-    avcodec_free_context(&cc); avformat_close_input(&fc);
+    av_packet_free(&pkt);
+    av_frame_free(&f);
+    av_frame_free(&tmp);
+    av_frame_free(&nv);
+    avcodec_free_context(&cc);
+    avformat_close_input(&fc);
     return true;
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s file.mp4 [maxdiff] [mode] [fail_at]\n", argv[0]); return 2; }
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s file.mp4 [maxdiff] [mode] [fail_at]\n", argv[0]);
+        return 2;
+    }
     int allowed = argc > 2 ? atoi(argv[2]) : 2;
     int mode = argc > 3 ? atoi(argv[3]) : 1;
     int fail_at = argc > 4 ? atoi(argv[4]) : -1;
     const bool force_sw = argc > 5 && !strcmp(argv[5], "sw");
     if (force_sw) fail_at = 0;
-    std::vector<Pic> sw, hw; bool used = false, fell = false;
+    std::vector<Pic> sw, hw;
+    bool used = false, fell = false;
     unsetenv("NPS5_AVPLAYER_VT_FAIL_AT");
-    if (!decode_all(argv[1], false, 1, sw, nullptr)) { printf("FAIL decode\n"); return 1; }
-    if (force_sw) setenv("NPS5_AVPLAYER_VT_FORCE_SW", "1", 1);
-    else if (fail_at >= 0) setenv("NPS5_AVPLAYER_VT_FAIL_AT", std::to_string(fail_at).c_str(), 1);
-    if (!decode_all(argv[1], true, mode, hw, &used, &fell)) { printf("FAIL decode\n"); return 1; }
+    if (!decode_all(argv[1], false, 1, sw, nullptr)) {
+        printf("FAIL decode\n");
+        return 1;
+    }
+    if (force_sw)
+        setenv("NPS5_AVPLAYER_VT_FORCE_SW", "1", 1);
+    else if (fail_at >= 0)
+        setenv("NPS5_AVPLAYER_VT_FAIL_AT", std::to_string(fail_at).c_str(), 1);
+    if (!decode_all(argv[1], true, mode, hw, &used, &fell)) {
+        printf("FAIL decode\n");
+        return 1;
+    }
     int fails = 0;
-    printf("mode %d: software %zu frames, videotoolbox %zu frames (hardware attached: %s, fell back: %s)\n", mode, sw.size(), hw.size(), used ? "yes" : "no", fell ? "yes" : "no");
-    if (!used) { printf("FAIL: VideoToolbox did not attach\n"); return 1; }
-    if (sw.empty()) { printf("FAIL no frames\n"); return 1; }
-    int maxd = 0; size_t over = 0; double sum = 0; size_t n = 0;
+    printf("mode %d: software %zu frames, videotoolbox %zu frames (hardware attached: %s, fell back: %s)\n", mode,
+           sw.size(), hw.size(), used ? "yes" : "no", fell ? "yes" : "no");
+    if (!used) {
+        printf("FAIL: VideoToolbox did not attach\n");
+        return 1;
+    }
+    if (sw.empty()) {
+        printf("FAIL no frames\n");
+        return 1;
+    }
+    int maxd = 0;
+    size_t over = 0;
+    double sum = 0;
+    size_t n = 0;
     auto cmp = [&](const Pic &a_, const Pic &b_) {
         for (int pl = 0; pl < 2; pl++) {
-            const auto &a = pl ? a_.uv : a_.y; const auto &b = pl ? b_.uv : b_.y;
-            for (size_t k = 0; k < a.size(); k++) { int d = abs((int)a[k] - (int)b[k]); if (d > maxd) maxd = d; if (d > allowed) over++; sum += d; n++; }
+            const auto &a = pl ? a_.uv : a_.y;
+            const auto &b = pl ? b_.uv : b_.y;
+            for (size_t k = 0; k < a.size(); k++) {
+                int d = abs((int)a[k] - (int)b[k]);
+                if (d > maxd) maxd = d;
+                if (d > allowed) over++;
+                sum += d;
+                n++;
+            }
         }
     };
     if (fail_at < 0) {
-        if (sw.size() != hw.size()) { printf("FAIL frame count\n"); return 1; }
+        if (sw.size() != hw.size()) {
+            printf("FAIL frame count\n");
+            return 1;
+        }
         for (size_t i = 0; i < sw.size(); i++) {
-            if (sw[i].w != hw[i].w || sw[i].h != hw[i].h) { printf("FAIL frame %zu size %dx%d vs %dx%d\n", i, sw[i].w, sw[i].h, hw[i].w, hw[i].h); return 1; }
-            if (sw[i].pts != hw[i].pts) { printf("FAIL frame %zu pts %lld vs %lld\n", i, (long long)sw[i].pts, (long long)hw[i].pts); fails++; }
+            if (sw[i].w != hw[i].w || sw[i].h != hw[i].h) {
+                printf("FAIL frame %zu size %dx%d vs %dx%d\n", i, sw[i].w, sw[i].h, hw[i].w, hw[i].h);
+                return 1;
+            }
+            if (sw[i].pts != hw[i].pts) {
+                printf("FAIL frame %zu pts %lld vs %lld\n", i, (long long)sw[i].pts, (long long)hw[i].pts);
+                fails++;
+            }
             cmp(sw[i], hw[i]);
         }
     } else {
-        if (!fell) { printf("FAIL: no fallback happened\n"); return 1; }
-        if (force_sw && sw_threads_after <= 1) { printf("FAIL: the software reopen has %d thread(s)\n", sw_threads_after); return 1; }
-        if ((int)hw.size() < fail_at + 3 || hw.size() >= sw.size()) { printf("FAIL: delivered %zu frames (software %zu)\n", hw.size(), sw.size()); return 1; }
-        for (int i = 0; i < fail_at; i++) if (hw[i].pts != sw[i].pts) { printf("FAIL pre-failure frame %d pts\n", i); fails++; }
+        if (!fell) {
+            printf("FAIL: no fallback happened\n");
+            return 1;
+        }
+        if (force_sw && sw_threads_after <= 1) {
+            printf("FAIL: the software reopen has %d thread(s)\n", sw_threads_after);
+            return 1;
+        }
+        if ((int)hw.size() < fail_at + 3 || hw.size() >= sw.size()) {
+            printf("FAIL: delivered %zu frames (software %zu)\n", hw.size(), sw.size());
+            return 1;
+        }
+        for (int i = 0; i < fail_at; i++)
+            if (hw[i].pts != sw[i].pts) {
+                printf("FAIL pre-failure frame %d pts\n", i);
+                fails++;
+            }
         for (size_t i = 0; i < hw.size(); i++) {
-            if (i && hw[i].pts <= hw[i - 1].pts) { printf("FAIL pts not monotonic at %zu\n", i); fails++; }
+            if (i && hw[i].pts <= hw[i - 1].pts) {
+                printf("FAIL pts not monotonic at %zu\n", i);
+                fails++;
+            }
             const Pic *m = nullptr;
-            for (const Pic &c : sw) if (c.pts == hw[i].pts) { m = &c; break; }
-            if (!m) { printf("FAIL frame %zu pts %lld has no software twin\n", i, (long long)hw[i].pts); fails++; continue; }
+            for (const Pic &c : sw)
+                if (c.pts == hw[i].pts) {
+                    m = &c;
+                    break;
+                }
+            if (!m) {
+                printf("FAIL frame %zu pts %lld has no software twin\n", i, (long long)hw[i].pts);
+                fails++;
+                continue;
+            }
             cmp(*m, hw[i]);
         }
-        printf("  frames before failure %d, resumed at pts %lld, total %zu of %zu\n", fail_at, (long long)hw[fail_at].pts, hw.size(), sw.size());
+        printf("  frames before failure %d, resumed at pts %lld, total %zu of %zu\n", fail_at,
+               (long long)hw[fail_at].pts, hw.size(), sw.size());
     }
-    printf("picture %dx%d, max abs diff %d, mean %.4f, samples over %d: %zu\n", sw[0].w, sw[0].h, maxd, n ? sum / (double)n : 0.0, allowed, over);
-    if (over) { printf("FAIL pixels differ more than %d\n", allowed); fails++; }
+    printf("picture %dx%d, max abs diff %d, mean %.4f, samples over %d: %zu\n", sw[0].w, sw[0].h, maxd,
+           n ? sum / (double)n : 0.0, allowed, over);
+    if (over) {
+        printf("FAIL pixels differ more than %d\n", allowed);
+        fails++;
+    }
     printf(fails ? "avplayer_vt_unit: FAILED\n" : "avplayer_vt_unit: PASS\n");
     return fails ? 1 : 0;
 }

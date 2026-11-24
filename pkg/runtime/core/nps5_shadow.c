@@ -406,8 +406,8 @@ uint64_t recomp_shadow_fault_scans(void) { return atomic_load(&g_st_fault_scans)
 int recomp_shadow_handle_fault(void *ucontext, uint64_t fault_addr) {
   if (!ucontext || !recomp_call_model_flat()) return 0;
   if (g_fault_fast < 0) {
-    const char *e = getenv("NPS5_SHADOW_FAULT_FAST");
-    g_fault_fast = (e && e[0] == '1') ? 1 : 0;
+      const char *e = getenv("NPS5_SHADOW_FAULT_FAST");
+      g_fault_fast = (e && e[0] == '1') ? 1 : 0;
   }
   arm_thread_state64_t *ss = &((ucontext_t *)ucontext)->uc_mcontext->__ss;
   uint64_t pc = ss->__pc;
@@ -415,7 +415,7 @@ int recomp_shadow_handle_fault(void *ucontext, uint64_t fault_addr) {
   // pc == fault address (not readable), a misaligned pc is no instruction: both take the old order.
   if (g_fault_fast == 1 && pc != fault_addr && (pc & 3) == 0 &&
       (*(const uint32_t *)(uintptr_t)pc & 0xffff8000u) != 0xa9be0000u)
-    return 0;
+      return 0;
   atomic_fetch_add_explicit(&g_st_fault_scans, 1, memory_order_relaxed);
   RecompShadow *s = shadow_find(fault_addr);
   if (!s || fault_addr >= (uint64_t)(uintptr_t)s->lo) return 0; // only the low guard

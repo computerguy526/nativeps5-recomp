@@ -56,7 +56,9 @@ static inline bool avplayer_vt_attach(AVCodecContext *c) {
 // inside the decoder (get_format fell back to a software format), and the context, opened with one thread because the
 // hardware was expected to do the work, now decodes in software on that single thread. The caller takes the software
 // fallback (reopen with frame threads) instead of running on silently.
-static inline bool avplayer_vt_sw_frame(bool vt_active, const AVFrame *f) { return vt_active && f->format != AV_PIX_FMT_VIDEOTOOLBOX; }
+static inline bool avplayer_vt_sw_frame(bool vt_active, const AVFrame *f) {
+    return vt_active && f->format != AV_PIX_FMT_VIDEOTOOLBOX;
+}
 
 // Same as avplayer_vt_to_system, but mode 2 maps the CVPixelBuffer (av_hwframe_map READ locks the base address, no download
 // allocation or copy); the caller then copies once from the mapped planes. The result replaces `f` in place; a mapping that
@@ -89,7 +91,11 @@ static inline int avplayer_vt_to_system(AVFrame *f, AVFrame *tmp) {
     tmp->format = AV_PIX_FMT_NV12;
     int r = av_hwframe_transfer_data(tmp, f, 0);
     if (r >= 0) r = av_frame_copy_props(tmp, f);
-    if (r < 0) { av_frame_unref(tmp); av_frame_unref(f); return r; }
+    if (r < 0) {
+        av_frame_unref(tmp);
+        av_frame_unref(f);
+        return r;
+    }
     av_frame_unref(f);
     av_frame_move_ref(f, tmp);
     return 0;
@@ -97,8 +103,8 @@ static inline int avplayer_vt_to_system(AVFrame *f, AVFrame *tmp) {
 
 // Opens `*cc` for `par`: on VideoToolbox when `want_vt` and the hardware accepts it, otherwise on the software decoder
 // (`sw_threads` > 1 = frame+slice threads). Frees and replaces `*cc`. *is_vt reports what ended up open. false = nothing open.
-static inline bool avplayer_open_video_codec(AVCodecContext **cc, const AVCodec *dec, const AVCodecParameters *par, bool want_vt,
-                                             int sw_threads, bool *is_vt) {
+static inline bool avplayer_open_video_codec(AVCodecContext **cc, const AVCodec *dec, const AVCodecParameters *par,
+                                             bool want_vt, int sw_threads, bool *is_vt) {
     if (*cc) avcodec_free_context(cc);
     *is_vt = false;
     for (int attempt = want_vt ? 0 : 1; attempt < 2; ++attempt) {
@@ -106,8 +112,15 @@ static inline bool avplayer_open_video_codec(AVCodecContext **cc, const AVCodec 
         if (!c) return false;
         avcodec_parameters_to_context(c, par);
         const bool vt = attempt == 0 && avplayer_vt_attach(c);
-        if (!vt && sw_threads > 1 && sw_threads <= 16) { c->thread_count = sw_threads; c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE; }
-        if (avcodec_open2(c, dec, nullptr) >= 0) { *cc = c; *is_vt = vt; return true; }
+        if (!vt && sw_threads > 1 && sw_threads <= 16) {
+            c->thread_count = sw_threads;
+            c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        }
+        if (avcodec_open2(c, dec, nullptr) >= 0) {
+            *cc = c;
+            *is_vt = vt;
+            return true;
+        }
         avcodec_free_context(&c);
     }
     return false;
