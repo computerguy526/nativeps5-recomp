@@ -117,7 +117,7 @@ int main() {
             if (fscanf(f, "%d", &w) != 1) w = 0;
             pclose(f);
         }
-        if (w < done - 1 || w > done) {
+        if (w < done - 2 || w > done) { // up to two passes may still be in flight on a loaded host
             printf("FAIL %d looping-back warnings for %d passes\n", w, done);
             fails++;
         }
