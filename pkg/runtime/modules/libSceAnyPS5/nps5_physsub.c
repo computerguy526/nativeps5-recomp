@@ -900,3 +900,45 @@ void nps5_astro_texname_guard(GuestContext *ctx) {
     ctx->rsp = a.rsp;
     SHIM_RETURN();
 }
+
+// ---- NPS5_PHYS_DTCLAMP_OBJ: table-driven dt clamp for single objects (see nps5_physsub_logic.h) ----------------------------------------------
+#define PS_DC_SLOTS 8
+static const char *const g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone", "aprope", "aprope_b", "apsoftbody", "apsoftbody_ball", "slingshot", "stretchplatform"};
+static const double g_dc_def_hz[PS_DC_SLOTS] = {60, 30, 30, 30, 30, 30, 30, 30};
+static pthread_once_t g_dc_once = PTHREAD_ONCE_INIT;
+static unsigned g_dc_mask;
+static double g_dc_hz[PS_DC_SLOTS];
+static PsWrap g_dc_w[PS_DC_SLOTS] = {{.shim = "nps5_physsub_dtclamp_0"}, {.shim = "nps5_physsub_dtclamp_1"}, {.shim = "nps5_physsub_dtclamp_2"}, {.shim = "nps5_physsub_dtclamp_3"},
+                                     {.shim = "nps5_physsub_dtclamp_4"}, {.shim = "nps5_physsub_dtclamp_5"}, {.shim = "nps5_physsub_dtclamp_6"}, {.shim = "nps5_physsub_dtclamp_7"}};
+static _Atomic uint64_t g_dc_calls[PS_DC_SLOTS], g_dc_clamped[PS_DC_SLOTS];
+static void dc_init(void) {
+    int bad = 0;
+    g_dc_mask = nps5_ps_dtclamp_select(getenv("NPS5_PHYS_DTCLAMP_OBJ"), g_dc_names, PS_DC_SLOTS, &bad);
+    for (int i = 0; i < PS_DC_SLOTS; i++)
+        g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i], g_dc_def_hz[i], &bad);
+    if (bad) fprintf(stderr, "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform; hz 5..240)\n", bad);
+    for (int i = 0; i < PS_DC_SLOTS; i++)
+        if (g_dc_mask & (1u << i))
+            fprintf(stderr, "[physsub] dtclamp on: %s update dt clamped to 1/%.0f s%s\n", g_dc_names[i], g_dc_hz[i],
+                    nps5_repl_wrap_body(g_dc_w[i].shim, &(uint64_t){0}) ? "" : " (W: no table entry in this build: no effect)");
+}
+static void dc_step(GuestContext *ctx, int slot) {
+    pthread_once(&g_dc_once, dc_init);
+    PsArgs a;
+    ps_save(ctx, &a);
+    float dt = a.xmm[0].f32[0], c = dt;
+    atomic_fetch_add_explicit(&g_dc_calls[slot], 1, memory_order_relaxed);
+    if (g_dc_mask & (1u << slot)) {
+        c = nps5_ps_clamp(dt, g_dc_hz[slot]);
+        if (c != dt) {
+            const uint64_t k = atomic_fetch_add_explicit(&g_dc_clamped[slot], 1, memory_order_relaxed) + 1;
+            if ((k & (k - 1)) == 0) // 1, 2, 4, 8 ...: first clamps are logged, then ever rarer
+                fprintf(stderr, "[physsub] dtclamp %s: clamped %llu of %llu calls (dt %.4f -> %.4f)\n", g_dc_names[slot], (unsigned long long)k,
+                        (unsigned long long)atomic_load_explicit(&g_dc_calls[slot], memory_order_relaxed), (double)dt, (double)c);
+        }
+    }
+    ps_call(ctx, &g_dc_w[slot], &a, c);
+    SHIM_RETURN();
+}
+#define PS_DC_SHIM(i) void nps5_physsub_dtclamp_##i(GuestContext *ctx) { dc_step(ctx, i); }
+PS_DC_SHIM(0) PS_DC_SHIM(1) PS_DC_SHIM(2) PS_DC_SHIM(3) PS_DC_SHIM(4) PS_DC_SHIM(5) PS_DC_SHIM(6) PS_DC_SHIM(7)

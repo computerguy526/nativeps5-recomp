@@ -118,6 +118,23 @@ int main(void) {
         CHECK(nps5_ps_poison_phase(0, 100, 3) == 0 && nps5_ps_poison_phase(100, 100, 3) == 1 && nps5_ps_poison_phase(399, 100, 3) == 3 && nps5_ps_poison_phase(400, 100, 3) == 0 &&
                   nps5_ps_poison_phase(5, 0, 3) == 0 && nps5_ps_poison_phase(500, 100, 0) == 0, "poison phases");
     }
+    // dtclamp selection
+    {
+        static const char *const nm[4] = {"bigleafplant", "springbone", "aprope", "slingshot"};
+        int bad = 0;
+        CHECK(nps5_ps_dtclamp_select(NULL, nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("0", nm, 4, &bad) == 0 && nps5_ps_dtclamp_select("", nm, 4, &bad) == 0 && bad == 0, "off");
+        CHECK(nps5_ps_dtclamp_select("all", nm, 4, &bad) == 15 && bad == 0, "all");
+        CHECK(nps5_ps_dtclamp_select("springbone,SlingShot", nm, 4, &bad) == 10 && bad == 0, "list, case-insensitive");
+        CHECK(nps5_ps_dtclamp_select("aprope,nope", nm, 4, &bad) == 4 && bad == 1, "unknown item counted");
+        CHECK(nps5_ps_dtclamp_select("all", nm, 32, NULL) == ~0u, "32 slots");
+        CHECK(nps5_ps_dtclamp_hz("springbone=45,aprope=x,bigleafplant=1000", "springbone", 30, &bad) == 45 && bad == 1, "hz item");
+        CHECK(nps5_ps_dtclamp_hz("springbone=45", "aprope", 30, &bad) == 30, "hz default");
+        bad = 0;
+        CHECK(nps5_ps_dtclamp_hz("bigleafplant=1000,bigleafplant", "bigleafplant", 60, &bad) == 60 && bad == 2, "hz out of range / no '='");
+        CHECK(nps5_ps_dtclamp_hz(NULL, "x", 7, NULL) == 7, "hz NULL list");
+        // the clamp the shim applies: 26.8 ms at 60 -> 1/60, 10 ms unchanged, NaN / 0 / negative pass through
+        CHECK(nps5_ps_clamp(0.0268f, 60) == (float)(1.0 / 60) && nps5_ps_clamp(0.01f, 60) == 0.01f && nps5_ps_clamp(-1.0f, 60) == -1.0f, "dtclamp values");
+    }
     if (fails) {
         printf("physsub_unit: %d FAILED\n", fails);
         return 1;

@@ -225,3 +225,54 @@ static inline int nps5_ps_poison_phase(uint64_t step, unsigned period, int ngrou
     return (int)((step / period) % (uint64_t)(ngroups + 1));
 }
 
+
+// ---- dt clamp for single objects (dtexec, NPS5_PHYS_DTCLAMP_OBJ; table slots nps5_physsub_dtclamp_0..7) --------------------------------------
+// Objects whose update takes the frame dt in xmm0[0] and is only stable / only looks right at <= 1/hz (delayed feedback gain grows with dt: the
+// armadillo BigLeafPlant, SpringBone dampers, ropes, soft bodies). The shim calls the original ONCE with min(dt, 1/hz); only that object runs
+// slower than real time below hz fps. NPS5_PHYS_DTCLAMP_OBJ=all | name,name,... | 0 (default off); NPS5_PHYS_DTCLAMP_HZ=name=hz,name=hz (5..240).
+// Names are matched case-insensitively. Returns the bit mask of selected slots; *bad = number of unknown / malformed items.
+static inline unsigned nps5_ps_dtclamp_select(const char *sel, const char *const *names, int n, int *bad) {
+    unsigned m = 0;
+    char buf[256], *sv = NULL;
+    if (!sel || !*sel || !strcmp(sel, "0")) return 0;
+    if (strlen(sel) >= sizeof buf) {
+        if (bad) (*bad)++;
+        return 0;
+    }
+    strcpy(buf, sel);
+    for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+        if (!strcasecmp(t, "all")) {
+            m |= n >= 32 ? ~0u : ((1u << n) - 1u);
+            continue;
+        }
+        int hit = 0;
+        for (int i = 0; i < n; i++)
+            if (!strcasecmp(t, names[i])) m |= 1u << i, hit = 1;
+        if (!hit && bad) (*bad)++;
+    }
+    return m;
+}
+// hz for one slot: the "name=hz" item of the list, else def. A malformed / out of range item counts in *bad and is ignored.
+static inline double nps5_ps_dtclamp_hz(const char *list, const char *name, double def, int *bad) {
+    char buf[256], *sv = NULL;
+    double r = def;
+    if (!list || !*list || strlen(list) >= sizeof buf) return def;
+    strcpy(buf, list);
+    for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+        char *eq = strchr(t, '=');
+        if (!eq) {
+            if (bad) (*bad)++;
+            continue;
+        }
+        *eq = 0;
+        if (strcasecmp(t, name)) continue;
+        char *end = NULL;
+        const double v = strtod(eq + 1, &end);
+        if (end == eq + 1 || *end || !(v >= 5.0 && v <= 240.0)) {
+            if (bad) (*bad)++;
+        } else
+            r = v;
+    }
+    return r;
+}
+
