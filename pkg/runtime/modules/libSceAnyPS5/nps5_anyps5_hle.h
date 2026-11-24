@@ -1037,8 +1037,8 @@ void * sceAgcAcbDmaData(void *buf, uint8_t dst, uint8_t dstCachePolicy, uint64_t
 extern void * (*aps5_rt_sceAgcAcbDmaData)(void *buf, uint8_t dst, uint8_t dstCachePolicy, uint64_t dstAddress, uint8_t src, uint8_t srcCachePolicy, uint64_t srcAddress, uint32_t numBytes, uint8_t waitForPrevious, uint8_t writeConfirm);
 void * sceAgcAcbEventWrite(void *buf, uint8_t eventType, void *address);
 extern void * (*aps5_rt_sceAgcAcbEventWrite)(void *buf, uint8_t eventType, void *address);
-void * sceAgcAcbJump(void *buf, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
-extern void * (*aps5_rt_sceAgcAcbJump)(void *buf, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
+void *sceAgcAcbJump(void *buf, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
+extern void *(*aps5_rt_sceAgcAcbJump)(void *buf, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
 void * sceAgcAcbPopMarker(void *buf);
 extern void * (*aps5_rt_sceAgcAcbPopMarker)(void *buf);
 void * sceAgcAcbPushMarker(void *buf, void *str, uint32_t color);
@@ -1049,14 +1049,21 @@ void * sceAgcAcbRewind(void *buf, uint32_t initialState);
 extern void * (*aps5_rt_sceAgcAcbRewind)(void *buf, uint32_t initialState);
 void * sceAgcAcbWaitRegMem(void *buf, uint8_t size, uint8_t compareFunction, uint8_t cachePolicy, void *address, uint64_t reference, uint64_t mask, uint32_t pollCycles);
 extern void * (*aps5_rt_sceAgcAcbWaitRegMem)(void *buf, uint8_t size, uint8_t compareFunction, uint8_t cachePolicy, void *address, uint64_t reference, uint64_t mask, uint32_t pollCycles);
-void * sceAgcAcbWaitUntilSafeForRendering(void *buf, uint32_t videoOutHandle, uint32_t displayBufferIndex);
-extern void * (*aps5_rt_sceAgcAcbWaitUntilSafeForRendering)(void *buf, uint32_t videoOutHandle, uint32_t displayBufferIndex);
+void *sceAgcAcbWaitUntilSafeForRendering(void *buf, uint32_t videoOutHandle, uint32_t displayBufferIndex);
+extern void *(*aps5_rt_sceAgcAcbWaitUntilSafeForRendering)(void *buf, uint32_t videoOutHandle,
+                                                           uint32_t displayBufferIndex);
 void * sceAgcAcbWriteData(void *buf, uint8_t dst, uint8_t cachePolicy, uint64_t address, void *data, uint32_t numDwords, uint8_t increment, uint8_t writeConfirm);
 extern void * (*aps5_rt_sceAgcAcbWriteData)(void *buf, uint8_t dst, uint8_t cachePolicy, uint64_t address, void *data, uint32_t numDwords, uint8_t increment, uint8_t writeConfirm);
 int sceAgcBranchPatchSetThenTarget_0300(void *cmd, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
-extern int (*aps5_rt_sceAgcBranchPatchSetThenTarget_0300)(void *cmd, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
-void * sceAgcCbBranch(void *buf, uint8_t mode, uint8_t compareFunction, void *compareAddress, uint64_t mask, uint64_t reference, uint8_t cachePolicy1, void *buffer1, uint32_t sizeInDwords1, uint8_t cachePolicy2, void *buffer2, uint32_t sizeInDwords2);
-extern void * (*aps5_rt_sceAgcCbBranch)(void *buf, uint8_t mode, uint8_t compareFunction, void *compareAddress, uint64_t mask, uint64_t reference, uint8_t cachePolicy1, void *buffer1, uint32_t sizeInDwords1, uint8_t cachePolicy2, void *buffer2, uint32_t sizeInDwords2);
+extern int (*aps5_rt_sceAgcBranchPatchSetThenTarget_0300)(void *cmd, uint8_t cachePolicy, void *target,
+                                                          uint32_t sizeInDwords);
+void *sceAgcCbBranch(void *buf, uint8_t mode, uint8_t compareFunction, void *compareAddress, uint64_t mask,
+                     uint64_t reference, uint8_t cachePolicy1, void *buffer1, uint32_t sizeInDwords1,
+                     uint8_t cachePolicy2, void *buffer2, uint32_t sizeInDwords2);
+extern void *(*aps5_rt_sceAgcCbBranch)(void *buf, uint8_t mode, uint8_t compareFunction, void *compareAddress,
+                                       uint64_t mask, uint64_t reference, uint8_t cachePolicy1, void *buffer1,
+                                       uint32_t sizeInDwords1, uint8_t cachePolicy2, void *buffer2,
+                                       uint32_t sizeInDwords2);
 uint32_t sceAgcCbBranchGetSize(void);
 extern uint32_t (*aps5_rt_sceAgcCbBranchGetSize)(void);
 void * sceAgcCbDispatch(void *buf, uint32_t threadGroupX, uint32_t threadGroupY, uint32_t threadGroupZ, uint32_t modifier);
@@ -1075,8 +1082,8 @@ uint32_t sceAgcCbSetShRegisterRangeDirectGetSize(uint32_t numValues);
 extern uint32_t (*aps5_rt_sceAgcCbSetShRegisterRangeDirectGetSize)(uint32_t numValues);
 void * sceAgcCbSetShRegistersDirect(void *buf, void *regs, uint32_t numRegs);
 extern void * (*aps5_rt_sceAgcCbSetShRegistersDirect)(void *buf, void *regs, uint32_t numRegs);
-void * sceAgcCbSetUcRegistersDirect(void *buf, void *regs, uint32_t numRegs);
-extern void * (*aps5_rt_sceAgcCbSetUcRegistersDirect)(void *buf, void *regs, uint32_t numRegs);
+void *sceAgcCbSetUcRegistersDirect(void *buf, void *regs, uint32_t numRegs);
+extern void *(*aps5_rt_sceAgcCbSetUcRegistersDirect)(void *buf, void *regs, uint32_t numRegs);
 int sceAgcCreateInterpolantMapping_0100(void *regs, void *gs, void *ps);
 extern int (*aps5_rt_sceAgcCreateInterpolantMapping_0100)(void *regs, void *gs, void *ps);
 int sceAgcCreateInterpolantMapping_10000(void *regs, void *gs, void *ps);
@@ -1097,26 +1104,31 @@ uint32_t sceAgcDcbDispatchIndirectGetSize(void);
 extern uint32_t (*aps5_rt_sceAgcDcbDispatchIndirectGetSize)(void);
 void * sceAgcDcbDmaData(void *buf, uint8_t engine, uint8_t dst, uint8_t dstCachePolicy, uint64_t dstAddress, uint8_t src, uint8_t srcCachePolicy, uint64_t srcAddress, uint32_t numBytes, uint8_t waitForPrevious, uint8_t writeConfirm, uint8_t blockEngine);
 extern void * (*aps5_rt_sceAgcDcbDmaData)(void *buf, uint8_t engine, uint8_t dst, uint8_t dstCachePolicy, uint64_t dstAddress, uint8_t src, uint8_t srcCachePolicy, uint64_t srcAddress, uint32_t numBytes, uint8_t waitForPrevious, uint8_t writeConfirm, uint8_t blockEngine);
-void * sceAgcDcbDrawIndex(void *buf, uint32_t indexCount, void *indexAddress, uint64_t modifier);
-extern void * (*aps5_rt_sceAgcDcbDrawIndex)(void *buf, uint32_t indexCount, void *indexAddress, uint64_t modifier);
+void *sceAgcDcbDrawIndex(void *buf, uint32_t indexCount, void *indexAddress, uint64_t modifier);
+extern void *(*aps5_rt_sceAgcDcbDrawIndex)(void *buf, uint32_t indexCount, void *indexAddress, uint64_t modifier);
 void * sceAgcDcbDrawIndexAuto(void *buf, uint32_t indexCount, uint64_t modifier);
 extern void * (*aps5_rt_sceAgcDcbDrawIndexAuto)(void *buf, uint32_t indexCount, uint64_t modifier);
 void * sceAgcDcbDrawIndexIndirect(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
 extern void * (*aps5_rt_sceAgcDcbDrawIndexIndirect)(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
-void * sceAgcDcbDrawIndexIndirectMulti(void *buf, uint32_t dataOffsetInBytes, uint32_t countIndirect, uint32_t maxCountOrCount, void *countAddr, uint32_t strideInBytes, uint64_t modifier);
-extern void * (*aps5_rt_sceAgcDcbDrawIndexIndirectMulti)(void *buf, uint32_t dataOffsetInBytes, uint32_t countIndirect, uint32_t maxCountOrCount, void *countAddr, uint32_t strideInBytes, uint64_t modifier);
+void *sceAgcDcbDrawIndexIndirectMulti(void *buf, uint32_t dataOffsetInBytes, uint32_t countIndirect,
+                                      uint32_t maxCountOrCount, void *countAddr, uint32_t strideInBytes,
+                                      uint64_t modifier);
+extern void *(*aps5_rt_sceAgcDcbDrawIndexIndirectMulti)(void *buf, uint32_t dataOffsetInBytes, uint32_t countIndirect,
+                                                        uint32_t maxCountOrCount, void *countAddr,
+                                                        uint32_t strideInBytes, uint64_t modifier);
 void * sceAgcDcbDrawIndexOffset(void *buf, uint32_t indexOffset, uint32_t indexCount, uint64_t modifier);
 extern void * (*aps5_rt_sceAgcDcbDrawIndexOffset)(void *buf, uint32_t indexOffset, uint32_t indexCount, uint64_t modifier);
-void * sceAgcDcbDrawIndirect(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
-extern void * (*aps5_rt_sceAgcDcbDrawIndirect)(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
+void *sceAgcDcbDrawIndirect(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
+extern void *(*aps5_rt_sceAgcDcbDrawIndirect)(void *buf, uint32_t dataOffsetInBytes, uint64_t modifier);
 uint32_t sceAgcDcbDrawIndirectGetSize(void);
 extern uint32_t (*aps5_rt_sceAgcDcbDrawIndirectGetSize)(void);
 void * sceAgcDcbEventWrite(void *buf, uint8_t eventType, void *address);
 extern void * (*aps5_rt_sceAgcDcbEventWrite)(void *buf, uint8_t eventType, void *address);
 void * sceAgcDcbGetLodStats(void *buf, uint8_t cachePolicy, void *buffer, uint32_t bufferSizeInBytes, uint32_t resetCount, uint8_t forceReset, uint8_t reportAndReset, uint32_t reportingIntervalIn100kClocks);
 extern void * (*aps5_rt_sceAgcDcbGetLodStats)(void *buf, uint8_t cachePolicy, void *buffer, uint32_t bufferSizeInBytes, uint32_t resetCount, uint8_t forceReset, uint8_t reportAndReset, uint32_t reportingIntervalIn100kClocks);
-void * sceAgcDcbJump(void *buf, uint8_t mode, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
-extern void * (*aps5_rt_sceAgcDcbJump)(void *buf, uint8_t mode, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
+void *sceAgcDcbJump(void *buf, uint8_t mode, uint8_t cachePolicy, void *target, uint32_t sizeInDwords);
+extern void *(*aps5_rt_sceAgcDcbJump)(void *buf, uint8_t mode, uint8_t cachePolicy, void *target,
+                                      uint32_t sizeInDwords);
 void * sceAgcDcbPopMarker(void *buf);
 extern void * (*aps5_rt_sceAgcDcbPopMarker)(void *buf);
 void * sceAgcDcbPushMarker(void *buf, void *str, uint32_t color);
@@ -1139,8 +1151,10 @@ void * sceAgcDcbSetIndexSize_0600(void *buf, uint8_t indexSize, uint8_t cachePol
 extern void * (*aps5_rt_sceAgcDcbSetIndexSize_0600)(void *buf, uint8_t indexSize, uint8_t cachePolicy, uint8_t perInstanceObjectId);
 void * sceAgcDcbSetNumInstances(void *buf, uint32_t numInstances);
 extern void * (*aps5_rt_sceAgcDcbSetNumInstances)(void *buf, uint32_t numInstances);
-void * sceAgcDcbSetPredication(void *buf, uint8_t condition, uint8_t op, uint8_t waitOp, void *address, uint32_t countInDwords);
-extern void * (*aps5_rt_sceAgcDcbSetPredication)(void *buf, uint8_t condition, uint8_t op, uint8_t waitOp, void *address, uint32_t countInDwords);
+void *sceAgcDcbSetPredication(void *buf, uint8_t condition, uint8_t op, uint8_t waitOp, void *address,
+                              uint32_t countInDwords);
+extern void *(*aps5_rt_sceAgcDcbSetPredication)(void *buf, uint8_t condition, uint8_t op, uint8_t waitOp, void *address,
+                                                uint32_t countInDwords);
 void * sceAgcDcbSetShRegistersIndirect(void *buf, void *regs, uint32_t numRegs);
 extern void * (*aps5_rt_sceAgcDcbSetShRegistersIndirect)(void *buf, void *regs, uint32_t numRegs);
 uint32_t sceAgcDcbSetShRegistersIndirectGetSize(uint32_t numRegs);
@@ -1201,8 +1215,8 @@ int sceAgcSetCxRegIndirectPatchSetAddress(void *cmd, void *regs);
 extern int (*aps5_rt_sceAgcSetCxRegIndirectPatchSetAddress)(void *cmd, void *regs);
 int sceAgcSetCxRegIndirectPatchSetNumRegisters(void *cmd, uint32_t numRegs);
 extern int (*aps5_rt_sceAgcSetCxRegIndirectPatchSetNumRegisters)(void *cmd, uint32_t numRegs);
-void * sceAgcSetNop(void *buf, uint32_t sizeDw);
-extern void * (*aps5_rt_sceAgcSetNop)(void *buf, uint32_t sizeDw);
+void *sceAgcSetNop(void *buf, uint32_t sizeDw);
+extern void *(*aps5_rt_sceAgcSetNop)(void *buf, uint32_t sizeDw);
 int sceAgcSetPacketPredication(void *packet, uint32_t predication);
 extern int (*aps5_rt_sceAgcSetPacketPredication)(void *packet, uint32_t predication);
 int sceAgcSetShRegIndirectPatchAddRegisters(void *cmd, uint32_t numRegs);

@@ -194,12 +194,20 @@ static void test_userdata_roots(const char *tmp) {
   setenv("NPS5_USERDATA_DIR", ud, 1);
   unsetenv("NPS5_VFS_DEVLOG");
   ps4_vfs_init(app);
-  { int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644); CHECK(fd < 0); if (fd >= 0) ps4_vfs_close(fd); }
+  {
+      int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      CHECK(fd < 0);
+      if (fd >= 0) ps4_vfs_close(fd);
+  }
   CHECK(!host_exists("%s/devlog/app/debug.log%s", ud, ""));
   // NPS5_VFS_DEVLOG=1: /devlog is <userdata>/devlog with app/ created (Unity's /devlog/app/debug.log lands there).
   setenv("NPS5_VFS_DEVLOG", "1", 1);
   ps4_vfs_init(app);
-  { int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644); CHECK(fd >= 0); if (fd >= 0) ps4_vfs_close(fd); }
+  {
+      int fd = ps4_vfs_open("/devlog/app/debug.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      CHECK(fd >= 0);
+      if (fd >= 0) ps4_vfs_close(fd);
+  }
   CHECK(host_exists("%s/devlog/app/debug.log%s", ud, ""));
   unsetenv("NPS5_VFS_DEVLOG");
 
@@ -318,10 +326,17 @@ static void test_savedata(const char *tmp) {
   reset_regs(); C->rdi = res; C->rsi = galloc(0x28); CALL(shim_sceSaveDataPrepare); CHECK(RAX32 != 0);
   // NPS5_SAVEDATA_PREPARE_RW=1: the PS5 transaction (RDONLY mount, resource, Prepare, write, Commit) opens it
   setenv("NPS5_SAVEDATA_PREPARE_RW", "1", 1);
-  reset_regs(); C->rdi = res; C->rsi = galloc(0x28); CALL(shim_sceSaveDataPrepare); CHECK(RAX32 == 0);
+  reset_regs();
+  C->rdi = res;
+  C->rsi = galloc(0x28);
+  CALL(shim_sceSaveDataPrepare);
+  CHECK(RAX32 == 0);
   fd = ps4_vfs_open("/savedata0/progress2.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
   CHECK(fd >= 0);
-  if (fd >= 0) { CHECK(write(fd, payload, 16) == 16); ps4_vfs_close(fd); }
+  if (fd >= 0) {
+      CHECK(write(fd, payload, 16) == 16);
+      ps4_vfs_close(fd);
+  }
   unsetenv("NPS5_SAVEDATA_PREPARE_RW");
   reset_regs(); C->rdi = 0; C->rsi = res; CALL(shim_sceSaveDataUmount2);
 
@@ -901,19 +916,33 @@ static void test_misc(void) {
 // ps4_sysmodule.c's guest-call helper needs these; never called here.
 recomp_fn_t **g_dispatch_l1[DISPATCH_LEVEL_SIZE];
 uint64_t g_recomp_call_model;
-uintptr_t recomp_dispatch_miss(GuestContext *ctx, uint64_t guest_rip, uint32_t reason) { (void)ctx; (void)guest_rip; (void)reason; return 0; }
+uintptr_t recomp_dispatch_miss(GuestContext *ctx, uint64_t guest_rip, uint32_t reason) {
+    (void)ctx;
+    (void)guest_rip;
+    (void)reason;
+    return 0;
+}
 extern void shim_sceSysmoduleLoadModule(GuestContext *ctx);
 extern void shim_sceSysmoduleIsLoaded(GuestContext *ctx);
 extern int32_t nps5_sysmodule_isloaded_result(int loaded, int sce);
 static void test_sysmodule_isloaded(void) {
-  CHECK(nps5_sysmodule_isloaded_result(1, 0) == 1 && nps5_sysmodule_isloaded_result(0, 0) == 0);
-  CHECK(nps5_sysmodule_isloaded_result(1, 1) == 0 && nps5_sysmodule_isloaded_result(0, 1) == (int32_t)0x805A1001);
-  setenv("NPS5_SYSMODULE_ISLOADED_SCE", "1", 1); // read once, at the first IsLoaded call
-  reset_regs(); C->rdi = 0x0099; CALL(shim_sceSysmoduleLoadModule); CHECK(RAX32 == 0);
-  reset_regs(); C->rdi = 0x0099; CALL(shim_sceSysmoduleIsLoaded); CHECK(RAX32 == 0);
-  reset_regs(); C->rdi = 0x0098; CALL(shim_sceSysmoduleIsLoaded); CHECK(RAX32 == (int32_t)0x805A1001);
-  unsetenv("NPS5_SYSMODULE_ISLOADED_SCE");
-  printf("sysmodule isloaded: ok\n");
+    CHECK(nps5_sysmodule_isloaded_result(1, 0) == 1 && nps5_sysmodule_isloaded_result(0, 0) == 0);
+    CHECK(nps5_sysmodule_isloaded_result(1, 1) == 0 && nps5_sysmodule_isloaded_result(0, 1) == (int32_t)0x805A1001);
+    setenv("NPS5_SYSMODULE_ISLOADED_SCE", "1", 1); // read once, at the first IsLoaded call
+    reset_regs();
+    C->rdi = 0x0099;
+    CALL(shim_sceSysmoduleLoadModule);
+    CHECK(RAX32 == 0);
+    reset_regs();
+    C->rdi = 0x0099;
+    CALL(shim_sceSysmoduleIsLoaded);
+    CHECK(RAX32 == 0);
+    reset_regs();
+    C->rdi = 0x0098;
+    CALL(shim_sceSysmoduleIsLoaded);
+    CHECK(RAX32 == (int32_t)0x805A1001);
+    unsetenv("NPS5_SYSMODULE_ISLOADED_SCE");
+    printf("sysmodule isloaded: ok\n");
 }
 
 // External (AnyPS5) equeue events: delete frees the slot, and overflow is reported (-1), never silently dropped.
@@ -1230,49 +1259,90 @@ static void test_apr_hardening(void) {
 // _umtx_op (FreeBSD umtx WAIT/WAKE): value mismatch returns at once, timeouts (relative timespec and absolute
 // monotonic _umtx_time), a waiter woken by WAKE, unknown operations EINVAL. Guest errno at fs_base + 0x100.
 SHIM(_umtx_op);
-typedef struct { GuestContext c; uint64_t word; int64_t rc; double secs; } UmtxWaiter;
-static double umtx_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+typedef struct {
+    GuestContext c;
+    uint64_t word;
+    int64_t rc;
+    double secs;
+} UmtxWaiter;
+static double umtx_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec / 1e9;
+}
 static int64_t umtx_call(GuestContext *c, uint64_t obj, int op, uint64_t val, uint64_t uaddr, uint64_t uaddr2) {
-  c->rdi = obj; c->rsi = (uint64_t)op; c->rdx = val; c->rcx = uaddr; c->r8 = uaddr2;
-  uint64_t rsp0 = c->rsp; shim__umtx_op(c); assert(c->rsp == rsp0 + 8); c->rsp = rsp0;
-  return (int64_t)c->rax;
+    c->rdi = obj;
+    c->rsi = (uint64_t)op;
+    c->rdx = val;
+    c->rcx = uaddr;
+    c->r8 = uaddr2;
+    uint64_t rsp0 = c->rsp;
+    shim__umtx_op(c);
+    assert(c->rsp == rsp0 + 8);
+    c->rsp = rsp0;
+    return (int64_t)c->rax;
 }
 static void *umtx_waiter(void *p) {
-  UmtxWaiter *w = p; double t0 = umtx_now();
-  uint64_t ts = galloc(16); ((int64_t *)H(ts))[0] = 5; ((int64_t *)H(ts))[1] = 0; // safety net: 5 s
-  w->rc = umtx_call(&w->c, w->word, 15, 0, 0, ts);
-  w->secs = umtx_now() - t0;
-  return NULL;
+    UmtxWaiter *w = p;
+    double t0 = umtx_now();
+    uint64_t ts = galloc(16);
+    ((int64_t *)H(ts))[0] = 5;
+    ((int64_t *)H(ts))[1] = 0; // safety net: 5 s
+    w->rc = umtx_call(&w->c, w->word, 15, 0, 0, ts);
+    w->secs = umtx_now() - t0;
+    return NULL;
 }
 // The gate's off path (recomp_runtime.c is not linked here): count instead of aborting.
 static int g_unresolved_calls;
-void shim_unresolved_stub(GuestContext *ctx) { g_unresolved_calls++; ctx->rax = 0; ctx->rsp += 8; }
+void shim_unresolved_stub(GuestContext *ctx) {
+    g_unresolved_calls++;
+    ctx->rax = 0;
+    ctx->rsp += 8;
+}
 static void test_umtx(void) {
-  int *err = (int *)H(C->fs_base + 0x100);
-  uint64_t word = galloc(8); *(uint64_t *)H(word) = 7;
-  CHECK(umtx_call(C, word, 2, 6, 0, 0) == 0);                   // value differs: no sleep
-  CHECK(umtx_call(C, word, 11, 8, 0, 0) == 0);
-  uint64_t ts = galloc(16); ((int64_t *)H(ts))[0] = 0; ((int64_t *)H(ts))[1] = 50000000; // 50 ms
-  *err = 0; double t0 = umtx_now();
-  CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 60); // equal: times out
-  CHECK(umtx_now() - t0 >= 0.04);
-  uint64_t ut = galloc(24); struct timespec m; clock_gettime(CLOCK_MONOTONIC, &m);
-  ((int64_t *)H(ut))[0] = m.tv_sec - 1; ((int64_t *)H(ut))[1] = 0; ((uint32_t *)H(ut + 16))[0] = 1; ((uint32_t *)H(ut + 16))[1] = 4;
-  *err = 0; t0 = umtx_now();
-  CHECK(umtx_call(C, word, 15, 7, 24, ut) == -1 && *err == 60 && umtx_now() - t0 < 0.5); // absolute monotonic, past
-  ((int64_t *)H(ts))[1] = 1000000000;
-  *err = 0; CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 22);             // bad timespec
-  *err = 0; CHECK(umtx_call(C, word, 5, 0, 0, 0) == -1 && *err == 22);              // umtx mutex op: not implemented
-  // a waiter on a u_int is woken by WAKE_PRIVATE
-  uint64_t flag = galloc(8); *(uint32_t *)H(flag) = 0;
-  UmtxWaiter *w = calloc(1, sizeof *w); w->c = *C; w->c.rsp = 0x7000; w->word = flag; w->rc = 99;
-  pthread_t th; pthread_create(&th, NULL, umtx_waiter, w);
-  usleep(100000);
-  __atomic_store_n((uint32_t *)H(flag), 1, __ATOMIC_SEQ_CST);
-  CHECK(umtx_call(C, flag, 16, 1, 0, 0) == 0);
-  pthread_join(th, NULL);
-  CHECK(w->rc == 0 && w->secs < 2.0);
-  free(w);
+    int *err = (int *)H(C->fs_base + 0x100);
+    uint64_t word = galloc(8);
+    *(uint64_t *)H(word) = 7;
+    CHECK(umtx_call(C, word, 2, 6, 0, 0) == 0); // value differs: no sleep
+    CHECK(umtx_call(C, word, 11, 8, 0, 0) == 0);
+    uint64_t ts = galloc(16);
+    ((int64_t *)H(ts))[0] = 0;
+    ((int64_t *)H(ts))[1] = 50000000; // 50 ms
+    *err = 0;
+    double t0 = umtx_now();
+    CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 60); // equal: times out
+    CHECK(umtx_now() - t0 >= 0.04);
+    uint64_t ut = galloc(24);
+    struct timespec m;
+    clock_gettime(CLOCK_MONOTONIC, &m);
+    ((int64_t *)H(ut))[0] = m.tv_sec - 1;
+    ((int64_t *)H(ut))[1] = 0;
+    ((uint32_t *)H(ut + 16))[0] = 1;
+    ((uint32_t *)H(ut + 16))[1] = 4;
+    *err = 0;
+    t0 = umtx_now();
+    CHECK(umtx_call(C, word, 15, 7, 24, ut) == -1 && *err == 60 && umtx_now() - t0 < 0.5); // absolute monotonic, past
+    ((int64_t *)H(ts))[1] = 1000000000;
+    *err = 0;
+    CHECK(umtx_call(C, word, 2, 7, 0, ts) == -1 && *err == 22); // bad timespec
+    *err = 0;
+    CHECK(umtx_call(C, word, 5, 0, 0, 0) == -1 && *err == 22); // umtx mutex op: not implemented
+    // a waiter on a u_int is woken by WAKE_PRIVATE
+    uint64_t flag = galloc(8);
+    *(uint32_t *)H(flag) = 0;
+    UmtxWaiter *w = calloc(1, sizeof *w);
+    w->c = *C;
+    w->c.rsp = 0x7000;
+    w->word = flag;
+    w->rc = 99;
+    pthread_t th;
+    pthread_create(&th, NULL, umtx_waiter, w);
+    usleep(100000);
+    __atomic_store_n((uint32_t *)H(flag), 1, __ATOMIC_SEQ_CST);
+    CHECK(umtx_call(C, flag, 16, 1, 0, 0) == 0);
+    pthread_join(th, NULL);
+    CHECK(w->rc == 0 && w->secs < 2.0);
+    free(w);
 }
 
 int main(void) {
@@ -1314,10 +1384,15 @@ int main(void) {
   test_dirent_types(tmp);
   test_dirent_cache(tmp);
   { // NPS5_UMTX_OP gate: off = the unresolved path, read once; on for the umtx tests (separate process state)
-    extern void nps5_hlesys_umtx_gate_reset(void);
-    unsetenv("NPS5_UMTX_OP"); nps5_hlesys_umtx_gate_reset();
-    reset_regs(); C->rsi = 3; CALL(shim__umtx_op); CHECK(g_unresolved_calls == 1);
-    setenv("NPS5_UMTX_OP", "1", 1); nps5_hlesys_umtx_gate_reset();
+      extern void nps5_hlesys_umtx_gate_reset(void);
+      unsetenv("NPS5_UMTX_OP");
+      nps5_hlesys_umtx_gate_reset();
+      reset_regs();
+      C->rsi = 3;
+      CALL(shim__umtx_op);
+      CHECK(g_unresolved_calls == 1);
+      setenv("NPS5_UMTX_OP", "1", 1);
+      nps5_hlesys_umtx_gate_reset();
   }
   test_umtx();
 

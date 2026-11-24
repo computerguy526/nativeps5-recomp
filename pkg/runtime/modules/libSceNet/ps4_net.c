@@ -216,7 +216,10 @@ void shim_sceNetSetsockopt(GuestContext *ctx) {
 
     int ret;
     static int map_on = -1;
-    if (map_on < 0) { const char *e = getenv("NPS5_NET_SOCKOPT_MAP"); map_on = (e && *e == '1'); }
+    if (map_on < 0) {
+        const char *e = getenv("NPS5_NET_SOCKOPT_MAP");
+        map_on = (e && *e == '1');
+    }
     if (map_on && (level == 0xffff || level == 6 || level == 0)) {
         /* SCE_NET options: FreeBSD numbering == macOS for the standard ones; SO_NBIO (0x1200) is SCE-only. */
         int v = optval && optlen >= 4 ? *(const int *)optval : 0;

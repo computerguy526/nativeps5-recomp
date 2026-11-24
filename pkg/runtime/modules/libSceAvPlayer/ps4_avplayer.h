@@ -156,8 +156,12 @@ typedef struct AvPlayerStreamInfoEx {
     uint64_t duration;
 } AvPlayerStreamInfoEx;
 #ifdef __cplusplus
-static_assert(sizeof(AvPlayerStreamInfoEx) == 104 && offsetof(AvPlayerStreamInfoEx, details) == 16 && offsetof(AvPlayerStreamInfoEx, duration) == 96, "SceAvPlayerStreamInfoEx layout");
-static_assert(sizeof(AvPlayerVideoEx) == 80 && offsetof(AvPlayerVideoEx, pitch) == 36 && offsetof(AvPlayerVideoEx, frame_rate) == 48, "SceAvPlayerVideoEx layout");
+static_assert(sizeof(AvPlayerStreamInfoEx) == 104 && offsetof(AvPlayerStreamInfoEx, details) == 16 &&
+                  offsetof(AvPlayerStreamInfoEx, duration) == 96,
+              "SceAvPlayerStreamInfoEx layout");
+static_assert(sizeof(AvPlayerVideoEx) == 80 && offsetof(AvPlayerVideoEx, pitch) == 36 &&
+                  offsetof(AvPlayerVideoEx, frame_rate) == 48,
+              "SceAvPlayerVideoEx layout");
 #else
 _Static_assert(sizeof(AvPlayerStreamInfoEx) == 104, "SceAvPlayerStreamInfoEx is 104 bytes");
 #endif

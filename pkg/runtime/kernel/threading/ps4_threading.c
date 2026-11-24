@@ -1033,44 +1033,53 @@ void shim_scePthreadAttrGetstacksize(GuestContext *ctx) {
 
 // The PthreadAttr behind a guest attribute object (the guest slot holds the host pointer AttrInit stored).
 static PthreadAttr *guest_attr(GuestContext *ctx, uint64_t attr_addr) {
-  if (!attr_addr || attr_addr >= ctx->mem_size) return NULL;
-  return (PthreadAttr *)(uintptr_t)(*(uint64_t *)(ctx->mem_base + attr_addr));
+    if (!attr_addr || attr_addr >= ctx->mem_size) return NULL;
+    return (PthreadAttr *)(uintptr_t)(*(uint64_t *)(ctx->mem_base + attr_addr));
 }
 
 // NPS5_PTHREAD_ATTR_REAL=1 (Unity profile; default off until the ASTRO/SAROS regression clears it):
 // scePthreadAttrGet/Getstack/Getstackaddr report the thread's real attributes and stack. Off: the old
 // stubs (return 0, write nothing).
 static int pthread_attr_real(void) {
-  static int v = -1;
-  if (v < 0) { const char *e = getenv("NPS5_PTHREAD_ATTR_REAL"); v = e && e[0] == '1'; }
-  return v;
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("NPS5_PTHREAD_ATTR_REAL");
+        v = e && e[0] == '1';
+    }
+    return v;
 }
 
 // scePthreadAttrGetstack(attr, void **addr, size_t *size)
 void shim_scePthreadAttrGetstack(GuestContext *ctx) {
-  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
-  PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
-  if (!attr || !ctx->rsi || !ctx->rdx) {
-    ctx->rax = 0x80020016ULL; // EINVAL
+    if (!pthread_attr_real()) {
+        ctx->rax = 0;
+        SHIM_RETURN();
+    }
+    PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
+    if (!attr || !ctx->rsi || !ctx->rdx) {
+        ctx->rax = 0x80020016ULL; // EINVAL
+        SHIM_RETURN();
+    }
+    *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
+    *(uint64_t *)(ctx->mem_base + ctx->rdx) = attr->stacksize_attr;
+    ctx->rax = 0;
     SHIM_RETURN();
-  }
-  *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
-  *(uint64_t *)(ctx->mem_base + ctx->rdx) = attr->stacksize_attr;
-  ctx->rax = 0;
-  SHIM_RETURN();
 }
 
 // scePthreadAttrGetstackaddr(attr, void **addr)
 void shim_scePthreadAttrGetstackaddr(GuestContext *ctx) {
-  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
-  PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
-  if (!attr || !ctx->rsi) {
-    ctx->rax = 0x80020016ULL; // EINVAL
+    if (!pthread_attr_real()) {
+        ctx->rax = 0;
+        SHIM_RETURN();
+    }
+    PthreadAttr *attr = guest_attr(ctx, ctx->rdi);
+    if (!attr || !ctx->rsi) {
+        ctx->rax = 0x80020016ULL; // EINVAL
+        SHIM_RETURN();
+    }
+    *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
+    ctx->rax = 0;
     SHIM_RETURN();
-  }
-  *(uint64_t *)(ctx->mem_base + ctx->rsi) = (uint64_t)(uintptr_t)attr->stackaddr_attr;
-  ctx->rax = 0;
-  SHIM_RETURN();
 }
 
 void shim_scePthreadAttrSetstack(GuestContext *ctx) {
@@ -1153,31 +1162,36 @@ void shim_scePthreadAttrGetdetachstate(GuestContext *ctx) {
 // GC in the Unity PS5 player) take the stack bounds of every thread from here; a stub that left the object untouched
 // made the GC skip thread stacks and free live objects.
 void shim_scePthreadAttrGet(GuestContext *ctx) {
-  if (!pthread_attr_real()) { ctx->rax = 0; SHIM_RETURN(); }
-  RecompThread *t = ctx->rdi ? find_thread(ctx->rdi) : g_current_thread;
-  PthreadAttr *attr = guest_attr(ctx, ctx->rsi);
-  if (!attr) {
-    ctx->rax = 0x80020016ULL; // EINVAL
+    if (!pthread_attr_real()) {
+        ctx->rax = 0;
+        SHIM_RETURN();
+    }
+    RecompThread *t = ctx->rdi ? find_thread(ctx->rdi) : g_current_thread;
+    PthreadAttr *attr = guest_attr(ctx, ctx->rsi);
+    if (!attr) {
+        ctx->rax = 0x80020016ULL; // EINVAL
+        SHIM_RETURN();
+    }
+    if (!t) {
+        ctx->rax = 0x80020003ULL; // ESRCH
+        SHIM_RETURN();
+    }
+    void *const cpuset = attr->cpuset; // owned by the attribute object
+    const size_t cpusetsize = attr->cpusetsize;
+    if (t->attr.stacksize_attr || t->attr.sched_policy || t->attr.prio) *attr = t->attr;
+    attr->cpuset = cpuset;
+    attr->cpusetsize = cpusetsize;
+    const uint64_t lo = t->stack_lo ? t->stack_lo : t->stack_base;
+    const uint64_t len = t->stack_lo ? t->stack_len : t->stack_size;
+    attr->stackaddr_attr = (void *)(uintptr_t)lo; // a guest address, as the guest reads it back
+    attr->stacksize_attr = len;
+    attr->guardsize_attr = NPS5_PAGE;
+    if (t->detached)
+        attr->flags |= PTHREAD_ATTR_DETACHED;
+    else
+        attr->flags &= ~(uint32_t)PTHREAD_ATTR_DETACHED;
+    ctx->rax = 0;
     SHIM_RETURN();
-  }
-  if (!t) {
-    ctx->rax = 0x80020003ULL; // ESRCH
-    SHIM_RETURN();
-  }
-  void *const cpuset = attr->cpuset; // owned by the attribute object
-  const size_t cpusetsize = attr->cpusetsize;
-  if (t->attr.stacksize_attr || t->attr.sched_policy || t->attr.prio) *attr = t->attr;
-  attr->cpuset = cpuset;
-  attr->cpusetsize = cpusetsize;
-  const uint64_t lo = t->stack_lo ? t->stack_lo : t->stack_base;
-  const uint64_t len = t->stack_lo ? t->stack_len : t->stack_size;
-  attr->stackaddr_attr = (void *)(uintptr_t)lo; // a guest address, as the guest reads it back
-  attr->stacksize_attr = len;
-  attr->guardsize_attr = NPS5_PAGE;
-  if (t->detached) attr->flags |= PTHREAD_ATTR_DETACHED;
-  else attr->flags &= ~(uint32_t)PTHREAD_ATTR_DETACHED;
-  ctx->rax = 0;
-  SHIM_RETURN();
 }
 
 void shim_scePthreadGetname(GuestContext *ctx) {

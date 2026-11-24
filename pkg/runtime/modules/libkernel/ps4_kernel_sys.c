@@ -1108,12 +1108,12 @@ void shim_sceKernelGetModuleInfoForUnwind(GuestContext *ctx) {
     }
     int n_logged = unwind_log ? 0 : __atomic_fetch_add(&unwind_logged, 1, __ATOMIC_RELAXED);
     if (unwind_log || n_logged < 4) {
-        fprintf(stderr, "[ps4-unwind] GetModuleInfoForUnwind: addr=0x%llx -> mod=%s, hdr=0x%llx, frame=0x%llx (size=0x%llx)%s\n",
-                (unsigned long long)addr, mod->name ? mod->name : "(null)",
-                (unsigned long long)info->eh_frame_hdr_addr,
-                (unsigned long long)info->eh_frame_addr,
-                (unsigned long long)info->eh_frame_size,
-                (!unwind_log && n_logged == 3) ? " (further lookups silent; NPS5_UNWIND_LOG=1 logs all)" : "");
+        fprintf(
+            stderr,
+            "[ps4-unwind] GetModuleInfoForUnwind: addr=0x%llx -> mod=%s, hdr=0x%llx, frame=0x%llx (size=0x%llx)%s\n",
+            (unsigned long long)addr, mod->name ? mod->name : "(null)", (unsigned long long)info->eh_frame_hdr_addr,
+            (unsigned long long)info->eh_frame_addr, (unsigned long long)info->eh_frame_size,
+            (!unwind_log && n_logged == 3) ? " (further lookups silent; NPS5_UNWIND_LOG=1 logs all)" : "");
     }
 
     ctx->rax = 0; // ORBIS_OK

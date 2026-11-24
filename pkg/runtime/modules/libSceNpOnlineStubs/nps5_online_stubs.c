@@ -338,16 +338,16 @@ void shim_sceUserServiceGetAgeLevel(GuestContext *ctx) {
 // ACM context unconditionally and fails with ERR_INTERNAL otherwise, so every FMOD/Unity title has no audio
 // system and FMODUnity.RuntimeManager.Instance throws each frame (PPSA28997 BOOTLOG r21-r24).
 static int acm_ok(void) {
-  const char *e = getenv("NPS5_ACM_CONTEXT_OK");
-  return e && e[0] == '1';
+    const char *e = getenv("NPS5_ACM_CONTEXT_OK");
+    return e && e[0] == '1';
 }
 void shim_sceAcmContextCreate(GuestContext *ctx) {
-  if (!acm_ok()) ON_RET("sceAcmContextCreate", ON_ACM_ERROR_BAD_CONTEXT);
-  on_put32(ctx, ctx->rdi, on_token());
-  ON_RET("sceAcmContextCreate", 0);
+    if (!acm_ok()) ON_RET("sceAcmContextCreate", ON_ACM_ERROR_BAD_CONTEXT);
+    on_put32(ctx, ctx->rdi, on_token());
+    ON_RET("sceAcmContextCreate", 0);
 }
-#define ACM_GATED(fn)                                                   \
-  void shim_##fn(GuestContext *ctx) { ON_RET(#fn, acm_ok() ? 0 : ON_ACM_ERROR_BAD_CONTEXT); }
+#define ACM_GATED(fn)                                                                                                  \
+    void shim_##fn(GuestContext *ctx) { ON_RET(#fn, acm_ok() ? 0 : ON_ACM_ERROR_BAD_CONTEXT); }
 ACM_GATED(sceAcmContextDestroy)
 ACM_GATED(sceAcmBatchWait)
 ACM_GATED(sceAcmBatchStartBuffers)

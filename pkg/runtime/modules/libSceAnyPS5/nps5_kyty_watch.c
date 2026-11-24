@@ -367,11 +367,11 @@ int nps5_kyty_watch_fault_ctx(void *ucontext, uint64_t host, int is_write) {
   atomic_fetch_add_explicit(&s_fault_pages, n, memory_order_relaxed);
   const uint8_t after = atomic_load_explicit(&g_watch[page], memory_order_acquire);
   if (emulate == 0 || n == 0) {
-    // The owner left a page armed (or another thread re-armed one meanwhile). Retrying is right for the race; a
-    // page the owner never opens is caught by the runtime's livelock guard.
-    if (byte_traps(after, is_write)) atomic_fetch_add_explicit(&s_unresolved, 1, memory_order_relaxed);
+      // The owner left a page armed (or another thread re-armed one meanwhile). Retrying is right for the race; a
+      // page the owner never opens is caught by the runtime's livelock guard.
+      if (byte_traps(after, is_write)) atomic_fetch_add_explicit(&s_unresolved, 1, memory_order_relaxed);
   } else if (traps((after >> (2 * f)) & 3u, is_write)) {
-    atomic_fetch_add_explicit(&s_unresolved, 1, memory_order_relaxed); // the faulting page itself stayed armed
+      atomic_fetch_add_explicit(&s_unresolved, 1, memory_order_relaxed); // the faulting page itself stayed armed
   }
   // The owner changed the page's watch state: progress (see Nps5KytyWatchConfig.progress_verdict).
   return g_cfg.progress_verdict && n != 0 && after != w ? 3 : 1;

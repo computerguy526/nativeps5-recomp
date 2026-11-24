@@ -684,11 +684,18 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
     const int flog = getenv("NPS5_KYTY_FAULT_LOG") ? atoi(getenv("NPS5_KYTY_FAULT_LOG")) : 0;
     atomic_store(&g_fault_log_left, flog);
     atomic_store(&g_declined_log_left, flog);
-    const Nps5KytyWatchConfig wc = {.guest_lo = a->guest_lo, .guest_hi = a->guest_hi, .bias = (uint64_t)(uintptr_t)a->bias, .host_protect = host_mprotect,
-                                    .handle_fault = api_fault, .emulate = em ? atoi(em) : 1, .alias_of = g_want_alias ? alias_of : NULL,
-                                    .slow_ns = 1000000, .on_slow = atomic_load(&g_fault_log_left) > 0 ? on_slow : NULL,
+    const Nps5KytyWatchConfig wc = {.guest_lo = a->guest_lo,
+                                    .guest_hi = a->guest_hi,
+                                    .bias = (uint64_t)(uintptr_t)a->bias,
+                                    .host_protect = host_mprotect,
+                                    .handle_fault = api_fault,
+                                    .emulate = em ? atoi(em) : 1,
+                                    .alias_of = g_want_alias ? alias_of : NULL,
+                                    .slow_ns = 1000000,
+                                    .on_slow = atomic_load(&g_fault_log_left) > 0 ? on_slow : NULL,
                                     .on_declined = atomic_load(&g_declined_log_left) > 0 ? on_declined : NULL,
-                                    .progress_verdict = getenv("NPS5_KYTY_PROGRESS_VERDICT") && atoi(getenv("NPS5_KYTY_PROGRESS_VERDICT")) > 0};
+                                    .progress_verdict = getenv("NPS5_KYTY_PROGRESS_VERDICT") &&
+                                                        atoi(getenv("NPS5_KYTY_PROGRESS_VERDICT")) > 0};
     if (nps5_kyty_watch_init(&wc) != 0) fatal("cannot reserve the page watch table");
   }
 

@@ -603,25 +603,29 @@ static void t_bench(void) {
 //     not counted by the runtime's livelock guard); an owner that leaves the page armed still returns 1; off = 1.
 //     The PPSA28997 pattern: a tracker page re-armed every frame, a store to its neighbour every frame.
 static void t_progress_verdict(void) {
-  for (int on = 0; on <= 1; on++) {
-    const Nps5KytyWatchConfig c = {.guest_lo = GUEST_LO, .guest_hi = GUEST_LO + ARENA, .bias = g_bias, .host_protect = host_protect,
-                                   .handle_fault = o_fault, .progress_verdict = on};
-    CHECK(nps5_kyty_watch_init(&c) == 0);
-    CHECK(mprotect(g_host, ARENA, PROT_READ | PROT_WRITE) == 0);
-    reset_owner();
-    const uint64_t page = GUEST_LO + 300 * HOSTP;
-    const uint64_t store = g_bias + page + TP + 0xd08; // the neighbour of the armed tracker page
-    for (int frame = 0; frame < 3; frame++) {
-      CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_WRITE) == 0); // re-armed every frame
-      CHECK(nps5_kyty_watch_fault_ctx(NULL, store, 1) == (on ? 3 : 1));
-      CHECK(nps5_kyty_watch_get(page) == NPS5_KW_NONE && actual_prot(page) == (PROT_READ | PROT_WRITE));
+    for (int on = 0; on <= 1; on++) {
+        const Nps5KytyWatchConfig c = {.guest_lo = GUEST_LO,
+                                       .guest_hi = GUEST_LO + ARENA,
+                                       .bias = g_bias,
+                                       .host_protect = host_protect,
+                                       .handle_fault = o_fault,
+                                       .progress_verdict = on};
+        CHECK(nps5_kyty_watch_init(&c) == 0);
+        CHECK(mprotect(g_host, ARENA, PROT_READ | PROT_WRITE) == 0);
+        reset_owner();
+        const uint64_t page = GUEST_LO + 300 * HOSTP;
+        const uint64_t store = g_bias + page + TP + 0xd08; // the neighbour of the armed tracker page
+        for (int frame = 0; frame < 3; frame++) {
+            CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_WRITE) == 0); // re-armed every frame
+            CHECK(nps5_kyty_watch_fault_ctx(NULL, store, 1) == (on ? 3 : 1));
+            CHECK(nps5_kyty_watch_get(page) == NPS5_KW_NONE && actual_prot(page) == (PROT_READ | PROT_WRITE));
+        }
+        atomic_store(&o_disarm, 0); // an owner that never opens the page: a real livelock, still 1
+        CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_WRITE) == 0);
+        CHECK(nps5_kyty_watch_fault_ctx(NULL, store, 1) == 1);
+        atomic_store(&o_disarm, 1);
+        CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_NONE) == 0);
     }
-    atomic_store(&o_disarm, 0); // an owner that never opens the page: a real livelock, still 1
-    CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_WRITE) == 0);
-    CHECK(nps5_kyty_watch_fault_ctx(NULL, store, 1) == 1);
-    atomic_store(&o_disarm, 1);
-    CHECK(nps5_kyty_watch_set(page, TP, NPS5_KW_NONE) == 0);
-  }
 }
 
 int main(void) {

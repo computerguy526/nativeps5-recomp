@@ -252,10 +252,14 @@ CPP_THIS(_ZN3sce2Np9CppWebApi6Common10LibContextC1Ev, "_ZN3sce2Np9CppWebApi6Comm
 // NPS5_NP_WEBAPI_INIT_OK=1 (bring-up experiment, opt-in; PPSA28997): the library's own initialisation succeeds (on an
 // offline console it is local; requests fail later with NOT_SIGNED_IN). Default: NOT_SIGNED_IN, as before.
 void shim__ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE(GuestContext *ctx) {
-  static int ok = -1;
-  if (ok < 0) { const char *e = getenv("NPS5_NP_WEBAPI_INIT_OK"); ok = e && e[0] == '1'; }
-  if (ok) ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE", 0);
-  ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE", ON_WEBAPI_ERROR_NOT_SIGNED_IN);
+    static int ok = -1;
+    if (ok < 0) {
+        const char *e = getenv("NPS5_NP_WEBAPI_INIT_OK");
+        ok = e && e[0] == '1';
+    }
+    if (ok) ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE", 0);
+    ON_RET("_ZN3sce2Np9CppWebApi6Common10initializeERKNS2_10InitParamsERNS2_10LibContextE",
+           ON_WEBAPI_ERROR_NOT_SIGNED_IN);
 }
 CPP_ZERO(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE21setOnFinishedCallbackEPFvliS8_PvEPFvliSC_ESC_, "_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE21setOnFinishedCallbackEPFvliS8_PvEPFvliSC_ESC_")
 CPP_THIS(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev, "_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_11Matchmaking2V120GetOfferResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev")

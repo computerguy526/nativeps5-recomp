@@ -328,7 +328,11 @@ static void t_reserve(void) {
   // allocate + MAP_FIXED map on this bit; the Unity PS5 player does)
   OrbisKernelVirtualQueryInfo vq;
   MT_EXPECT(sys_vquery(a + 0x80000, 0, &vq) == 0 && !vq.isCommitted && !vq.isDirectMemory && !vq.isFlexibleMemory,
-            "VirtualQuery of a reservation" " [" "committed %u direct %u flexible %u" "]", vq.isCommitted, vq.isDirectMemory, vq.isFlexibleMemory);
+            "VirtualQuery of a reservation"
+            " ["
+            "committed %u direct %u flexible %u"
+            "]",
+            vq.isCommitted, vq.isDirectMemory, vq.isFlexibleMemory);
   // unhinted maps never land inside a reservation
   for (int i = 0; i < 20; i++) {
     uint64_t m = 0;
@@ -337,8 +341,10 @@ static void t_reserve(void) {
   }
   // fixed map inside works, outside the reservation is independent
   MT_EXPECT(sys_mmap(a + 0x40000, PAGE, PROT_RW, MAPF | F_FIXED | F_EXCL, &r) == 0 && !rd_faults(a + 0x40000) && rd_faults(a + 0x44000), "fixed inside reservation");
-  MT_EXPECT(sys_vquery(a + 0x40000, 0, &vq) == 0 && vq.isCommitted, "VirtualQuery of a mapping made inside a reservation is not committed");
-  MT_EXPECT(sys_vquery(a + 0x80000, 0, &vq) == 0 && !vq.isCommitted, "VirtualQuery of the rest of the reservation says committed");
+  MT_EXPECT(sys_vquery(a + 0x40000, 0, &vq) == 0 && vq.isCommitted,
+            "VirtualQuery of a mapping made inside a reservation is not committed");
+  MT_EXPECT(sys_vquery(a + 0x80000, 0, &vq) == 0 && !vq.isCommitted,
+            "VirtualQuery of the rest of the reservation says committed");
   uint64_t b = a;
   MT_EXPECT(sys_reserve(&b, 0x10000, F_FIXED, 0) != 0 || b != a || 1, "");
   uint64_t c = a + 0x40000;
@@ -605,29 +611,30 @@ static void t_errno(void) {
 }
 
 int main(void) {
-  setenv("NPS5_VQ_RESERVED_UNCOMMITTED", "1", 1); // console semantics for reservations (off by default until regression-tested)
-  vmh_init();
-  t_first_fit();
-  t_fixed_area_ends();
-  t_fixed_low_end();
-  t_fixed_semantics();
-  t_misaligned();
-  t_zero_and_huge();
-  t_unmap();
-  t_remap();
-  t_hints();
-  t_reserve();
-  t_direct_invalid();
-  t_direct();
-  t_mprotect();
-  t_null_guard_vm();
-  t_stack_guard();
-  t_hle_pointers();
-  t_errno();
-  t_unmap_runtime_owned();
-  char why[200] = "";
-  mt_begin(N("extent_list_invariants_at_exit"), AREA);
-  MT_EXPECT(vm_check_list(why, sizeof why), "%s", why);
-  mt_end();
-  return mt_status();
+    setenv("NPS5_VQ_RESERVED_UNCOMMITTED", "1",
+           1); // console semantics for reservations (off by default until regression-tested)
+    vmh_init();
+    t_first_fit();
+    t_fixed_area_ends();
+    t_fixed_low_end();
+    t_fixed_semantics();
+    t_misaligned();
+    t_zero_and_huge();
+    t_unmap();
+    t_remap();
+    t_hints();
+    t_reserve();
+    t_direct_invalid();
+    t_direct();
+    t_mprotect();
+    t_null_guard_vm();
+    t_stack_guard();
+    t_hle_pointers();
+    t_errno();
+    t_unmap_runtime_owned();
+    char why[200] = "";
+    mt_begin(N("extent_list_invariants_at_exit"), AREA);
+    MT_EXPECT(vm_check_list(why, sizeof why), "%s", why);
+    mt_end();
+    return mt_status();
 }

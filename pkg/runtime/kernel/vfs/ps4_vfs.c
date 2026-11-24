@@ -393,14 +393,14 @@ static void vfs_mount_userdata(void) {
   // /devlog/app (the Unity PS5 player writes its player log to /devlog/app/debug.log) leaves that log on the host.
   const char *dl = getenv("NPS5_VFS_DEVLOG");
   if (dl && dl[0] == '1') {
-    char dir[1100], app[1200];
-    if (ps4_vfs_userdata_dir("devlog", dir, sizeof(dir))) {
-      snprintf(app, sizeof(app), "%s/app", dir);
-      if (vfs_mkdir_p(app) == 0) {
-        ps4_vfs_mount("/devlog", dir);
-        fprintf(stderr, "[ps4-vfs] /devlog -> %s (NPS5_VFS_DEVLOG)\n", dir);
+      char dir[1100], app[1200];
+      if (ps4_vfs_userdata_dir("devlog", dir, sizeof(dir))) {
+          snprintf(app, sizeof(app), "%s/app", dir);
+          if (vfs_mkdir_p(app) == 0) {
+              ps4_vfs_mount("/devlog", dir);
+              fprintf(stderr, "[ps4-vfs] /devlog -> %s (NPS5_VFS_DEVLOG)\n", dir);
+          }
       }
-    }
   }
 }
 

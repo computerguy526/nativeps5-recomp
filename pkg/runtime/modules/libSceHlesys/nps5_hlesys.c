@@ -122,21 +122,21 @@ void shim_scePadIsRemoteController(GuestContext *ctx) {
 
 #define UMTX_BUCKETS 64
 typedef struct {
-  pthread_mutex_t lk;
-  pthread_cond_t cv;
-  uint64_t seq;
+    pthread_mutex_t lk;
+    pthread_cond_t cv;
+    uint64_t seq;
 } UmtxBucket;
 static UmtxBucket g_umtx[UMTX_BUCKETS];
 static pthread_once_t g_umtx_once = PTHREAD_ONCE_INIT;
 static void umtx_init(void) {
-  for (int i = 0; i < UMTX_BUCKETS; i++) {
-    pthread_mutex_init(&g_umtx[i].lk, NULL);
-    pthread_cond_init(&g_umtx[i].cv, NULL);
-  }
+    for (int i = 0; i < UMTX_BUCKETS; i++) {
+        pthread_mutex_init(&g_umtx[i].lk, NULL);
+        pthread_cond_init(&g_umtx[i].cv, NULL);
+    }
 }
 static UmtxBucket *umtx_bucket(uint64_t guest_addr) {
-  pthread_once(&g_umtx_once, umtx_init);
-  return &g_umtx[(guest_addr >> 2) * 0x9E3779B97F4A7C15ULL >> 58];
+    pthread_once(&g_umtx_once, umtx_init);
+    return &g_umtx[(guest_addr >> 2) * 0x9E3779B97F4A7C15ULL >> 58];
 }
 
 #define UMTX_ETIMEDOUT 60 // FreeBSD
@@ -144,43 +144,58 @@ static UmtxBucket *umtx_bucket(uint64_t guest_addr) {
 #define UMTX_EFAULT 14
 
 static void umtx_fail(GuestContext *ctx, int err) {
-  set_guest_errno(ctx, err);
-  ctx->rax = (uint64_t)(int64_t)-1;
+    set_guest_errno(ctx, err);
+    ctx->rax = (uint64_t)(int64_t)-1;
 }
 
 // Absolute CLOCK_REALTIME deadline for pthread_cond_timedwait from the umtx timeout arguments; false = no timeout.
 static bool umtx_deadline(GuestContext *ctx, uint64_t uaddr, uint64_t uaddr2, struct timespec *out, bool *bad) {
-  *bad = false;
-  if (!uaddr2) return false;
-  const int64_t *ts = (const int64_t *)NPS5_G2H(ctx, uaddr2);
-  if (!ts) { *bad = true; return false; }
-  int64_t sec = ts[0], nsec = ts[1];
-  if (sec < 0 || nsec < 0 || nsec >= 1000000000) { *bad = true; return false; }
-  bool abs = false;
-  int clockid = 0; // CLOCK_REALTIME
-  if (uaddr != 0) { // struct _umtx_time
-    if (uaddr < 24) { *bad = true; return false; }
-    const uint32_t *f = (const uint32_t *)(ts + 2);
-    abs = (f[0] & 1) != 0;
-    clockid = (int)f[1];
-  }
-  struct timespec now_rt;
-  clock_gettime(CLOCK_REALTIME, &now_rt);
-  if (!abs) {
-    out->tv_sec = now_rt.tv_sec + sec;
-    out->tv_nsec = now_rt.tv_nsec + nsec;
-  } else {
-    // FreeBSD clock ids: 0 REALTIME, 4 MONOTONIC (also 11/12 MONOTONIC_PRECISE/FAST). Translate a monotonic
-    // deadline into a realtime one.
-    struct timespec now_c = now_rt;
-    if (clockid != 0) clock_gettime(CLOCK_MONOTONIC, &now_c);
-    int64_t dsec = sec - now_c.tv_sec, dnsec = nsec - now_c.tv_nsec;
-    out->tv_sec = now_rt.tv_sec + dsec;
-    out->tv_nsec = now_rt.tv_nsec + dnsec;
-    while (out->tv_nsec < 0) { out->tv_nsec += 1000000000; out->tv_sec--; }
-  }
-  while (out->tv_nsec >= 1000000000) { out->tv_nsec -= 1000000000; out->tv_sec++; }
-  return true;
+    *bad = false;
+    if (!uaddr2) return false;
+    const int64_t *ts = (const int64_t *)NPS5_G2H(ctx, uaddr2);
+    if (!ts) {
+        *bad = true;
+        return false;
+    }
+    int64_t sec = ts[0], nsec = ts[1];
+    if (sec < 0 || nsec < 0 || nsec >= 1000000000) {
+        *bad = true;
+        return false;
+    }
+    bool abs = false;
+    int clockid = 0; // CLOCK_REALTIME
+    if (uaddr != 0) { // struct _umtx_time
+        if (uaddr < 24) {
+            *bad = true;
+            return false;
+        }
+        const uint32_t *f = (const uint32_t *)(ts + 2);
+        abs = (f[0] & 1) != 0;
+        clockid = (int)f[1];
+    }
+    struct timespec now_rt;
+    clock_gettime(CLOCK_REALTIME, &now_rt);
+    if (!abs) {
+        out->tv_sec = now_rt.tv_sec + sec;
+        out->tv_nsec = now_rt.tv_nsec + nsec;
+    } else {
+        // FreeBSD clock ids: 0 REALTIME, 4 MONOTONIC (also 11/12 MONOTONIC_PRECISE/FAST). Translate a monotonic
+        // deadline into a realtime one.
+        struct timespec now_c = now_rt;
+        if (clockid != 0) clock_gettime(CLOCK_MONOTONIC, &now_c);
+        int64_t dsec = sec - now_c.tv_sec, dnsec = nsec - now_c.tv_nsec;
+        out->tv_sec = now_rt.tv_sec + dsec;
+        out->tv_nsec = now_rt.tv_nsec + dnsec;
+        while (out->tv_nsec < 0) {
+            out->tv_nsec += 1000000000;
+            out->tv_sec--;
+        }
+    }
+    while (out->tv_nsec >= 1000000000) {
+        out->tv_nsec -= 1000000000;
+        out->tv_sec++;
+    }
+    return true;
 }
 
 // NPS5_UMTX_OP=1 (Unity profile; default off until the ASTRO/SAROS regression clears it): the umtx
@@ -189,53 +204,72 @@ static bool umtx_deadline(GuestContext *ctx, uint64_t uaddr, uint64_t uaddr2, st
 extern void shim_unresolved_stub(GuestContext *ctx);
 static int g_umtx_on = -1;
 static int umtx_enabled(void) {
-  if (g_umtx_on < 0) { const char *e = getenv("NPS5_UMTX_OP"); g_umtx_on = e && e[0] == '1'; }
-  return g_umtx_on;
+    if (g_umtx_on < 0) {
+        const char *e = getenv("NPS5_UMTX_OP");
+        g_umtx_on = e && e[0] == '1';
+    }
+    return g_umtx_on;
 }
 void nps5_hlesys_umtx_gate_reset(void) { g_umtx_on = -1; } // tests: re-read NPS5_UMTX_OP
 
 void shim__umtx_op(GuestContext *ctx) {
-  if (!umtx_enabled()) { shim_unresolved_stub(ctx); return; }
-  const uint64_t obj = ctx->rdi;
-  const int op = (int)ctx->rsi;
-  const uint64_t val = ctx->rdx, uaddr = ctx->rcx, uaddr2 = ctx->r8;
-  switch (op) {
-  case 2: case 11: case 15: { // WAIT, WAIT_UINT, WAIT_UINT_PRIVATE
-    const bool wide = op == 2;
-    const void *w = obj ? NPS5_G2H(ctx, obj) : NULL;
-    if (!w) { umtx_fail(ctx, UMTX_EFAULT); SHIM_RETURN(); }
-    struct timespec dl;
-    bool bad;
-    const bool timed = umtx_deadline(ctx, uaddr, uaddr2, &dl, &bad);
-    if (bad) { umtx_fail(ctx, UMTX_EINVAL); SHIM_RETURN(); }
-    UmtxBucket *b = umtx_bucket(obj);
-    pthread_mutex_lock(&b->lk);
-    const uint64_t cur = wide ? __atomic_load_n((const uint64_t *)w, __ATOMIC_SEQ_CST)
-                              : __atomic_load_n((const uint32_t *)w, __ATOMIC_SEQ_CST);
-    const uint64_t want = wide ? val : (uint32_t)val;
-    int rc = 0;
-    if (cur == want) {
-      const uint64_t seq = b->seq;
-      while (b->seq == seq && rc == 0) rc = timed ? pthread_cond_timedwait(&b->cv, &b->lk, &dl) : pthread_cond_wait(&b->cv, &b->lk);
+    if (!umtx_enabled()) {
+        shim_unresolved_stub(ctx);
+        return;
     }
-    pthread_mutex_unlock(&b->lk);
-    if (rc == ETIMEDOUT) { umtx_fail(ctx, UMTX_ETIMEDOUT); SHIM_RETURN(); }
-    RET32(ctx, 0);
-  }
-  case 3: case 16: { // WAKE, WAKE_PRIVATE
-    UmtxBucket *b = umtx_bucket(obj);
-    pthread_mutex_lock(&b->lk);
-    b->seq++;
-    pthread_cond_broadcast(&b->cv); // every waiter of the bucket re-checks: waking more than val is allowed
-    pthread_mutex_unlock(&b->lk);
-    RET32(ctx, 0);
-  }
-  default: {
-    char what[64];
-    snprintf(what, sizeof what, "operation %d not implemented: EINVAL", op);
-    hs_once("_umtx_op", what);
-    umtx_fail(ctx, UMTX_EINVAL);
-    SHIM_RETURN();
-  }
-  }
+    const uint64_t obj = ctx->rdi;
+    const int op = (int)ctx->rsi;
+    const uint64_t val = ctx->rdx, uaddr = ctx->rcx, uaddr2 = ctx->r8;
+    switch (op) {
+        case 2:
+        case 11:
+        case 15: { // WAIT, WAIT_UINT, WAIT_UINT_PRIVATE
+            const bool wide = op == 2;
+            const void *w = obj ? NPS5_G2H(ctx, obj) : NULL;
+            if (!w) {
+                umtx_fail(ctx, UMTX_EFAULT);
+                SHIM_RETURN();
+            }
+            struct timespec dl;
+            bool bad;
+            const bool timed = umtx_deadline(ctx, uaddr, uaddr2, &dl, &bad);
+            if (bad) {
+                umtx_fail(ctx, UMTX_EINVAL);
+                SHIM_RETURN();
+            }
+            UmtxBucket *b = umtx_bucket(obj);
+            pthread_mutex_lock(&b->lk);
+            const uint64_t cur = wide ? __atomic_load_n((const uint64_t *)w, __ATOMIC_SEQ_CST)
+                                      : __atomic_load_n((const uint32_t *)w, __ATOMIC_SEQ_CST);
+            const uint64_t want = wide ? val : (uint32_t)val;
+            int rc = 0;
+            if (cur == want) {
+                const uint64_t seq = b->seq;
+                while (b->seq == seq && rc == 0)
+                    rc = timed ? pthread_cond_timedwait(&b->cv, &b->lk, &dl) : pthread_cond_wait(&b->cv, &b->lk);
+            }
+            pthread_mutex_unlock(&b->lk);
+            if (rc == ETIMEDOUT) {
+                umtx_fail(ctx, UMTX_ETIMEDOUT);
+                SHIM_RETURN();
+            }
+            RET32(ctx, 0);
+        }
+        case 3:
+        case 16: { // WAKE, WAKE_PRIVATE
+            UmtxBucket *b = umtx_bucket(obj);
+            pthread_mutex_lock(&b->lk);
+            b->seq++;
+            pthread_cond_broadcast(&b->cv); // every waiter of the bucket re-checks: waking more than val is allowed
+            pthread_mutex_unlock(&b->lk);
+            RET32(ctx, 0);
+        }
+        default: {
+            char what[64];
+            snprintf(what, sizeof what, "operation %d not implemented: EINVAL", op);
+            hs_once("_umtx_op", what);
+            umtx_fail(ctx, UMTX_EINVAL);
+            SHIM_RETURN();
+        }
+    }
 }
