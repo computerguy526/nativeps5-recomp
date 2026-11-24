@@ -44,4 +44,6 @@ check() { # mode env expectations...
 check off  "NPS5_PHYS_SUBSTEP=0" world_calls=4 world_sum_us=~160000 world_max_us=~50000 world_bad=0 cloth_calls=2 cloth_sum_us=~100000 posed_calls=1
 check on   "NPS5_PHYS_SUBSTEP=1" world_calls=7 world_sum_us=~160000 world_max_us=~25000 world_bad=0 cloth_calls=2 cloth_sum_us=~33333 cloth_max_us=~16667 posed_calls=1 posed_sum_us=~50000
 check sub  "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_SUBSTEP_CLOTH=substep NPS5_PHYS_SUBSTEP_HZ=30" world_calls=7 world_sum_us=~160000 world_max_us=~25000 cloth_calls=4 cloth_sum_us=~100000 cloth_max_us=~25000 posed_calls=1
+# world clamp (F1): one call per frame, dt = min(dt, 1/25 s), no split (4 calls, 3 x 50 ms -> 40 ms + the 10 ms one)
+check clamp "NPS5_PHYS_SUBSTEP=1 NPS5_PHYS_SUBSTEP_WORLD_CLAMP=1" world_calls=4 world_sum_us=~130000 world_max_us=~40000 world_bad=0 cloth_calls=2
 exit $fail

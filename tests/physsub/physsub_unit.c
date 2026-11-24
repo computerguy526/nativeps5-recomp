@@ -72,6 +72,17 @@ int main(void) {
         nps5_ps_frame_dt(0.0f, w, NULL);
         CHECK(w[0] == 0.05f && e[0] == 0.05f, "bad dt written");
     }
+    // clamp write-back: only with both switches and a really clamped step
+    CHECK(!nps5_ps_clamp_writeback(1, 0, 0.04f, 0.05f), "clamp write-back default off");
+    CHECK(nps5_ps_clamp_writeback(1, 1, 0.04f, 0.05f), "clamp write-back opt-in");
+    CHECK(!nps5_ps_clamp_writeback(0, 1, 0.04f, 0.05f), "clamp write-back needs dtfix");
+    CHECK(!nps5_ps_clamp_writeback(1, 1, 0.01f, 0.01f), "no write-back of an unclamped step");
+    {   // clamp does not touch the stored step dt when the write-back is off
+        float w[2] = {(float)(1.0 / 25), 25.0f};
+        float c = nps5_ps_clamp(0.05f, 25);
+        if (nps5_ps_clamp_writeback(1, 0, c, 0.05f)) nps5_ps_frame_dt(0.05f, w, NULL);
+        CHECK(c == (float)(1.0 / 25) && w[0] == (float)(1.0 / 25) && w[1] == 25.0f, "clamped dt kept in the stored step dt");
+    }
     if (fails) {
         printf("physsub_unit: %d FAILED\n", fails);
         return 1;

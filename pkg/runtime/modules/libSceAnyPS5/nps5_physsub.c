@@ -46,8 +46,8 @@
 //       .contact_fn on *(world + .contacts), skipped when NULL). The last inner step's are left to the world step. Without
 //       all these params the inner split stays off.
 //       NPS5_PHYS_SUBSTEP_WORLD_CLAMP=1 (opt-in): the world step is never split; a dt above 1/hz is clamped to 1/hz (one
-//       call, the engine simulates less than real time below hz fps, as the cloth clamp). dtfix then writes the frame dt
-//       back as after a split. Overrides INNER / HOLD / ATTACH_ONCE (nothing to do: one step). Log "world clamped N".
+//       call, the engine simulates less than real time below hz fps, as the cloth clamp). The frame dt is NOT written back
+//       (NPS5_PHYS_SUBSTEP_CLAMP_DTFIX=0 default; 1 = write it back as after a split). Overrides INNER / HOLD / ATTACH_ONCE (nothing to do: one step). Log "world clamped N".
 //       Every split world step also counts the times another thread took the world lock between two sub-steps (log line
 //       "world lock taken by another thread between sub-steps").
 //       param "physsub.cloth.skip_flag" (optional): byte offset in *this; when that byte is nonzero the step does not
@@ -99,6 +99,7 @@ static _Thread_local float t_ps_frame_dt; // last other owner id seen holding th
 // inner split: switch; this thread is inside a world step that splits its engine step (1) and inside an inner wrap (depth)
 static int g_ps_inner = 0;
 static int g_ps_wclamp = 0;
+static int g_ps_clamp_dtfix = 0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
 static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
@@ -166,8 +167,13 @@ static void ps_init(void) {
         if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_WORLD_CLAMP"), 0, 1, &v))
             fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_WORLD_CLAMP: 0|1\n");
         g_ps_wclamp = v == 1.0;
+        v = 0;
+        if (nps5_ps_num(getenv("NPS5_PHYS_SUBSTEP_CLAMP_DTFIX"), 0, 1, &v))
+            fprintf(stderr, "[physsub] W NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: 0|1\n");
+        g_ps_clamp_dtfix = v == 1.0;
         if (g_ps_wclamp)
-            fprintf(stderr, "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split)\n");
+            fprintf(stderr, "[physsub] world clamp on: one world step per frame, dt clamped to 1/hz (no split, dt write-back %s)\n",
+                    g_ps_clamp_dtfix ? "on" : "off");
     }
     {
         double v = 0;
@@ -381,7 +387,7 @@ void nps5_physsub_world_step(GuestContext *ctx) {
         ps_call(ctx, &g_w_world, &a, c);
         if (c != dt) {
             atomic_fetch_add_explicit(&g_ps_wclamped, 1, memory_order_relaxed);
-            if (g_ps_dtfix) { // per-frame readers see the frame dt, as after a split
+            if (nps5_ps_clamp_writeback(g_ps_dtfix, g_ps_clamp_dtfix, c, dt)) { // old behaviour (CLAMP_DTFIX=1): readers see the frame dt
                 float *w = g_ps_stepdt ? (float *)NPS5_G2H(ctx, a.rdi + g_ps_stepdt - 1) : NULL;
                 float *e = NULL;
                 if (g_ps_engine_ptr && g_ps_engine_dt) {

@@ -43,7 +43,7 @@
 //                                 walking character sinks into the Sky Garden planks with the whole-step split). Overrides HOLD /
 //                                 ATTACH_ONCE / RELOCK (nothing to do: one world step). Opt-in.
 //   NPS5_PHYS_SUBSTEP_WORLD_CLAMP=0  1 = never split the world step: one call with min(dt, 1/hz) (physics slower than real time
-//                                 below hz fps; dtfix writes the frame dt back). Opt-in alternative to the split.
+//                                 below hz fps; the frame dt is NOT written back unless NPS5_PHYS_SUBSTEP_CLAMP_DTFIX=1). Opt-in alternative to the split.
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -135,6 +135,12 @@ static inline float nps5_ps_clamp(float dt, double hz) {
     if (!(dt > 0.0f) || !isfinite(dt) || !(hz > 0.0)) return dt;
     const float m = (float)(1.0 / hz);
     return dt > m ? m : dt;
+}
+
+// Clamp mode (WORLD_CLAMP=1): write the frame dt back over the clamped step's values? Only with CLAMP_DTFIX=1 (and DTFIX on) and when the step was
+// really clamped. Default 0 (dtexec F1): the stored step dt then equals the dt the engine really stepped with, so per-frame readers match the motion.
+static inline int nps5_ps_clamp_writeback(int dtfix, int clamp_dtfix, float stepped, float frame_dt) {
+    return dtfix && clamp_dtfix && stepped != frame_dt;
 }
 
 // The frame's step values after a split step: world {dt, 1/dt}, engine solver info {dt x4, 1/dt x4} (NULL = not written).
