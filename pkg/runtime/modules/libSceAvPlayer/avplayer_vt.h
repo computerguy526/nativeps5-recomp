@@ -29,7 +29,10 @@ static inline int avplayer_vt_mode() {
 static inline bool avplayer_vt_enabled() { return avplayer_vt_mode() != 0; }
 
 static enum AVPixelFormat avplayer_vt_get_format(AVCodecContext *, const enum AVPixelFormat *fmts) {
-    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; ++p)
+    // NPS5_AVPLAYER_VT_FORCE_SW=1 (TEST ONLY): behave as if the hardware refused at get_format time (software format)
+    const char *force_sw = getenv("NPS5_AVPLAYER_VT_FORCE_SW");
+    const bool refuse = force_sw && force_sw[0] == '1';
+    for (const enum AVPixelFormat *p = fmts; !refuse && *p != AV_PIX_FMT_NONE; ++p)
         if (*p == AV_PIX_FMT_VIDEOTOOLBOX) return *p;
     // VideoToolbox was dropped from the list (the hardware refused the stream): software decoding
     for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
@@ -48,6 +51,12 @@ static inline bool avplayer_vt_attach(AVCodecContext *c) {
     c->get_format = avplayer_vt_get_format;
     return true;
 }
+
+// A decoded frame that is not a VideoToolbox frame while the codec was opened for VideoToolbox: ffmpeg's hardware init failed
+// inside the decoder (get_format fell back to a software format), and the context, opened with one thread because the
+// hardware was expected to do the work, now decodes in software on that single thread. The caller takes the software
+// fallback (reopen with frame threads) instead of running on silently.
+static inline bool avplayer_vt_sw_frame(bool vt_active, const AVFrame *f) { return vt_active && f->format != AV_PIX_FMT_VIDEOTOOLBOX; }
 
 // Same as avplayer_vt_to_system, but mode 2 maps the CVPixelBuffer (av_hwframe_map READ locks the base address, no download
 // allocation or copy); the caller then copies once from the mapped planes. The result replaces `f` in place; a mapping that
