@@ -83,6 +83,9 @@ void recomp_shadow_release(struct GuestContext *ctx);
 // of the entries, rewrites the faulting instruction's base register in the signal context and
 // returns 1 (the instruction is retried). 0 = not ours. Async-signal-safe.
 int recomp_shadow_handle_fault(void *ucontext, uint64_t fault_addr);
+// NPS5_SHADOW_FAULT_FAST test hooks: force the mode; count of registry scans the handler made.
+void recomp_shadow_test_set_fault_fast(int on);
+uint64_t recomp_shadow_fault_scans(void);
 
 // A signal handler is about to enter guest code on ctx (recomp_dispatch): when the signal
 // interrupted that context's guest code, its live shadow stack pointer is in the interrupted

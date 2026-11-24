@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 uint64_t g_recomp_call_model = 1; // flat
 
@@ -44,6 +46,16 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
   static const char m[] = "FAIL: fault not handled by the shadow stack\n";
   (void)!write(1, m, sizeof m - 1);
   _exit(3);
+  (void)sig;
+}
+
+// Non-shadow faults (NPS5_SHADOW_FAULT_FAST test): record what the handler answered, then open
+// the page so the access retries.
+static volatile int g_rc = -1;
+static void on_fault_probe(int sig, siginfo_t *si, void *uc) {
+  g_rc = recomp_shadow_handle_fault(uc, (uint64_t)(uintptr_t)si->si_addr);
+  size_t pg = (size_t)getpagesize();
+  mprotect((void *)((uintptr_t)si->si_addr & ~(uintptr_t)(pg - 1)), pg, PROT_READ | PROT_WRITE);
   (void)sig;
 }
 
@@ -188,6 +200,48 @@ int main(void) {
   g_ic_sites[0][2] = 0x3000; g_ic_sites[0][3] = 0x700000;
   recomp_ic_flush_all();
   CHECK(g_recomp_ic[0] == ep + 3 && g_ic_sites[0][2] == ~0ull && g_ic_sites[0][3] == g_recomp_ic[2]);
+
+  // ---- NPS5_SHADOW_FAULT_FAST: same answers in both orders; the scan is skipped for non-pushes
+  {
+    struct sigaction pa = {0};
+    pa.sa_flags = SA_SIGINFO;
+    pa.sa_sigaction = on_fault_probe;
+    sigaction(SIGSEGV, &pa, NULL);
+    sigaction(SIGBUS, &pa, NULL);
+    size_t pg = (size_t)getpagesize();
+    for (int fast = 0; fast <= 1; fast++) {
+      recomp_shadow_test_set_fault_fast(fast);
+      GuestContext *c3 = calloc(1, sizeof *c3);
+      recomp_shadow_attach(c3);
+      // a fault at an unrelated address, instruction is a load: not ours
+      uint8_t *bad = mmap(NULL, pg, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      uint64_t s0 = recomp_shadow_fault_scans();
+      g_rc = -1;
+      (void)*(volatile uint64_t *)bad;
+      CHECK(g_rc == 0);
+      CHECK(recomp_shadow_fault_scans() - s0 == (fast ? 0u : 1u)); // fast: no registry scan
+      // a load from the shadow stack's own guard page: ours by address, not by instruction
+      s0 = recomp_shadow_fault_scans();
+      g_rc = -1;
+      (void)*(volatile uint64_t *)(uintptr_t)(c3->shadow->map + 8);
+      CHECK(g_rc == 0);
+      mprotect(c3->shadow->map, pg, PROT_NONE); // the probe opened the guard: close it again
+      CHECK(recomp_shadow_fault_scans() - s0 == (fast ? 0u : 1u));
+      // the push into the guard page is still compacted (returns 1 through the real handler)
+      sigaction(SIGSEGV, &sa, NULL);
+      sigaction(SIGBUS, &sa, NULL);
+      uint64_t ov0 = atomic_load(&c3->shadow->overflows);
+      RecompShadowEntry *q = c3->shadow->bottom;
+      for (uint64_t i = 1; i <= 5000; i++) q = push(q, 0x20000 + i, 0x2000000 - 8 * i, 0x900000 + i);
+      CHECK(atomic_load(&c3->shadow->overflows) > ov0);
+      sigaction(SIGSEGV, &pa, NULL);
+      sigaction(SIGBUS, &pa, NULL);
+      recomp_shadow_release(c3);
+      munmap(bad, pg);
+    }
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+  }
 
   if (g_fail) return 1;
   printf("SHADOW OK\n");
