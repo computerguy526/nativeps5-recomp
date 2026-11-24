@@ -43,7 +43,7 @@
 //                                 walking character sinks into the Sky Garden planks with the whole-step split). Overrides HOLD /
 //                                 ATTACH_ONCE / RELOCK (nothing to do: one world step). Opt-in.
 //   NPS5_PHYS_SUBSTEP_WORLD_CLAMP=0  1 = never split the world step: one call with min(dt, 1/hz) (physics slower than real time
-//                                 below hz fps; dtfix writes the frame dt back). Opt-in alternative to the split.
+//                                 below hz fps; the frame dt is NOT written back unless NPS5_PHYS_SUBSTEP_CLAMP_DTFIX=1). Opt-in alternative to the split.
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -137,6 +137,12 @@ static inline float nps5_ps_clamp(float dt, double hz) {
     return dt > m ? m : dt;
 }
 
+// Clamp mode (WORLD_CLAMP=1): write the frame dt back over the clamped step's values? Only with CLAMP_DTFIX=1 (and DTFIX on) and when the step was
+// really clamped. Default 0 (dtexec F1): the stored step dt then equals the dt the engine really stepped with, so per-frame readers match the motion.
+static inline int nps5_ps_clamp_writeback(int dtfix, int clamp_dtfix, float stepped, float frame_dt) {
+    return dtfix && clamp_dtfix && stepped != frame_dt;
+}
+
 // The frame's step values after a split step: world {dt, 1/dt}, engine solver info {dt x4, 1/dt x4} (NULL = not written).
 static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
     if (!(dt > 0.0f) || !isfinite(dt)) return;
@@ -151,3 +157,122 @@ static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
             engine8[4 + k] = inv;
         }
 }
+
+// ---- dtexec probes (default off, diagnostics only) ----------------------------------------------------------------------------------------
+// NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace from the world shim (the virtual call chain from the main loop to the physics manager).
+// Walks the rbp chain: [rsp] = the caller's return address, then ret = [rbp+8], rbp = [rbp]. Bounds-checked against the guest memory size, stops on
+// a null / misaligned / out-of-range rbp, on an rbp that does not increase, and at max entries. Returns the number of return addresses written.
+static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out, int max) {
+    int n = 0;
+    if (!mem || max <= 0) return 0;
+    if (rsp && !(rsp & 7) && rsp + 8 <= mem_size) out[n++] = *(const uint64_t *)(mem + rsp);
+    uint64_t prev = 0;
+    while (n < max) {
+        if (!rbp || (rbp & 7) || rbp + 16 > mem_size || rbp <= prev) break;
+        const uint64_t ret = *(const uint64_t *)(mem + rbp + 8);
+        const uint64_t next = *(const uint64_t *)(mem + rbp);
+        if (!ret) break;
+        out[n++] = ret;
+        prev = rbp;
+        rbp = next;
+    }
+    return n;
+}
+
+// NPS5_PHYS_SUBSTEP_POISON=dt,ratio,maxdt,substep,grav: after an UNSPLIT world step the groups of dt-derived solver-info fields (hknp world block,
+// engine pointer + 0x560 = dt) are scaled by what a 2-way split leaves behind (dt/2, 2/dt). Which per-frame reader moves a tile = which group.
+enum { NPS5_PS_POI_DT = 1, NPS5_PS_POI_RATIO = 2, NPS5_PS_POI_MAXDT = 4, NPS5_PS_POI_SUBSTEP = 8, NPS5_PS_POI_GRAV = 16 };
+static inline unsigned nps5_ps_poison_group(const char *name) {
+    static const char *const n[5] = {"dt", "ratio", "maxdt", "substep", "grav"};
+    if (!name) return 0;
+    for (int i = 0; i < 5; i++)
+        if (!strcmp(name, n[i])) return 1u << i;
+    return 0;
+}
+// hk = host pointer of the block that holds the solver info at hk + 0x560 .. 0x66f (the hknpWorld). Returns the number of floats written.
+static inline int nps5_ps_poison(uint8_t *hk, unsigned groups) {
+    int w = 0;
+    if (!hk) return 0;
+#define PS_SCALE(off, cnt, f)                                                                                          \
+    do {                                                                                                               \
+        float *q = (float *)(hk + (off));                                                                              \
+        for (int k_ = 0; k_ < (cnt); k_++) q[k_] *= (f);                                                               \
+        w += (cnt);                                                                                                    \
+    } while (0)
+    if (groups & NPS5_PS_POI_DT) {
+        PS_SCALE(0x560, 4, 0.5f); // dt
+        PS_SCALE(0x570, 4, 2.0f); // 1/dt
+    }
+    if (groups & NPS5_PS_POI_RATIO) PS_SCALE(0x590, 1, 0.5f);
+    if (groups & NPS5_PS_POI_MAXDT) {
+        PS_SCALE(0x5a0, 1, 0.5f);
+        PS_SCALE(0x5b0, 1, 0.5f);
+    }
+    if (groups & NPS5_PS_POI_SUBSTEP) {
+        PS_SCALE(0x5c0, 1, 0.5f);
+        PS_SCALE(0x5d0, 1, 2.0f);
+    }
+    if (groups & NPS5_PS_POI_GRAV) {
+        PS_SCALE(0x650, 4, 0.5f);
+        PS_SCALE(0x660, 4, 0.5f);
+    }
+#undef PS_SCALE
+    return w;
+}
+// Cycle: phase 0 = clean baseline, phase k = group k-1 of the list, each lasting `period` world steps; returns the phase of world step `step`.
+static inline int nps5_ps_poison_phase(uint64_t step, unsigned period, int ngroups) {
+    if (period == 0 || ngroups <= 0) return 0;
+    return (int)((step / period) % (uint64_t)(ngroups + 1));
+}
+
+
+// ---- dt clamp for single objects (dtexec, NPS5_PHYS_DTCLAMP_OBJ; table slots nps5_physsub_dtclamp_0..7) --------------------------------------
+// Objects whose update takes the frame dt in xmm0[0] and is only stable / only looks right at <= 1/hz (delayed feedback gain grows with dt: the
+// armadillo BigLeafPlant, SpringBone dampers, ropes, soft bodies). The shim calls the original ONCE with min(dt, 1/hz); only that object runs
+// slower than real time below hz fps. NPS5_PHYS_DTCLAMP_OBJ=all | name,name,... | 0 (default off); NPS5_PHYS_DTCLAMP_HZ=name=hz,name=hz (5..240).
+// Names are matched case-insensitively. Returns the bit mask of selected slots; *bad = number of unknown / malformed items.
+static inline unsigned nps5_ps_dtclamp_select(const char *sel, const char *const *names, int n, int *bad) {
+    unsigned m = 0;
+    char buf[256], *sv = NULL;
+    if (!sel || !*sel || !strcmp(sel, "0")) return 0;
+    if (strlen(sel) >= sizeof buf) {
+        if (bad) (*bad)++;
+        return 0;
+    }
+    strcpy(buf, sel);
+    for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+        if (!strcasecmp(t, "all")) {
+            m |= n >= 32 ? ~0u : ((1u << n) - 1u);
+            continue;
+        }
+        int hit = 0;
+        for (int i = 0; i < n; i++)
+            if (!strcasecmp(t, names[i])) m |= 1u << i, hit = 1;
+        if (!hit && bad) (*bad)++;
+    }
+    return m;
+}
+// hz for one slot: the "name=hz" item of the list, else def. A malformed / out of range item counts in *bad and is ignored.
+static inline double nps5_ps_dtclamp_hz(const char *list, const char *name, double def, int *bad) {
+    char buf[256], *sv = NULL;
+    double r = def;
+    if (!list || !*list || strlen(list) >= sizeof buf) return def;
+    strcpy(buf, list);
+    for (char *t = strtok_r(buf, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+        char *eq = strchr(t, '=');
+        if (!eq) {
+            if (bad) (*bad)++;
+            continue;
+        }
+        *eq = 0;
+        if (strcasecmp(t, name)) continue;
+        char *end = NULL;
+        const double v = strtod(eq + 1, &end);
+        if (end == eq + 1 || *end || !(v >= 5.0 && v <= 240.0)) {
+            if (bad) (*bad)++;
+        } else
+            r = v;
+    }
+    return r;
+}
+
