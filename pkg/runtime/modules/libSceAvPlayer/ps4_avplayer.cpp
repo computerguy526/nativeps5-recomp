@@ -578,6 +578,7 @@ public:
             m_vt_guard = AvplayerVtGuard{};
             m_vt_wait_key = false;
             m_vt_fell_back = false;
+            m_vt_sw_format = false;
             m_vt_stats_on = m_vt_mode != 0 || avplayer_vtrace();
             m_frame_period_ms = 1000.0 / 30.0;
             if (stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0) m_frame_period_ms = 1000.0 * stream->avg_frame_rate.den / stream->avg_frame_rate.num;
@@ -596,6 +597,7 @@ public:
                 AVPLAYER_LOG("Failed to open video codec");
                 return false;
             }
+            m_video_ctx_live.store(true);
 
             uint32_t pitch = video_pitch((uint32_t)m_video_codec_ctx->width);
             uint32_t height = align_up((uint32_t)m_video_codec_ctx->height, 16);
@@ -960,6 +962,7 @@ private:
             m_curr_audio_buf.reset();
         }
 
+        m_video_ctx_live.store(false);
         if (m_video_codec_ctx) {
             avcodec_free_context(&m_video_codec_ctx);
             m_video_codec_ctx = nullptr;
@@ -1003,7 +1006,7 @@ private:
                     // thread sat in send/receive, tripped ffmpeg's frame-thread assert 'fctx->async_lock' and
                     // aborted the process): queue a flush marker (stream_index -1) behind the old packets instead.
                     // The video decoder flushes, drops the frames of the old pass and restarts the clock.
-                    if (m_video_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_video_packets.push(std::move(mk)); }
+                    if (m_video_ctx_live.load()) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_video_packets.push(std::move(mk)); }
                     else { m_start_time = std::chrono::steady_clock::now(); m_total_pause_duration = std::chrono::steady_clock::duration(0); }
                     if (m_audio_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_audio_packets.push(std::move(mk)); }
                     continue;
@@ -1028,19 +1031,28 @@ private:
 
     // Mid-stream VideoToolbox failure (3 errors in a row): reopen on the software decoder and resume at the next keyframe.
     // Runs on the decoder thread. false = the software decoder could not be opened either (the worker stops).
-    bool vt_fallback(int err) {
-        AVPLAYER_LOG("VideoToolbox failed mid-stream (err %d), software decoder from the next keyframe", err);
+    // sw_format = the hardware init failed inside ffmpeg and the decoder produced software frames (not an error count).
+    // The new context is opened aside and swapped in, so m_video_codec_ctx is never null or freed under another thread
+    // (the demuxer only tests m_video_ctx_live; every flush/send/receive/free is on the decoder thread or after its join).
+    bool vt_fallback(int err, bool sw_format = false) {
+        if (sw_format) AVPLAYER_LOG("VideoToolbox hardware init failed inside the decoder (software frames, pix_fmt %d); reopening with %s software threads", err, "frame+slice");
+        else AVPLAYER_LOG("VideoToolbox failed mid-stream (err %d), software decoder from the next keyframe", err);
         const AVStream *st = m_fmt_ctx->streams[m_video_stream_idx];
         const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
         int sw_threads = 1;
         if (!avsync_legacy()) { const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS"); sw_threads = t && t[0] ? atoi(t) : 4; }
         bool vt = false;
-        if (!dec || !avplayer_open_video_codec(&m_video_codec_ctx, dec, st->codecpar, false, sw_threads, &vt)) {
+        AVCodecContext *fresh = nullptr;
+        if (!dec || !avplayer_open_video_codec(&fresh, dec, st->codecpar, false, sw_threads, &vt)) {
             AVPLAYER_LOG("software fallback could not open the video codec");
             return false;
         }
+        AVCodecContext *old = m_video_codec_ctx;
+        m_video_codec_ctx = fresh;
+        avcodec_free_context(&old);
         m_video_vt = false;
         m_vt_fell_back = true;
+        if (sw_format) m_vt_sw_format = true;
         m_vt_wait_key = true;
         m_vt_guard = AvplayerVtGuard{};
         return true;
@@ -1055,8 +1067,8 @@ private:
     void log_vt_summary() {
         std::lock_guard<std::mutex> lk(m_stats_mutex);
         if (!m_vt_stats_on || m_vs_decoded == 0) return;
-        AVPLAYER_LOG("[avvid] VTSUMMARY path=%s mode=%d fell_back=%d decoded=%llu | decode_ms (send_packet to frame) p50 %.2f p99 %.2f | copy_ms (hw frame to guest buffer) p50 %.2f p99 %.2f | late(>1 frame)=%llu skipped=%llu period_ms %.1f",
-                     m_video_vt ? "videotoolbox" : "software", m_vt_mode, (int)m_vt_fell_back, (unsigned long long)m_vs_decoded,
+        AVPLAYER_LOG("[avvid] VTSUMMARY path=%s mode=%d fell_back=%d%s decoded=%llu | decode_ms (send_packet to frame) p50 %.2f p99 %.2f | copy_ms (hw frame to guest buffer) p50 %.2f p99 %.2f | late(>1 frame)=%llu skipped=%llu period_ms %.1f",
+                     m_video_vt ? "videotoolbox" : "software", m_vt_mode, (int)m_vt_fell_back, m_vt_sw_format ? " hw_init_failed=1" : "", (unsigned long long)m_vs_decoded,
                      pct(m_dec_ms, 0.5), pct(m_dec_ms, 0.99), pct(m_xfer_ms, 0.5), pct(m_xfer_ms, 0.99),
                      (unsigned long long)m_vs_late, (unsigned long long)m_vs_skipped, m_frame_period_ms);
         m_dec_ms.clear(); m_xfer_ms.clear(); m_vs_decoded = m_vs_late = m_vs_skipped = 0;
@@ -1103,6 +1115,13 @@ private:
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
                 if (ret < 0) {
                     if (m_video_vt && m_vt_guard.failed() && !vt_fallback(ret)) m_workers_stop.store(true);
+                    break;
+                }
+                if (avplayer_vt_sw_frame(m_video_vt, raw_frame)) {
+                    // the hardware did not take the stream (get_format returned a software format on the one-thread context)
+                    const int sw_fmt = raw_frame->format;
+                    av_frame_unref(raw_frame);
+                    if (!vt_fallback(sw_fmt, true)) m_workers_stop.store(true);
                     break;
                 }
                 if (dec_t0) { std::lock_guard<std::mutex> lk(m_stats_mutex); m_dec_ms.push_back((double)(mono_ns() - dec_t0) / 1e6); m_vs_decoded++; }
@@ -1372,7 +1391,8 @@ private:
     bool m_video_vt = false; // the video codec runs on VideoToolbox (NPS5_AVPLAYER_VT)
     int m_vt_mode = 0;       // NPS5_AVPLAYER_VT: 0 off, 1 download, 2 map
     AvplayerVtGuard m_vt_guard;
-    bool m_vt_wait_key = false, m_vt_fell_back = false, m_vt_stats_on = false;
+    bool m_vt_wait_key = false, m_vt_fell_back = false, m_vt_stats_on = false, m_vt_sw_format = false;
+    std::atomic<bool> m_video_ctx_live{false}; // a video codec context is open (read by the demuxer thread)
     double m_frame_period_ms = 33.3;
     std::vector<double> m_dec_ms, m_xfer_ms; // guarded by m_stats_mutex
     uint64_t m_vs_decoded = 0, m_vs_late = 0, m_vs_skipped = 0;

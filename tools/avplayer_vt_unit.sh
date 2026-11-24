@@ -21,6 +21,8 @@ for spec in "1280x720 high yuv420p" "1920x1080 high yuv420p" "640x360 main yuv42
   # mid-stream hardware failure from the 20th frame: software fallback at the next keyframe (720p only, both modes)
   if [ "$1" = 1280x720 ] && [ "$3" = yuv420p ]; then
     for mode in 1 2; do echo "== $1 fail_at=20 mode $mode"; "$T/t" "$T/c.mp4" 2 $mode 20 || rc=1; done
+    # hardware refused inside ffmpeg (get_format returns a software format): frames of another format take the fallback
+    echo "== $1 force_sw"; "$T/t" "$T/c.mp4" 2 1 -1 sw || rc=1
   fi
 done
 exit $rc
