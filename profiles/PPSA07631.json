@@ -28,6 +28,9 @@
         "KYTY_DCC_KNOWN_FILL_ALIASED": "1",
         "KYTY_FAULT_HOST_READBACK": "1",
         "NPS5_SHADOW_FAULT_FAST": "1",
-        "NPS5_AVPLAYER_VT": "2"
+        "NPS5_AVPLAYER_VT": "2",
+        "KYTY_SAROS_HANDSHADERS": "1",
+        "KYTY_SAROS_NANITE_RAW": "1",
+        "KYTY_BUNDLE_COMPACT": "1"
     }
 }

@@ -123,3 +123,34 @@ func TestSarosProfileLightFunctionQuality(t *testing.T) {
 		}
 	}
 }
+
+// TestSarosProfileHandShaderStack: the SAROS (PPSA07631) profile carries the three switches the runners used to pass by hand
+// (hand shaders, Nanite raw raster parameters, shader-bundle compaction), and no other title's profile sets them.
+func TestSarosProfileHandShaderStack(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NPS5_PROFILES", "")
+	keys := []string{"KYTY_SAROS_HANDSHADERS", "KYTY_SAROS_NANITE_RAW", "KYTY_BUNDLE_COMPACT"}
+	p, _, err := LoadProfile("", "PPSA07631", repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		if p.Env[k] != "1" {
+			t.Errorf("PPSA07631: %s=%q, want 1", k, p.Env[k])
+		}
+	}
+	for _, id := range []string{"PPSA21564", "PPSA28997"} {
+		q, _, err := LoadProfile("", id, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			if _, ok := q.Env[k]; ok {
+				t.Errorf("%s must not set %s", id, k)
+			}
+		}
+	}
+}
