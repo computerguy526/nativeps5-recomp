@@ -560,36 +560,39 @@ public:
                 AVPLAYER_LOG("Could not find video decoder for codec id %d", stream->codecpar->codec_id);
                 return false;
             }
-            m_video_codec_ctx = avcodec_alloc_context3(decoder);
-            avcodec_parameters_to_context(m_video_codec_ctx, stream->codecpar);
             // The intro clip is 3840x2160 H.264 at 60 fps: one decode thread needed 19 ms (p50) .. 28 ms (p90) per frame,
             // so the picture ran behind the clock (up to 1.9 s late) and the game's load made it worse. Frame threading
             // costs a few frames of output delay, which the PTS delivery absorbs. NPS5_AVPLAYER_DEC_THREADS=<n> (1 = old).
-            // NPS5_AVPLAYER_VT=1: H.264 on VideoToolbox (avplayer_vt.h); the decoder runs on the hardware, so no frame threads.
-            m_video_vt = avplayer_vt_attach(m_video_codec_ctx);
-            if (m_video_vt) AVPLAYER_LOG("video: H.264 on VideoToolbox");
-            if (!avsync_legacy() && !m_video_vt) {
+            // NPS5_AVPLAYER_VT=1|2: H.264 on VideoToolbox (avplayer_vt.h); the decoder runs on the hardware, so no frame threads.
+            int sw_threads = 1;
+            if (!avsync_legacy()) {
                 const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS");
-                int n = t && t[0] ? atoi(t) : 4;
-                if (n > 1 && n <= 16) {
-                    m_video_codec_ctx->thread_count = n;
-                    m_video_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-                }
+                sw_threads = t && t[0] ? atoi(t) : 4;
             }
-            if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0 && m_video_vt) {
-                // the hardware path failed to open: start over on the software decoder
-                AVPLAYER_LOG("VideoToolbox open failed, using the software decoder");
-                avcodec_free_context(&m_video_codec_ctx);
-                m_video_vt = false;
-                m_video_codec_ctx = avcodec_alloc_context3(decoder);
-                avcodec_parameters_to_context(m_video_codec_ctx, stream->codecpar);
-                if (!avsync_legacy()) {
-                    const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS");
-                    int n = t && t[0] ? atoi(t) : 4;
-                    if (n > 1 && n <= 16) { m_video_codec_ctx->thread_count = n; m_video_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE; }
-                }
-                if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0) { AVPLAYER_LOG("Failed to open video codec"); return false; }
-            } else if (!avcodec_is_open(m_video_codec_ctx)) {
+            m_vt_mode = avplayer_vt_mode();
+            const bool want_vt = m_vt_mode != 0 && decoder->id == AV_CODEC_ID_H264;
+            if (!avplayer_open_video_codec(&m_video_codec_ctx, decoder, stream->codecpar, want_vt, sw_threads, &m_video_vt)) {
+                AVPLAYER_LOG("Failed to open video codec");
+                return false;
+            }
+            m_vt_guard = AvplayerVtGuard{};
+            m_vt_wait_key = false;
+            m_vt_fell_back = false;
+            m_vt_stats_on = m_vt_mode != 0 || avplayer_vtrace();
+            m_frame_period_ms = 1000.0 / 30.0;
+            if (stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0) m_frame_period_ms = 1000.0 * stream->avg_frame_rate.den / stream->avg_frame_rate.num;
+            {
+                std::lock_guard<std::mutex> lk(m_stats_mutex);
+                m_dec_ms.clear(); m_xfer_ms.clear(); m_vs_decoded = m_vs_late = m_vs_skipped = 0;
+            }
+            // one unconditional line per source: which decode path this movie runs on, so a silent no-op can not happen
+            if (m_video_vt) {
+                AVPLAYER_LOG("video decode: VideoToolbox (mode %d) codec %s %dx%d", m_vt_mode, decoder->name, m_video_codec_ctx->width, m_video_codec_ctx->height);
+            } else {
+                const char *why = m_vt_mode == 0 ? "NPS5_AVPLAYER_VT off" : (!want_vt ? "codec not routed" : "hardware refused");
+                AVPLAYER_LOG("video decode: software (%s) codec %s %dx%d", why, decoder->name, m_video_codec_ctx->width, m_video_codec_ctx->height);
+            }
+            if (!avcodec_is_open(m_video_codec_ctx)) {
                 AVPLAYER_LOG("Failed to open video codec");
                 return false;
             }
@@ -800,6 +803,11 @@ public:
             m_curr_video_buf.reset();
         }
 
+        if (m_vt_stats_on) {
+            std::lock_guard<std::mutex> lk(m_stats_mutex);
+            m_vs_skipped += stale.size();
+            if ((double)now_ms - (double)frame.info.timestamp > m_frame_period_ms) m_vs_late++;
+        }
         *info = frame.info;
         frame.buffer.fetch_ns = t_ns;
         m_curr_video_buf = std::move(frame.buffer);
@@ -940,6 +948,7 @@ private:
             free_buffer(ctx, frame->buffer);
         }
 
+        log_vt_summary();
         log_video_summary();
         while (!m_held_video_bufs.empty()) { free_buffer(ctx, m_held_video_bufs.front()); m_held_video_bufs.pop_front(); }
         if (m_curr_video_buf.has_value()) {
@@ -1017,6 +1026,42 @@ private:
         AVPLAYER_LOG("Demuxer worker ended");
     }
 
+    // Mid-stream VideoToolbox failure (3 errors in a row): reopen on the software decoder and resume at the next keyframe.
+    // Runs on the decoder thread. false = the software decoder could not be opened either (the worker stops).
+    bool vt_fallback(int err) {
+        AVPLAYER_LOG("VideoToolbox failed mid-stream (err %d), software decoder from the next keyframe", err);
+        const AVStream *st = m_fmt_ctx->streams[m_video_stream_idx];
+        const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
+        int sw_threads = 1;
+        if (!avsync_legacy()) { const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS"); sw_threads = t && t[0] ? atoi(t) : 4; }
+        bool vt = false;
+        if (!dec || !avplayer_open_video_codec(&m_video_codec_ctx, dec, st->codecpar, false, sw_threads, &vt)) {
+            AVPLAYER_LOG("software fallback could not open the video codec");
+            return false;
+        }
+        m_video_vt = false;
+        m_vt_fell_back = true;
+        m_vt_wait_key = true;
+        m_vt_guard = AvplayerVtGuard{};
+        return true;
+    }
+
+    static double pct(std::vector<double> v, double p) {
+        if (v.empty()) return -1;
+        std::sort(v.begin(), v.end());
+        return v[std::min(v.size() - 1, (size_t)(p * (double)v.size()))];
+    }
+    // One line per source when NPS5_AVPLAYER_VT is set or NPS5_AVPLAYER_VTRACE=1.
+    void log_vt_summary() {
+        std::lock_guard<std::mutex> lk(m_stats_mutex);
+        if (!m_vt_stats_on || m_vs_decoded == 0) return;
+        AVPLAYER_LOG("[avvid] VTSUMMARY path=%s mode=%d fell_back=%d decoded=%llu | decode_ms (send_packet to frame) p50 %.2f p99 %.2f | copy_ms (hw frame to guest buffer) p50 %.2f p99 %.2f | late(>1 frame)=%llu skipped=%llu period_ms %.1f",
+                     m_video_vt ? "videotoolbox" : "software", m_vt_mode, (int)m_vt_fell_back, (unsigned long long)m_vs_decoded,
+                     pct(m_dec_ms, 0.5), pct(m_dec_ms, 0.99), pct(m_xfer_ms, 0.5), pct(m_xfer_ms, 0.99),
+                     (unsigned long long)m_vs_late, (unsigned long long)m_vs_skipped, m_frame_period_ms);
+        m_dec_ms.clear(); m_xfer_ms.clear(); m_vs_decoded = m_vs_late = m_vs_skipped = 0;
+    }
+
     void video_decoder_worker() {
         AVPLAYER_LOG("Video decoder worker started");
         AVFrame *raw_frame = av_frame_alloc();
@@ -1041,17 +1086,37 @@ private:
                 m_total_pause_duration = std::chrono::steady_clock::duration(0);
                 continue;
             }
+            if (m_vt_wait_key) { // after a mid-stream fallback: the software decoder starts clean at a keyframe
+                if (!(pkt->flags & AV_PKT_FLAG_KEY)) { av_packet_free(&pkt); continue; }
+                m_vt_wait_key = false;
+            }
+            const uint64_t dec_t0 = m_vt_stats_on ? mono_ns() : 0;
             int ret = avcodec_send_packet(m_video_codec_ctx, pkt);
             av_packet_free(&pkt);
-            if (ret < 0) continue;
+            if (ret < 0) {
+                if (m_video_vt && ret != AVERROR(EAGAIN) && m_vt_guard.failed() && !vt_fallback(ret)) break;
+                continue;
+            }
 
             while (ret >= 0 && !m_workers_stop.load()) {
                 ret = avcodec_receive_frame(m_video_codec_ctx, raw_frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-                if (ret < 0) break;
-                if (raw_frame->format == AV_PIX_FMT_VIDEOTOOLBOX && avplayer_vt_to_system(raw_frame, nv12_frame) < 0) {
-                    AVPLAYER_LOG("VideoToolbox frame download failed; dropping the frame");
-                    continue;
+                if (ret < 0) {
+                    if (m_video_vt && m_vt_guard.failed() && !vt_fallback(ret)) m_workers_stop.store(true);
+                    break;
+                }
+                if (dec_t0) { std::lock_guard<std::mutex> lk(m_stats_mutex); m_dec_ms.push_back((double)(mono_ns() - dec_t0) / 1e6); m_vs_decoded++; }
+                const uint64_t xfer_t0 = m_vt_stats_on ? mono_ns() : 0;
+                if (raw_frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+                    const bool injected = m_vt_guard.inject_error();
+                    const int cr = injected ? AVERROR(EIO) : avplayer_vt_convert(raw_frame, nv12_frame, m_vt_mode);
+                    if (injected) av_frame_unref(raw_frame);
+                    if (cr < 0) {
+                        AVPLAYER_LOG("VideoToolbox frame download failed (err %d); dropping the frame", cr);
+                        if (m_vt_guard.failed()) { if (!vt_fallback(cr)) m_workers_stop.store(true); break; }
+                        continue;
+                    }
+                    m_vt_guard.ok();
                 }
 
                 GuestBuffer buf;
@@ -1091,6 +1156,7 @@ private:
                     copied = copy_nv12_data(buf.host_ptr, buf.size, raw_frame);
                 }
                 if (conv_t0) { std::lock_guard<std::mutex> lk(m_stats_mutex); m_vstats.convert_ms.add((double)(mono_ns() - conv_t0) / 1e6); }
+                if (xfer_t0) { std::lock_guard<std::mutex> lk(m_stats_mutex); m_xfer_ms.push_back((double)(mono_ns() - xfer_t0) / 1e6); }
                 if (!copied) {
                     AVPLAYER_LOG("Dropping video frame %dx%d: it does not fit the frame buffer", raw_frame->width, raw_frame->height);
                     m_free_video_buffers.push(std::move(buf));
@@ -1304,6 +1370,12 @@ private:
 
     AVCodecContext *m_video_codec_ctx = nullptr;
     bool m_video_vt = false; // the video codec runs on VideoToolbox (NPS5_AVPLAYER_VT)
+    int m_vt_mode = 0;       // NPS5_AVPLAYER_VT: 0 off, 1 download, 2 map
+    AvplayerVtGuard m_vt_guard;
+    bool m_vt_wait_key = false, m_vt_fell_back = false, m_vt_stats_on = false;
+    double m_frame_period_ms = 33.3;
+    std::vector<double> m_dec_ms, m_xfer_ms; // guarded by m_stats_mutex
+    uint64_t m_vs_decoded = 0, m_vs_late = 0, m_vs_skipped = 0;
     AVCodecContext *m_audio_codec_ctx = nullptr;
     SwsContext *m_sws_ctx = nullptr;
     uint32_t m_logged_video_frames = 0; // NPS5_AVPLAYER_LOG: frames logged for the current source
