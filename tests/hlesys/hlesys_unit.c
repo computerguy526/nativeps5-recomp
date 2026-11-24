@@ -70,6 +70,8 @@ SHIM(sceKernelAprSubmitCommandBufferAndGetResult); SHIM(sceKernelAprWaitCommandB
 SHIM(sceKernelAprSubmitCommandBuffer); SHIM(sceKernelAprSubmitCommandBufferAndGetId);
 SHIM(sceKernelAprGetFileSize); SHIM(sceKernelAddAmprEvent);
 SHIM(sceKernelIsTrinityMode); SHIM(sceKernelSetPrtAperture); SHIM(pthread_attr_setsolosched_np);
+SHIM(sceKernelGetOperationMode);
+SHIM(_sceLibcInternalThreadAtexit);
 SHIM(scePadSetVibrationMode);
 SHIM(sceAudioPropagationSystemQueryMemory); SHIM(sceAudioPropagationSystemCreate); SHIM(sceAudioPropagationSourceCreate);
 SHIM(sceAudioPropagationSourceRender); SHIM(sceAudioPropagationSourceGetAudioPathCount);
@@ -905,6 +907,34 @@ static void test_misc(void) {
   reset_regs(); C->rdi = 0x1000; C->rsi = 16; CALL(shim_pthread_attr_setsolosched_np); CHECK(RAX32 == 0);
   reset_regs(); C->rdi = 0x1000; C->rsi = 3; CALL(shim_pthread_attr_setsolosched_np); CHECK(RAX32 == 45);
   reset_regs(); C->rdi = 0; C->rsi = 0; CALL(shim_pthread_attr_setsolosched_np); CHECK(RAX32 == 22);
+  {
+      uint64_t g = galloc(16);
+      int32_t *mp = (int32_t *)H(g), *sp = (int32_t *)H(g + 8);
+      *mp = -1;
+      *sp = -1;
+      reset_regs();
+      C->rdi = g;
+      C->rsi = g + 8;
+      CALL(shim_sceKernelGetOperationMode);
+      CHECK(RAX32 == 0);
+      CHECK(*mp == 2);
+      CHECK(*sp == 0);
+      *mp = -1;
+      reset_regs();
+      C->rdi = g;
+      C->rsi = 0;
+      CALL(shim_sceKernelGetOperationMode);
+      CHECK(RAX32 == 0);
+      CHECK(*mp == 2);
+      reset_regs();
+      CALL(shim_sceKernelGetOperationMode);
+      CHECK(RAX32 == 0);
+      reset_regs();
+      C->rdi = 0x1000;
+      C->rsi = 0x2000;
+      CALL(shim__sceLibcInternalThreadAtexit);
+      CHECK(RAX32 == 0);
+  }
   reset_regs(); C->rdi = 2; C->rsi = 0x200000; C->rdx = 0x4000; CALL(shim_sceKernelSetPrtAperture); CHECK(RAX32 == 0);
   reset_regs(); C->rdi = 3; CALL(shim_sceKernelSetPrtAperture); CHECK(RAX32 == (int32_t)0x80020016);
   reset_regs(); C->rdi = 1; C->rsi = 0; CALL(shim_scePadSetVibrationMode); CHECK(RAX32 == (int32_t)0x80920001);

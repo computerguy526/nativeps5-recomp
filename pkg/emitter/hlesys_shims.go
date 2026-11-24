@@ -129,6 +129,8 @@ var hlesysShims = []string{
 	"sceCoredumpWriteUserString",
 	"sceCoredumpSetUserDataType",
 	"pthread_attr_setsolosched_np",
+	"sceKernelGetOperationMode",
+	"_sceLibcInternalThreadAtexit",
 
 	// libkernel FreeBSD umtx (Unity PS5 PS5Util.prx)
 	"_umtx_op",
