@@ -4,6 +4,7 @@
 #include "ps4_threading.h"
 #include "recomp_runtime.h"
 #include "avplayer_sync_logic.h"
+#include "avplayer_vt.h"
 #include <mutex>
 #include <set>
 class AvPlayer;
@@ -615,7 +616,10 @@ public:
             // The intro clip is 3840x2160 H.264 at 60 fps: one decode thread needed 19 ms (p50) .. 28 ms (p90) per frame,
             // so the picture ran behind the clock (up to 1.9 s late) and the game's load made it worse. Frame threading
             // costs a few frames of output delay, which the PTS delivery absorbs. NPS5_AVPLAYER_DEC_THREADS=<n> (1 = old).
-            if (!avsync_legacy()) {
+            // NPS5_AVPLAYER_VT=1: H.264 on VideoToolbox (avplayer_vt.h); the decoder runs on the hardware, so no frame threads.
+            m_video_vt = avplayer_vt_attach(m_video_codec_ctx);
+            if (m_video_vt) AVPLAYER_LOG("video: H.264 on VideoToolbox");
+            if (!avsync_legacy() && !m_video_vt) {
                 const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS");
                 int n = t && t[0] ? atoi(t) : 4;
                 if (n > 1 && n <= 16) {
@@ -623,7 +627,20 @@ public:
                     m_video_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
                 }
             }
-            if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0) {
+            if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0 && m_video_vt) {
+                // the hardware path failed to open: start over on the software decoder
+                AVPLAYER_LOG("VideoToolbox open failed, using the software decoder");
+                avcodec_free_context(&m_video_codec_ctx);
+                m_video_vt = false;
+                m_video_codec_ctx = avcodec_alloc_context3(decoder);
+                avcodec_parameters_to_context(m_video_codec_ctx, stream->codecpar);
+                if (!avsync_legacy()) {
+                    const char *t = getenv("NPS5_AVPLAYER_DEC_THREADS");
+                    int n = t && t[0] ? atoi(t) : 4;
+                    if (n > 1 && n <= 16) { m_video_codec_ctx->thread_count = n; m_video_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE; }
+                }
+                if (avcodec_open2(m_video_codec_ctx, decoder, nullptr) < 0) { AVPLAYER_LOG("Failed to open video codec"); return false; }
+            } else if (!avcodec_is_open(m_video_codec_ctx)) {
                 AVPLAYER_LOG("Failed to open video codec");
                 return false;
             }
@@ -1175,6 +1192,10 @@ private:
                 ret = avcodec_receive_frame(m_video_codec_ctx, raw_frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
                 if (ret < 0) break;
+                if (raw_frame->format == AV_PIX_FMT_VIDEOTOOLBOX && avplayer_vt_to_system(raw_frame, nv12_frame) < 0) {
+                    AVPLAYER_LOG("VideoToolbox frame download failed; dropping the frame");
+                    continue;
+                }
 
                 GuestBuffer buf;
                 if (!m_free_video_buffers.wait_pop(m_workers_stop, buf)) break;
@@ -1457,6 +1478,7 @@ private:
     int m_audio_stream_idx = -1;
 
     AVCodecContext *m_video_codec_ctx = nullptr;
+    bool m_video_vt = false; // the video codec runs on VideoToolbox (NPS5_AVPLAYER_VT)
     AVCodecContext *m_audio_codec_ctx = nullptr;
     SwsContext *m_sws_ctx = nullptr;
     uint32_t m_logged_video_frames = 0; // NPS5_AVPLAYER_LOG: frames logged for the current source
