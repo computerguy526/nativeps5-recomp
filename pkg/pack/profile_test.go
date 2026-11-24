@@ -99,3 +99,27 @@ func TestRepoProfilesLoad(t *testing.T) {
 		t.Fatalf("PPSA28997: base + title env not merged: %v", p.Env)
 	}
 }
+
+// TestSarosProfileLightFunctionQuality: the SAROS (PPSA07631) profile keeps the approved r.LightFunctionQuality=1 in its UE
+// cvar list, next to the Nanite / ray tracing entries it already carried, and no entry is lost or doubled.
+func TestSarosProfileLightFunctionQuality(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NPS5_PROFILES", "")
+	p, _, err := LoadProfile("", "PPSA07631", repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, kv := range strings.Split(p.Env["NPS5_UECVAR_SET"], ",") {
+		seen[kv]++
+	}
+	for _, want := range []string{"r.LightFunctionQuality=1", "r.RayTracing.Enable=0", "r.Nanite.PersistentThreadsCulling=0",
+		"r.Nanite.PrimShaderRasterization=0", "r.Nanite.MeshShaderRasterization=0"} {
+		if seen[want] != 1 {
+			t.Errorf("NPS5_UECVAR_SET: %q appears %d times, want 1 (%q)", want, seen[want], p.Env["NPS5_UECVAR_SET"])
+		}
+	}
+}
