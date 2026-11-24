@@ -14,8 +14,8 @@
         "KYTY_VRAM_BUDGET_MB": "8000",
         "KYTY_VRAM_IDLE_FRAMES": "150",
         "NPS5_KK_SWITCH_TREE": "1",
-        "NPS5_UECVAR_SET": "r.Nanite.PersistentThreadsCulling=0,r.RayTracing.Enable=0",
+        "NPS5_UECVAR_SET": "r.Nanite.PersistentThreadsCulling=0,r.RayTracing.Enable=0,r.Nanite.PrimShaderRasterization=0,r.Nanite.MeshShaderRasterization=0",
         "NPS5_UECVAR_SET_FOR": "100000"
     },
-    "_kk": "KosmicKrisp nps5-kk-saros1 a869fde (switch tree + residency lock + int64) is required for NPS5_KK_SWITCH_TREE / NPS5_KK_RESIDENCY_LOCK; the Kyty KYTY_DISPATCHER_TREE stays as the fallback; NPS5_UECVAR_SET (sarosexp 2026-11-24: PTC=0 removes the flicker, +RT off = +32% fps, 8.5 -> 11.2) needs NPS5_UECVAR_LIST=<saros cvar list> from the launcher, else it is a logged no-op"
+    "_kk": "KosmicKrisp nps5-kk-saros1 a869fde (switch tree + residency lock + int64) is required for NPS5_KK_SWITCH_TREE / NPS5_KK_RESIDENCY_LOCK; the Kyty KYTY_DISPATCHER_TREE stays as the fallback; NPS5_UECVAR_SET (sarosexp 2026-11-24: PTC=0 removes the flicker, +RT off = +32% fps, 8.5 -> 11.2) needs NPS5_UECVAR_LIST=<saros cvar list> from the launcher, else it is a logged no-op; mactricks 2026-11-24: r.Nanite.PrimShaderRasterization=0 + MeshShaderRasterization=0 (Mac vertex-shader Nanite raster, no mesh-program BDA sync) mt1b 59.1/66.9 vs mt1a 82.7/100.6 and c1 57.8/65.4 on saros11, c2 54.1/68.8 on cphot2; rejected: RDG.AsyncCompute=0 (+24 ms) and =2 (world missing), Nanite depth export PS (+4 ms), FastTileClear=0 (+4.6 ms), RAW=0 (+3.4 ms), ParallelTranslate=0 (neutral), GTSyncType=0 (+3 ms)"
 }
