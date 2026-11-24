@@ -390,12 +390,13 @@ void shim_getpid(GuestContext *ctx) {
 // for pthread_join forever (PPSA07631: UE main thread joined a FRunnable thread that had exited).
 // Opt-in (NPS5_PTHREAD_EXIT_SCE=1, set in the PPSA07631 profile): titles without the switch keep the
 // bare host exit they were validated with.
+#include "nps5_pthread_exit.h"
 extern void shim_scePthreadExit(GuestContext *ctx);
 void shim_pthread_exit(GuestContext *ctx) {
     static int sce = -1;
     if (sce < 0) {
         const char *e = getenv("NPS5_PTHREAD_EXIT_SCE");
-        sce = (e && e[0] == '1') ? 1 : 0;
+        sce = nps5_pthread_exit_sce_enabled(e);
     }
     if (sce == 1) {
         shim_scePthreadExit(ctx);
