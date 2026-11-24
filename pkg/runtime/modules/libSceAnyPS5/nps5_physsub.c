@@ -416,8 +416,10 @@ void nps5_physsub_world_step(GuestContext *ctx) {
     const uint64_t wn = atomic_fetch_add_explicit(&g_ps_world_n, 1, memory_order_relaxed);
     if (g_ps_bt && wn == g_ps_bt_at) {
         uint64_t bt[24];
-        const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), ctx->mem_size, ctx->rsp, ctx->rbp, bt, 24);
-        fprintf(stderr, "[physsub] backtrace at world step %llu (thread %p), %d frames:", (unsigned long long)wn, (void *)pthread_self(), k);
+        const uint64_t hi = g_nps5_arena.guest_hi > ctx->mem_size ? g_nps5_arena.guest_hi : ctx->mem_size;
+        const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), hi, ctx->rsp, ctx->rbp, bt, 24);
+        fprintf(stderr, "[physsub] backtrace at world step %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:", (unsigned long long)wn,
+                (void *)pthread_self(), (unsigned long long)ctx->rsp, (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
         for (int i = 0; i < k; i++) fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
         fprintf(stderr, "\n");
     }
