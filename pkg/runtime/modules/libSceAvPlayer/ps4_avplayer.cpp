@@ -1102,7 +1102,10 @@ private:
                     // thread sat in send/receive, tripped ffmpeg's frame-thread assert 'fctx->async_lock' and
                     // aborted the process): queue a flush marker (stream_index -1) behind the old packets instead.
                     // The video decoder flushes, drops the frames of the old pass and restarts the clock.
-                    if (m_video_codec_ctx) { AVPacket *mk = av_packet_alloc(); mk->stream_index = -1; m_video_packets.push(std::move(mk));
+                    if (m_video_codec_ctx) {
+                        AVPacket *mk = av_packet_alloc();
+                        mk->stream_index = -1;
+                        m_video_packets.push(std::move(mk));
                     } else {
                         m_clock_base_ms.store(0);
                         m_start_time = std::chrono::steady_clock::now();
