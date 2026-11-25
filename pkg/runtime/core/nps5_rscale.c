@@ -121,6 +121,9 @@ static int rs_tune(Nps5Rs *r, const char *s) {
         {"tau_s", &r->tau_s, 0.01, 60},
         {"hitch_ms", &r->hitch_ms, 20, 5000},
         {"backoff_s", &r->backoff_s, 0, 3600},
+        {"hold_s", &r->hold_s, 0, 3600},
+        {"stream_ms", &r->stream_ms, 20, 5000},
+        {"stream_max_s", &r->stream_max_s, 0, 3600},
     };
     int bad = 0;
     while (s && *s) {
@@ -191,6 +194,13 @@ void nps5_rscale_start(void) {
     nps5_rs_defaults(&g_rs.r, target);
     if (rs_tune(&g_rs.r, getenv("NPS5_RENDER_TUNE")))
         fprintf(stderr, "[rscale] NPS5_RENDER_TUNE: an unknown key or a value out of range was ignored\n");
+    const char *hl = getenv("KYTY_RSCALE_HOLD_ON_LOAD");
+    g_rs.r.hold_on_load = hl && hl[0] == '1';
+    if (g_rs.r.hold_on_load)
+        fprintf(stderr,
+                "[rscale] hold on load: no 720p -> 540p for %.0f s after a level change, nor while the average is "
+                "over %.0f ms (up to %.0f s)\n",
+                g_rs.r.hold_s, g_rs.r.stream_ms, g_rs.r.stream_max_s);
     const char *sw = getenv("NPS5_RENDER_SWITCH");
     g_rs.switch_scene = sw && !strcmp(sw, "scene");
     const char *lg = getenv("NPS5_RENDER_LOG");

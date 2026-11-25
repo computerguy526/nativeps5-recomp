@@ -84,6 +84,53 @@ int main(void) {
         nps5_rs_frame(&r, t, (i % 20 == 0) ? 1000 : 20);
     }
     CHECK(r.level == NPS5_RS_HIGH && r.ema_ms < 21);
+    // Hold on load: a level that streams at 130 ms (not a hitch: under hitch_ms) does not switch to LOW; the same series switches
+    // without the gate; after hold_s with a normal-but-slow frame time it does switch.
+    for (int gate = 0; gate < 2; gate++) {
+        Nps5Rs h;
+        nps5_rs_defaults(&h, 33.3);
+        h.hold_on_load = gate;
+        double th = 1000;
+        nps5_rs_scene(&h, th);
+        CHECK(nps5_rs_hold(&h, th + 1) == gate);
+        for (int i = 0; i < 20 * 8; i++) { // 20 s at 130 ms: over budget, during the hold
+            th += 0.13;
+            nps5_rs_frame(&h, th, 130);
+        }
+        CHECK((h.level == NPS5_RS_LOW) == !gate);
+        if (gate) {
+            CHECK(nps5_rs_hold(&h, th) == 1);
+            for (int i = 0; i < 75 * 8; i++) { // past hold_s, still streaming: held up to stream_max_s
+                th += 0.13;
+                nps5_rs_frame(&h, th, 130);
+            }
+            CHECK(th - 1000 > 90 && h.level == NPS5_RS_HIGH);
+            for (int i = 0; i < 80 * 8; i++) { // past stream_max_s: released
+                th += 0.13;
+                nps5_rs_frame(&h, th, 130);
+            }
+            CHECK(h.level == NPS5_RS_LOW);
+            CHECK(nps5_rs_hold(&h, th) == 0);
+            nps5_rs_scene(&h, th); // a new scene restarts the hold
+            CHECK(nps5_rs_hold(&h, th + 5) == 1 && nps5_rs_hold(&h, th + 61) == 0);
+            h.hold_on_load = 0;
+            CHECK(nps5_rs_hold(&h, th + 5) == 0);
+        }
+    }
+    { // slow but not streaming (50 ms, under stream_ms): switched once hold_s is over, not before
+        Nps5Rs h;
+        nps5_rs_defaults(&h, 33.3);
+        h.hold_on_load = 1;
+        double th = 0;
+        nps5_rs_scene(&h, th);
+        int at = -1;
+        for (int i = 0; i < 100 * 20 && at < 0; i++) {
+            th += 0.05;
+            nps5_rs_frame(&h, th, 50);
+            if (h.level == NPS5_RS_LOW) at = (int)th;
+        }
+        CHECK(at >= 60 && at <= 66);
+    }
     // Modes and the per-level table.
     CHECK(nps5_rs_mode("auto") == NPS5_RS_AUTO && nps5_rs_mode("720") == NPS5_RS_FORCE_HIGH &&
           nps5_rs_mode(" 540\n") == NPS5_RS_FORCE_LOW && nps5_rs_mode("1080") == -1 && nps5_rs_mode(NULL) == -1 &&

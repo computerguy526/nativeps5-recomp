@@ -24,6 +24,12 @@ typedef struct {
     // configuration
     double target_ms, down, up, gain, down_s, up_s, dwell_s, warm_s, tau_s, hitch_ms, bounce_s, backoff_s,
         backoff_max_s;
+    // Hold on load (KYTY_RSCALE_HOLD_ON_LOAD=1, default off): no HIGH -> LOW while a level is still streaming. A frame time
+    // that is a level load (ema over stream_ms) is not a GPU cost, and the switch re-creates the scene targets and the
+    // MetalFX scaler at the worst moment (memgrow-2026-11-25). Held for hold_s after a scene change, and longer (up to
+    // stream_max_s after it) while the average is over stream_ms.
+    int hold_on_load;
+    double hold_s, stream_ms, stream_max_s, t_scene;
     // state
     int level, have;
     double ema_ms, t_last, t_switch, t_count0, over_since, under_since, last_up, ban_until, backoff_cur;
@@ -49,6 +55,20 @@ static inline void nps5_rs_defaults(Nps5Rs *r, double target_ms) {
     r->over_since = r->under_since = -1;
     r->last_up = -1e9;
     r->backoff_cur = r->backoff_s;
+    r->hold_on_load = 0;
+    r->hold_s = 60.0;
+    r->stream_ms = 100.0;
+    r->stream_max_s = 120.0;
+    r->t_scene = -1e9;
+}
+
+// 1 while a HIGH -> LOW decision must wait because the level is still streaming (pure; used by nps5_rs_frame).
+static inline int nps5_rs_hold(const Nps5Rs *r, double now) {
+    if (!r->hold_on_load) return 0;
+    const double since = now - r->t_scene;
+    if (since < 0) return 0; // no scene seen yet
+    if (since < r->hold_s) return 1;
+    return since < r->stream_max_s && r->have && r->ema_ms > r->stream_ms;
 }
 
 // Forget the measurement (new scene): the level stays, the bounce backoff is reset. No dwell: the first decision of a
@@ -61,6 +81,7 @@ static inline void nps5_rs_scene(Nps5Rs *r, double now) {
     r->ban_until = 0;
     r->backoff_cur = r->backoff_s;
     r->last_up = -1e9;
+    r->t_scene = now;
 }
 
 // Record that the level was set from outside (forced mode, file): the controller continues from there.
@@ -97,7 +118,9 @@ static inline int nps5_rs_frame(Nps5Rs *r, double now, double ms) {
     if (r->level == NPS5_RS_HIGH) {
         if (r->ema_ms > r->target_ms * (1.0 + r->down)) {
             if (r->over_since < 0) r->over_since = now;
-            if (now - r->over_since >= r->down_s) {
+            if (now - r->over_since >= r->down_s && nps5_rs_hold(r, now)) {
+                r->over_since = -1; // still streaming: measure again once the hold is over
+            } else if (now - r->over_since >= r->down_s) {
                 if (now - r->last_up < r->bounce_s) { // came back down soon after going up: hold LOW longer next time
                     r->ban_until = now + r->backoff_cur;
                     r->backoff_cur = fmin(r->backoff_cur * 2.0, r->backoff_max_s);
