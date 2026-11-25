@@ -12,8 +12,12 @@ static int fails;
         }                                                                                                              \
     } while (0)
 int main(void) {
-    CHECK(nps5_tick_mode(NULL) == 0 && nps5_tick_mode("") == 0 && nps5_tick_mode("0") == 0 && nps5_tick_mode("off") == 0, "off");
-    CHECK(nps5_tick_mode("1") == 1 && nps5_tick_mode("Split") == 1 && nps5_tick_mode("fixed") == 2 && nps5_tick_mode("FIXED") == 2 && nps5_tick_mode("bogus") == -1, "modes");
+    CHECK(nps5_tick_mode(NULL) == 0 && nps5_tick_mode("") == 0 && nps5_tick_mode("0") == 0 &&
+              nps5_tick_mode("off") == 0,
+          "off");
+    CHECK(nps5_tick_mode("1") == 1 && nps5_tick_mode("Split") == 1 && nps5_tick_mode("fixed") == 2 &&
+              nps5_tick_mode("FIXED") == 2 && nps5_tick_mode("bogus") == -1,
+          "modes");
     float td;
     // split: n = ceil(dt*hz), tick = dt/n, the total is dt, every tick <= 1/hz, for 0.001 .. 0.3 s
     for (double dt = 0.001; dt < 0.3; dt += 0.00037) {
@@ -60,13 +64,15 @@ int main(void) {
             CHECK(n >= 1 && n <= 2, "n %d", n);
         }
         CHECK(maxacc <= tick + 1e-9, "carry %.6f exceeds one tick", maxacc);
-        CHECK(fabs(total_ticks * tick + t.acc - total_dt) < 1e-6, "time conserved: ticks %.0f carry %.6f dt %.6f", total_ticks, t.acc, total_dt);
+        CHECK(fabs(total_ticks * tick + t.acc - total_dt) < 1e-6, "time conserved: ticks %.0f carry %.6f dt %.6f",
+              total_ticks, t.acc, total_dt);
         CHECK(ones > 1000 && twos > 2000 && ones + twos == 3750, "1/2 pattern: %d x1 %d x2", ones, twos);
         // a long frame drops the excess beyond max ticks and the carry never exceeds one tick
         CHECK(nps5_tick_plan(&t, 0.5, &td) == 3 && t.acc <= tick + 1e-9, "stall: 3 ticks, carry %.6f", t.acc);
         // a frame no longer than one tick is pass-through and keeps the carry
         const double keep = t.acc;
-        CHECK(nps5_tick_plan(&t, 1.0 / 60, &td) == 1 && t.acc == keep && td == (float)(1.0 / 60), "short frame keeps the carry");
+        CHECK(nps5_tick_plan(&t, 1.0 / 60, &td) == 1 && t.acc == keep && td == (float)(1.0 / 60),
+              "short frame keeps the carry");
         Nps5Tick bad = {2, 60, 3, 0.005};
         CHECK(nps5_tick_plan(&bad, NAN, &td) == 1 && bad.acc == 0.005, "NaN leaves the carry");
     }

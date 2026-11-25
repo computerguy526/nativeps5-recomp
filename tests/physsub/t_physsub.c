@@ -34,7 +34,8 @@ __attribute__((noinline)) void cloth_step(Obj *o, float dt) {
 }
 
 // dtauto: a candidate with 8 integer arguments (2 on the stack) and a float dt, for the counting probe (nps5_physsub_probe_0): arguments must arrive intact
-__attribute__((noinline)) long probe_fn(Obj *o, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8, float dt) {
+__attribute__((noinline)) long probe_fn(Obj *o, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8,
+                                        float dt) {
     o->calls++;
     o->sum += dt;
     return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + (o != 0);

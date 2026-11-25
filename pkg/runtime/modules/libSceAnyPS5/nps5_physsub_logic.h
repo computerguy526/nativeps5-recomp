@@ -165,7 +165,8 @@ static inline void nps5_ps_frame_dt(float dt, float *world2, float *engine8) {
 // address mode: guest pointer == host pointer, as in the title builds), bounds-checked against mem_size, stops on a null / misaligned / out-of-range rbp,
 // on an rbp that does not increase or lies more than 32 MiB above rsp (a stale chain must not walk into unmapped memory), and at max entries.
 // Returns the number of return addresses written.
-static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out, int max) {
+static inline int nps5_ps_bt_walk(const uint8_t *mem, uint64_t mem_size, uint64_t rsp, uint64_t rbp, uint64_t *out,
+                                  int max) {
     int n = 0;
     if (!out || max <= 0) return 0;
     if (rsp && !(rsp & 7) && rsp + 8 <= mem_size) out[n++] = *(const uint64_t *)(mem + rsp);
@@ -288,8 +289,6 @@ static inline double nps5_ps_dtclamp_hz(const char *list, const char *name, doub
     return r;
 }
 
-
-
 // ---- counting-wrap probe (dtauto, NPS5_PHYS_PROBE=1; table slots nps5_physsub_probe_0..1023) ----------------------------------------------------
 // One generic pass-through shim per wrapped candidate function (every object update that may read the frame dt: the callers of the dt accessors and
 // the Update virtual of every vtable). It counts, per function: calls, distinct frames with a call (frame = world step number), the most calls in one
@@ -335,11 +334,14 @@ static inline void nps5_pr_this(Nps5PrRow *r, uint64_t self) {
     r->inst_over++;
 }
 // One call of the wrapped function. frame = the world step counter, tid = any per-thread id, self = rdi, arg = xmm0[0] as a float, frame_dt = the block's dt (0 = unknown).
-static inline void nps5_pr_note(Nps5PrRow *r, uint64_t frame, int in_world, uint64_t tid, uint64_t self, float arg, float frame_dt) {
+static inline void nps5_pr_note(Nps5PrRow *r, uint64_t frame, int in_world, uint64_t tid, uint64_t self, float arg,
+                                float frame_dt) {
     r->calls++;
     if (in_world) r->in_world++;
-    if (!r->started) r->tid0 = tid;
-    else if (tid != r->tid0) r->multi_thread = 1;
+    if (!r->started)
+        r->tid0 = tid;
+    else if (tid != r->tid0)
+        r->multi_thread = 1;
     if (!r->started || frame != r->last_frame) {
         if (r->curpf > r->maxpf) r->maxpf = r->curpf;
         if (r->ninst > r->maxinst) r->maxinst = r->ninst;
@@ -365,18 +367,21 @@ static inline uint32_t nps5_pr_maxinst(const Nps5PrRow *r) { return r->ninst > r
 // The log line (one per active slot; parsed by dtprobe.py). Returns the length written (snprintf semantics).
 static inline int nps5_pr_format(const Nps5PrRow *r, int slot, char *buf, size_t n) {
     return snprintf(buf, n,
-                    "[physprobe] s=%d calls=%llu frames=%llu maxpf=%llu inst=%u maxpt=%u over=%u inw=%llu mt=%d argok=%llu argfr=%llu amin=%.5f amax=%.5f bins=%llu,%llu,%llu,%llu,%llu,%llu,%llu",
-                    slot, (unsigned long long)r->calls, (unsigned long long)r->frames, (unsigned long long)nps5_pr_maxpf(r), nps5_pr_maxinst(r), r->maxpt, r->inst_over,
-                    (unsigned long long)r->in_world, r->multi_thread, (unsigned long long)r->argok, (unsigned long long)r->argframe, (double)r->amin, (double)r->amax,
-                    (unsigned long long)r->bins[0], (unsigned long long)r->bins[1], (unsigned long long)r->bins[2], (unsigned long long)r->bins[3], (unsigned long long)r->bins[4],
-                    (unsigned long long)r->bins[5], (unsigned long long)r->bins[6]);
+                    "[physprobe] s=%d calls=%llu frames=%llu maxpf=%llu inst=%u maxpt=%u over=%u inw=%llu mt=%d "
+                    "argok=%llu argfr=%llu amin=%.5f amax=%.5f bins=%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+                    slot, (unsigned long long)r->calls, (unsigned long long)r->frames,
+                    (unsigned long long)nps5_pr_maxpf(r), nps5_pr_maxinst(r), r->maxpt, r->inst_over,
+                    (unsigned long long)r->in_world, r->multi_thread, (unsigned long long)r->argok,
+                    (unsigned long long)r->argframe, (double)r->amin, (double)r->amax, (unsigned long long)r->bins[0],
+                    (unsigned long long)r->bins[1], (unsigned long long)r->bins[2], (unsigned long long)r->bins[3],
+                    (unsigned long long)r->bins[4], (unsigned long long)r->bins[5], (unsigned long long)r->bins[6]);
 }
 // Stack arguments for a pass-through call: a candidate may have more than 6 integer arguments, the callee gets its own frame (as ps_call), so the first
 // 8 qwords above the return address are copied. dst/src are host pointers of the new / old frame at the return-address slot.
 static inline void nps5_pr_copy_stack_args(uint64_t *dst, const uint64_t *src) {
-    for (int i = 1; i <= 8; i++) dst[i] = src[i];
+    for (int i = 1; i <= 8; i++)
+        dst[i] = src[i];
 }
-
 
 // ---- F2 whole-update tick split (dtauto spike, NPS5_TICK_SPLIT=0|split|fixed, NPS5_TICK_HZ=60, NPS5_TICK_MAX=3) -----------------------------------
 // The game's update root is called n times per frame with the block's dt = tick instead of once with the frame dt. split: n = ceil(dt * hz), tick = dt / n

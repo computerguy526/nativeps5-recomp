@@ -106,19 +106,23 @@ static unsigned g_ps_poison_period = 100;
 static int g_ps_bt; // NPS5_PHYS_SUBSTEP_BT=1: one guest backtrace at world step g_ps_bt_at
 static uint64_t g_ps_bt_at = 600;
 static _Atomic uint64_t g_ps_world_n;
-static _Thread_local int t_ps_in_world; // this thread is inside the world shim (dtauto probe: calls inside / outside the step window)
+static _Thread_local int
+    t_ps_in_world; // this thread is inside the world shim (dtauto probe: calls inside / outside the step window)
 static void pr_dump_maybe(void);
 // one guest backtrace line (rbp chain, see nps5_ps_bt_walk): who = label
 static void ps_bt_print(const GuestContext *ctx, const char *who, uint64_t at) {
     uint64_t bt[24];
     const uint64_t hi = g_nps5_arena.guest_hi > ctx->mem_size ? g_nps5_arena.guest_hi : ctx->mem_size;
     const int k = nps5_ps_bt_walk((const uint8_t *)NPS5_G2H(ctx, 0), hi, ctx->rsp, ctx->rbp, bt, 24);
-    fprintf(stderr, "[physsub] backtrace %s at %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:", who, (unsigned long long)at, (void *)pthread_self(),
-            (unsigned long long)ctx->rsp, (unsigned long long)ctx->rbp, (unsigned long long)hi, k);
-    for (int i = 0; i < k; i++) fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
+    fprintf(stderr, "[physsub] backtrace %s at %llu (thread %p, rsp 0x%llx rbp 0x%llx, bound 0x%llx), %d frames:", who,
+            (unsigned long long)at, (void *)pthread_self(), (unsigned long long)ctx->rsp, (unsigned long long)ctx->rbp,
+            (unsigned long long)hi, k);
+    for (int i = 0; i < k; i++)
+        fprintf(stderr, " 0x%llx", (unsigned long long)bt[i]);
     fprintf(stderr, "\n");
 }
-static int g_ps_clamp_dtfix = 0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
+static int g_ps_clamp_dtfix =
+    0; // NPS5_PHYS_SUBSTEP_CLAMP_DTFIX: clamp mode writes the frame dt back (old behaviour), default off
 static _Atomic uint64_t g_ps_wclamped;
 static _Thread_local int t_ps_inner, t_ps_inner_depth;
 static _Thread_local uint64_t t_ps_inner_world;
@@ -955,7 +959,8 @@ void nps5_astro_texname_guard(GuestContext *ctx) {
 // selected by that name (NPS5_PHYS_DTCLAMP_OBJ=all,a537a360) until verified.
 #define PS_DC_NAMED 8
 #define PS_DC_SLOTS 40
-static const char *g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone", "aprope", "aprope_b", "apsoftbody", "apsoftbody_ball", "slingshot", "stretchplatform"};
+static const char *g_dc_names[PS_DC_SLOTS] = {"bigleafplant", "springbone",      "aprope",    "aprope_b",
+                                              "apsoftbody",   "apsoftbody_ball", "slingshot", "stretchplatform"};
 static char g_dc_auto_name[PS_DC_SLOTS][20];
 static const double g_dc_def_hz[PS_DC_NAMED] = {60, 30, 30, 30, 30, 30, 30, 30};
 static pthread_once_t g_dc_once = PTHREAD_ONCE_INIT;
@@ -963,10 +968,12 @@ static uint64_t g_dc_mask;
 static int g_dc_bt; // NPS5_PHYS_DTCLAMP_BT=1: one guest backtrace at the 3000th call of each dtclamp slot
 static double g_dc_hz[PS_DC_SLOTS];
 #define PS_DCW(i) {.shim = "nps5_physsub_dtclamp_" #i}
-static PsWrap g_dc_w[PS_DC_SLOTS] = {PS_DCW(0),  PS_DCW(1),  PS_DCW(2),  PS_DCW(3),  PS_DCW(4),  PS_DCW(5),  PS_DCW(6),  PS_DCW(7),  PS_DCW(8),  PS_DCW(9),
-                                     PS_DCW(10), PS_DCW(11), PS_DCW(12), PS_DCW(13), PS_DCW(14), PS_DCW(15), PS_DCW(16), PS_DCW(17), PS_DCW(18), PS_DCW(19),
-                                     PS_DCW(20), PS_DCW(21), PS_DCW(22), PS_DCW(23), PS_DCW(24), PS_DCW(25), PS_DCW(26), PS_DCW(27), PS_DCW(28), PS_DCW(29),
-                                     PS_DCW(30), PS_DCW(31), PS_DCW(32), PS_DCW(33), PS_DCW(34), PS_DCW(35), PS_DCW(36), PS_DCW(37), PS_DCW(38), PS_DCW(39)};
+static PsWrap g_dc_w[PS_DC_SLOTS] = {PS_DCW(0),  PS_DCW(1),  PS_DCW(2),  PS_DCW(3),  PS_DCW(4),  PS_DCW(5),  PS_DCW(6),
+                                     PS_DCW(7),  PS_DCW(8),  PS_DCW(9),  PS_DCW(10), PS_DCW(11), PS_DCW(12), PS_DCW(13),
+                                     PS_DCW(14), PS_DCW(15), PS_DCW(16), PS_DCW(17), PS_DCW(18), PS_DCW(19), PS_DCW(20),
+                                     PS_DCW(21), PS_DCW(22), PS_DCW(23), PS_DCW(24), PS_DCW(25), PS_DCW(26), PS_DCW(27),
+                                     PS_DCW(28), PS_DCW(29), PS_DCW(30), PS_DCW(31), PS_DCW(32), PS_DCW(33), PS_DCW(34),
+                                     PS_DCW(35), PS_DCW(36), PS_DCW(37), PS_DCW(38), PS_DCW(39)};
 static _Atomic uint64_t g_dc_calls[PS_DC_SLOTS], g_dc_clamped[PS_DC_SLOTS];
 static void dc_init(void) {
     int bad = 0;
@@ -983,8 +990,15 @@ static void dc_init(void) {
     g_dc_bt = getenv("NPS5_PHYS_DTCLAMP_BT") && *getenv("NPS5_PHYS_DTCLAMP_BT") == '1';
     g_dc_mask = nps5_ps_dtclamp_select(getenv("NPS5_PHYS_DTCLAMP_OBJ"), g_dc_names, PS_DC_SLOTS, PS_DC_NAMED, &bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
-        if (g_dc_names[i]) g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i], i < PS_DC_NAMED ? g_dc_def_hz[i] : g_dc_hz[i], &bad);
-    if (bad) fprintf(stderr, "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform,a<hex addr> (auto); hz 5..240)\n", bad);
+        if (g_dc_names[i])
+            g_dc_hz[i] = nps5_ps_dtclamp_hz(getenv("NPS5_PHYS_DTCLAMP_HZ"), g_dc_names[i],
+                                            i < PS_DC_NAMED ? g_dc_def_hz[i] : g_dc_hz[i], &bad);
+    if (bad)
+        fprintf(stderr,
+                "[physsub] W %d NPS5_PHYS_DTCLAMP_OBJ / _HZ item(s) ignored (names: "
+                "all|bigleafplant,springbone,aprope,aprope_b,apsoftbody,apsoftbody_ball,slingshot,stretchplatform,a<"
+                "hex addr> (auto); hz 5..240)\n",
+                bad);
     for (int i = 0; i < PS_DC_SLOTS; i++)
         if (g_dc_names[i] && (g_dc_mask & (1ull << i)))
             fprintf(stderr, "[physsub] dtclamp on: %s update dt clamped to 1/%.0f s%s\n", g_dc_names[i], g_dc_hz[i],
@@ -1019,7 +1033,14 @@ static void dc_step(GuestContext *ctx, int slot) {
 }
 #define PS_DC_SHIM(i)                                                                                                  \
     void nps5_physsub_dtclamp_##i(GuestContext *ctx) { dc_step(ctx, i); }
-PS_DC_SHIM(0) PS_DC_SHIM(1) PS_DC_SHIM(2) PS_DC_SHIM(3) PS_DC_SHIM(4) PS_DC_SHIM(5) PS_DC_SHIM(6) PS_DC_SHIM(7)
+PS_DC_SHIM(0)
+PS_DC_SHIM(1)
+PS_DC_SHIM(2)
+PS_DC_SHIM(3)
+PS_DC_SHIM(4)
+PS_DC_SHIM(5)
+PS_DC_SHIM(6)
+PS_DC_SHIM(7)
 
 // ---- NPS5_PHYS_PROBE=1: counting-wrap probe (see nps5_physsub_logic.h; slots nps5_physsub_probe_0..1023) ------------------------------------
 // Pass-through shim for each wrapped candidate; counts per function (Nps5PrRow). Frame = world step number (one per frame under WORLD_CLAMP),
@@ -1035,7 +1056,8 @@ static char g_pr_shim_name[PS_PR_SLOTS][32];
 static _Atomic uint64_t g_pr_dumped_at;
 static uint64_t g_pr_every_ns = 10000000000ull; // NPS5_PHYS_PROBE_EVERY_S (0 = at every world step; tests)
 static pthread_once_t g_pr_once = PTHREAD_ONCE_INIT;
-static unsigned char g_pr_bt[PS_PR_SLOTS]; // NPS5_PHYS_PROBE_BT=<slot,..>: one guest backtrace at the NPS5_PHYS_PROBE_BT_AT-th (3000) call of each (who calls the object updates)
+static unsigned char g_pr_bt
+    [PS_PR_SLOTS]; // NPS5_PHYS_PROBE_BT=<slot,..>: one guest backtrace at the NPS5_PHYS_PROBE_BT_AT-th (3000) call of each (who calls the object updates)
 static uint64_t g_pr_bt_at = 3000; // NPS5_PHYS_PROBE_BT_AT
 static void pr_init(void) {
     const char *e = getenv("NPS5_PHYS_PROBE");
@@ -1072,7 +1094,8 @@ static void pr_step(GuestContext *ctx, int slot) {
         if (g_pr_dtaddr && g_pr_dtaddr + 4 <= ctx->mem_size) fdt = *(const float *)NPS5_G2H(ctx, g_pr_dtaddr);
         while (atomic_flag_test_and_set_explicit(&g_pr_lock[slot], memory_order_acquire)) {
         }
-        nps5_pr_note(&g_pr_row[slot], atomic_load_explicit(&g_ps_world_n, memory_order_relaxed), t_ps_in_world, (uint64_t)(uintptr_t)pthread_self(), a.rdi, a.xmm[0].f32[0], fdt);
+        nps5_pr_note(&g_pr_row[slot], atomic_load_explicit(&g_ps_world_n, memory_order_relaxed), t_ps_in_world,
+                     (uint64_t)(uintptr_t)pthread_self(), a.rdi, a.xmm[0].f32[0], fdt);
         const uint64_t cc = g_pr_row[slot].calls;
         atomic_flag_clear_explicit(&g_pr_lock[slot], memory_order_release);
         if (g_pr_bt[slot] && cc == g_pr_bt_at) {
@@ -1089,10 +1112,15 @@ static void pr_dump_maybe(void) {
     if (g_pr_on != 1) return;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    const uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, last = atomic_load_explicit(&g_pr_dumped_at, memory_order_relaxed);
-    if (now - last < g_pr_every_ns || !atomic_compare_exchange_strong_explicit(&g_pr_dumped_at, &(uint64_t){last}, now, memory_order_relaxed, memory_order_relaxed)) return;
+    const uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec,
+                   last = atomic_load_explicit(&g_pr_dumped_at, memory_order_relaxed);
+    if (now - last < g_pr_every_ns ||
+        !atomic_compare_exchange_strong_explicit(&g_pr_dumped_at, &(uint64_t){last}, now, memory_order_relaxed,
+                                                 memory_order_relaxed))
+        return;
     char line[520];
-    fprintf(stderr, "[physprobe] dump world_steps=%llu\n", (unsigned long long)atomic_load_explicit(&g_ps_world_n, memory_order_relaxed));
+    fprintf(stderr, "[physprobe] dump world_steps=%llu\n",
+            (unsigned long long)atomic_load_explicit(&g_ps_world_n, memory_order_relaxed));
     for (int i = 0; i < PS_PR_SLOTS; i++) {
         while (atomic_flag_test_and_set_explicit(&g_pr_lock[i], memory_order_acquire)) {
         }
@@ -1104,10 +1132,12 @@ static void pr_dump_maybe(void) {
     }
     for (int i = 0; i < PS_DC_SLOTS; i++)
         if (g_dc_names[i] && atomic_load_explicit(&g_dc_calls[i], memory_order_relaxed))
-            fprintf(stderr, "[physprobe] dtclamp %s calls=%llu clamped=%llu\n", g_dc_names[i], (unsigned long long)atomic_load_explicit(&g_dc_calls[i], memory_order_relaxed),
+            fprintf(stderr, "[physprobe] dtclamp %s calls=%llu clamped=%llu\n", g_dc_names[i],
+                    (unsigned long long)atomic_load_explicit(&g_dc_calls[i], memory_order_relaxed),
                     (unsigned long long)atomic_load_explicit(&g_dc_clamped[i], memory_order_relaxed));
 }
-#define PS_PR_SHIM(i) void nps5_physsub_probe_##i(GuestContext *ctx) { pr_step(ctx, i); }
+#define PS_PR_SHIM(i)                                                                                                  \
+    void nps5_physsub_probe_##i(GuestContext *ctx) { pr_step(ctx, i); }
 #include "nps5_physprobe_shims.h"
 
 // NPS5_PHYS_FLIP_BT=1: one guest backtrace at the 600th sceAgcDcbSetFlip (the render / frame-loop thread's chain; nps5_anyps5_enter calls this)
@@ -1144,9 +1174,12 @@ void nps5_tick_agc_note(const char *name) {
     if (n >= 16) return;
     for (int i = 0; i < n; i++)
         if (!strcmp(g_tk_agc_names[i], name)) return;
-    if (atomic_compare_exchange_strong_explicit(&g_tk_agc_n, &(int){n}, n + 1, memory_order_relaxed, memory_order_relaxed)) {
+    if (atomic_compare_exchange_strong_explicit(&g_tk_agc_n, &(int){n}, n + 1, memory_order_relaxed,
+                                                memory_order_relaxed)) {
         snprintf(g_tk_agc_names[n], sizeof g_tk_agc_names[n], "%s", name);
-        fprintf(stderr, "[tick] GATE: %s called inside the update root (the root is not separable from the render side)\n", name);
+        fprintf(stderr,
+                "[tick] GATE: %s called inside the update root (the root is not separable from the render side)\n",
+                name);
     }
 }
 static void tk_init(void) {
@@ -1168,8 +1201,12 @@ static void tk_init(void) {
     g_tk_arg = (int)v;
     g_tk_log = getenv("NPS5_TICK_LOG") && *getenv("NPS5_TICK_LOG") == '1';
     if (g_tk.mode > 0 || g_tk_log)
-        fprintf(stderr, "[tick] %s hz %.0f max %d, block 0x%llx, dt argument %s%s\n", g_tk.mode == 1 ? "split" : g_tk.mode == 2 ? "fixed" : "timing only (off)", g_tk.hz, g_tk.max,
-                (unsigned long long)g_tk_block, g_tk_arg ? "yes" : "no", g_tk_block ? "" : " (W: no physsub.tick.block param: no split)");
+        fprintf(stderr, "[tick] %s hz %.0f max %d, block 0x%llx, dt argument %s%s\n",
+                g_tk.mode == 1   ? "split"
+                : g_tk.mode == 2 ? "fixed"
+                                 : "timing only (off)",
+                g_tk.hz, g_tk.max, (unsigned long long)g_tk_block, g_tk_arg ? "yes" : "no",
+                g_tk_block ? "" : " (W: no physsub.tick.block param: no split)");
 }
 static uint64_t tk_now(void) {
     struct timespec ts;
@@ -1205,14 +1242,23 @@ void nps5_physsub_tick_root(GuestContext *ctx) {
         const uint64_t now = tk_now();
         atomic_fetch_add_explicit(&g_tk_ns, now - t0, memory_order_relaxed);
         const uint64_t last = atomic_load_explicit(&g_tk_last_log, memory_order_relaxed);
-        if (now - last > 5000000000ull && atomic_compare_exchange_strong_explicit(&g_tk_last_log, &(uint64_t){last}, now, memory_order_relaxed, memory_order_relaxed)) {
+        if (now - last > 5000000000ull &&
+            atomic_compare_exchange_strong_explicit(&g_tk_last_log, &(uint64_t){last}, now, memory_order_relaxed,
+                                                    memory_order_relaxed)) {
             const uint64_t c = atomic_load_explicit(&g_tk_calls, memory_order_relaxed);
-            fprintf(stderr, "[tick] root calls %llu ticks %llu (split %llu) avg %.3f ms per root call (%.3f ms per tick), sceAgc calls inside the root: %llu, last dt %.4f tick %.4f\n", (unsigned long long)c,
-                    (unsigned long long)atomic_load_explicit(&g_tk_ticks, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_tk_split, memory_order_relaxed),
+            fprintf(stderr,
+                    "[tick] root calls %llu ticks %llu (split %llu) avg %.3f ms per root call (%.3f ms per tick), "
+                    "sceAgc calls inside the root: %llu, last dt %.4f tick %.4f\n",
+                    (unsigned long long)c, (unsigned long long)atomic_load_explicit(&g_tk_ticks, memory_order_relaxed),
+                    (unsigned long long)atomic_load_explicit(&g_tk_split, memory_order_relaxed),
                     c ? (double)atomic_load_explicit(&g_tk_ns, memory_order_relaxed) / (double)c / 1e6 : 0.0,
-                    (double)atomic_load_explicit(&g_tk_ns, memory_order_relaxed) / (double)(atomic_load_explicit(&g_tk_ticks, memory_order_relaxed) ? atomic_load_explicit(&g_tk_ticks, memory_order_relaxed) : 1) / 1e6,
-                    (unsigned long long)atomic_load_explicit(&g_tk_agc, memory_order_relaxed),
-                    (double)dt, (double)tick);
+                    (double)atomic_load_explicit(&g_tk_ns, memory_order_relaxed) /
+                        (double)(atomic_load_explicit(&g_tk_ticks, memory_order_relaxed)
+                                     ? atomic_load_explicit(&g_tk_ticks, memory_order_relaxed)
+                                     : 1) /
+                        1e6,
+                    (unsigned long long)atomic_load_explicit(&g_tk_agc, memory_order_relaxed), (double)dt,
+                    (double)tick);
         }
     }
     SHIM_RETURN();
