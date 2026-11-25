@@ -21,7 +21,7 @@ Not affiliated with or endorsed by Sony Interactive Entertainment or any game pu
 | Path | What |
 |---|---|
 | `cmd/ps4-recomp` | the translator: ELF/SELF loader, disassembly and analysis, x86-64 to arm64 lifter, emitter, link driver |
-| `cmd/nps5` | packager and launcher front end (`nps5 build`, `nps5 play`, `nps5 list`) |
+| `cmd/nps5` | packager and launcher front end (`nps5 build`, `nps5 play`, `nps5 list`); `nps5 build` first offers to compress the game files ([docs/m3/packaging.md](docs/m3/packaging.md), `NPS5_GAME_COMPRESS=1/0`) |
 | `pkg/runtime` | the C runtime linked into every translated program: guest memory, threads, kernel and library HLE |
 | `pkg/runtime/modules/libSceAnyPS5` | the bridge to an external PS5 system-library and graphics provider (see below) |
 | `tests/`, `tools/` | unit tests, the instruction-level differential suite, regression gates, run wrappers |

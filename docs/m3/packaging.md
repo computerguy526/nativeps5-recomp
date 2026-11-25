@@ -13,6 +13,16 @@ Code: `cmd/nps5`, `pkg/pack` (title.go, profile.go, build.go, bundle.go, library
 
 1. **Title identity**: `sce_sys/param.json` (PS5: `titleId`, `localizedParameters.<default lang>.titleName`, `contentVersion`) or
    `param.sfo` (PS4: TITLE_ID, TITLE, APP_VER/VERSION); `sce_sys/icon0.png`; executable `eboot.bin` (else `eboot.elf`).
+1a. **Compress the game files?** (`pkg/pack/gamezip.go`) Only when a translation is about to run and the dump has files of 512 MiB or
+   more that are not packed yet. It shows a dry-run estimate (size now, expected saving, how many files over 1.9 GiB become
+   `.nps5seg` segment folders, a rough time, free disk needed) and asks `Compress the game files? [Y/n]`. Yes runs
+   `python3 scripts/gamepack.py pack <dump>` of the entry repository (originals are removed only after the packed copy is
+   re-read and compared by sha256; `gamepack.py unpack` undoes it). The answer is written to
+   `<NPS5_DATA_STATE_DIR or ~/Library/Application Support/nativeps5/data>/game-compress-answer` (`yes`/`no`), which the entry
+   repository's `nps5 cache prepare` reads to default its shader-cache question to yes. Rules: no terminal means no question
+   (nothing is packed); `NPS5_GAME_COMPRESS=1` packs without asking, `=0` records no; end of input is no; nothing happens while a
+   game runs; a dump under `/Volumes`, a non-APFS or read-only folder is left alone with the reason printed; a failed pack never
+   fails the build. `NPS5_GAMEPACK` (path of gamepack.py) or `NPS5_ENTRY_DIR` say where the entry repository is when it is not next to this checkout.
 2. **Profile** (below) -> translator flags.
 3. **Translate** in-process (`-compile=false -gpu anyps5`) into `~/Library/Application Support/nativeps5/<titleId>/build`, then
    `tools/m1_native_build.sh` compiles the runtime (objects cached across titles) and links `build/native`. GPU `.mm`

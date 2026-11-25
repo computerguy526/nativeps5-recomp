@@ -169,6 +169,8 @@ func Build(o Options) (string, error) {
 		logf("translation up to date (%s); use --force to redo it", work)
 	} else {
 		_ = os.Remove(stampFile)
+		// before the translation, so everything after it works on the small copy (docs/reference/disk-space.md)
+		MaybeCompressGame(t, repo, DefaultZipEnv(o.Log))
 		if err := os.MkdirAll(TitleDir(t.ID), 0o755); err != nil {
 			return "", err
 		}
