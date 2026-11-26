@@ -16,6 +16,8 @@
 #include "nps5_ue5core.h"
 #include "recomp_runtime.h"
 
+#include <CommonCrypto/CommonDigest.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,8 +125,110 @@ int nps5_ue5_extract_groups(const KytyGpuUe5Query *q, KytyGpuUe5Result *out) {
     return nps5_ue5_extract(nps5_ue5_vfs_io(), &dec, q, out);
 }
 
+// NPS5_UE5_EXTRACT_TEST=<decoder hex>:<out tsv>[:<threads>]: reads the whole shader library before the guest entry through
+// the same path as the ABI 1.8 entry, splits every group at the AGC shader marker ("1234", u32 0x18) and writes one line per
+// shader (library, group, index, stage, sha1 of the code, code bytes) to the file, then logs the totals and exits. For
+// verification on a box; off when unset.
+typedef struct ProbeCtx {
+    FILE *out, *code;
+    uint64_t code_off;
+    pthread_mutex_t mu;
+    uint64_t shaders, bad_split, nocode, code_bytes;
+} ProbeCtx;
+
+static int probe_group(void *arg, const KytyGpuUe5Group *g) {
+    ProbeCtx *p = arg;
+    static const char tag[8] = {'1', '2', '3', '4', 0x18, 0, 0, 0};
+    const uint8_t *d = g->bytes;
+    uint32_t m[4096], nm = 0;
+    for (uint32_t i = 0; i + 8 <= g->raw_bytes && nm < 4095; i++)
+        if (d[i] == '1' && memcmp(d + i, tag, 8) == 0) m[nm++] = i;
+    m[nm] = g->raw_bytes;
+    pthread_mutex_lock(&p->mu);
+    if (nm != g->shader_count) p->bad_split++;
+    for (uint32_t j = 0; j < nm && j < g->shader_count; j++) {
+        uint32_t st = 0, sz = 0;
+        if (m[j] >= 0x14) memcpy(&st, d + m[j] - 0x14, 4);
+        if (m[j] >= 0x0c) memcpy(&sz, d + m[j] - 0x0c, 4);
+        const uint64_t e = (uint64_t)st + sz;
+        const uint32_t slen = m[j + 1] - m[j];
+        if (e > slen || e <= st) {
+            p->nocode++;
+            continue;
+        }
+        unsigned char dg[CC_SHA1_DIGEST_LENGTH];
+        CC_SHA1(d + m[j] + st, (CC_LONG)(e - st), dg);
+        fprintf(p->out, "%u\t%u\t%u\t%u\t", g->library, g->group, j, g->frequencies[j]);
+        for (int k = 0; k < CC_SHA1_DIGEST_LENGTH; k++)
+            fprintf(p->out, "%02x", dg[k]);
+        fprintf(p->out, "\t%llu\t%llu\n", (unsigned long long)(e - st), (unsigned long long)p->code_off);
+        if (p->code) fwrite(d + m[j] + st, 1, (size_t)(e - st), p->code);
+        p->code_off += e - st;
+        p->shaders++;
+        p->code_bytes += e - st;
+    }
+    pthread_mutex_unlock(&p->mu);
+    return 0;
+}
+
+static void probe_maybe(GuestContext *process) {
+    const char *spec = getenv("NPS5_UE5_EXTRACT_TEST");
+    if (!spec || !*spec) return;
+    char buf[2048];
+    snprintf(buf, sizeof buf, "%s", spec);
+    char *outp = strchr(buf, ':');
+    if (!outp) exit(2);
+    *outp++ = 0;
+    char *thr = strchr(outp, ':');
+    if (thr) *thr++ = 0;
+    ProbeCtx pc = {.out = fopen(outp, "w")};
+    if (getenv("NPS5_UE5_EXTRACT_TEST_CODE")) pc.code = fopen(getenv("NPS5_UE5_EXTRACT_TEST_CODE"), "wb");
+    pthread_mutex_init(&pc.mu, NULL);
+    if (!pc.out) exit(2);
+    const uint64_t decoder = strtoull(buf, NULL, 16);
+    const uint64_t fp = ue5_fnv64((const uint8_t *)NPS5_G2H(process, decoder), 64);
+    KytyGpuUe5Query q = {.struct_size = sizeof q,
+                         .abi = 1,
+                         .decoder = decoder,
+                         .threads = thr ? (uint32_t)atoi(thr) : 2,
+                         .group = probe_group,
+                         .arg = &pc};
+    KytyGpuUe5Result r;
+    const double t0 = ue5_now_ms();
+    const int rc = nps5_ue5_extract_groups(&q, &r);
+    fclose(pc.out);
+    if (pc.code) fclose(pc.code);
+    char logp[2200];
+    snprintf(logp, sizeof logp, "%s.summary", outp);
+    FILE *lf = fopen(logp, "w");
+    if (lf) {
+        fprintf(lf,
+                "rc %d containers %u libraries %u groups %u decoded %u failed %u skipped %u comp %llu raw %llu ms %llu "
+                "shaders %llu code_bytes %llu split_mismatch %llu nocode %llu\n",
+                rc, r.containers, r.libraries, r.groups_total, r.groups_decoded, r.groups_failed, r.groups_skipped,
+                (unsigned long long)r.compressed_bytes, (unsigned long long)r.raw_bytes, (unsigned long long)r.ms,
+                (unsigned long long)pc.shaders, (unsigned long long)pc.code_bytes, (unsigned long long)pc.bad_split,
+                (unsigned long long)pc.nocode);
+        fclose(lf);
+    }
+    fprintf(stderr,
+            "[ue5code] extract-test: decoder 0x%llx fp %016llx rc %d, %u containers, %u libraries, %u groups (%u "
+            "decoded, %u failed, %u "
+            "skipped), %llu -> %llu bytes in %llu ms (wall %.0f ms), threads %u, shaders %llu (%llu code bytes), split "
+            "mismatches %llu, "
+            "no-code %llu\n",
+            (unsigned long long)decoder, (unsigned long long)fp, rc, r.containers, r.libraries, r.groups_total,
+            r.groups_decoded, r.groups_failed, r.groups_skipped, (unsigned long long)r.compressed_bytes,
+            (unsigned long long)r.raw_bytes, (unsigned long long)r.ms, ue5_now_ms() - t0, q.threads,
+            (unsigned long long)pc.shaders, (unsigned long long)pc.code_bytes, (unsigned long long)pc.bad_split,
+            (unsigned long long)pc.nocode);
+    fflush(stderr);
+    _exit(rc == 0 ? 0 : 3);
+}
+
 void nps5_ue5_selftest_maybe(GuestContext *process) {
     nps5_ue5_set_process(process);
+    probe_maybe(process);
     const char *spec = getenv("NPS5_UE5_SELFTEST");
     if (!spec || !*spec || !process) return;
     char buf[2048];

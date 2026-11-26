@@ -33,10 +33,10 @@
 #define MAX_LIBRARY_BYTES (256ull << 20)
 #define DEFAULT_MAX_RAW (64u << 20)
 
-// The version table. Values read from the shipped PS5 builds of the two UE5 titles this was written for (the TOC header is
-// version 8 in both; the library layout was checked on both).
+// The version table. The library header version (u32 at offset 0 of the library chunk) is 1 in the shipped PS5 builds of the two
+// UE5 titles this was written for; the array layout was checked on both (every shader and group accounted for).
 static const Nps5Ue5Variant g_variants[] = {
-    {"ue5-ps5-iostore", 5, 8, 0, 0xffffffffu, 8, 9, {20, 20, 12, 8, 8, 16, 4}, 1},
+    {"ue5-ps5-iostore", 5, 8, 1, 1, 8, 9, {20, 20, 12, 8, 8, 16, 4}, 1},
 };
 
 const Nps5Ue5Variant *nps5_ue5_variants(unsigned *count) {
@@ -399,6 +399,11 @@ static int load_container(Env *e, const char *toc_path) {
         }
         l.c = c;
         l.index = (uint32_t)e->nlibs;
+        if (e->nlibs == 0)
+            ulog(e,
+                 "%s: IoStore TOC version %u, shader library version %u, %u groups, %u shaders, %u indices (table row "
+                 "%s)",
+                 toc_path, version, rd32(buf), l.nge, l.nse, l.ni, var->name);
         if (vec_grow((void **)&e->libs, &e->caplibs, e->nlibs + 1, sizeof *e->libs) != 0) {
             free(buf);
             continue;

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define WALK_DEPTH 8
 
@@ -34,12 +35,23 @@ static void walk(const char *root, const char *rel, int depth, Names *out) {
         char r[2048];
         snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", nm);
         const size_t l = strlen(nm);
-        if (de->d_type == DT_DIR && l > 8 && strcmp(nm + l - 8, ".nps5seg") == 0) {
+        unsigned char type = de->d_type;
+        if (type == DT_LNK ||
+            type == DT_UNKNOWN) { // linked folders and files (the translated builds link app0 content)
+            struct stat st;
+            char full[4200];
+            snprintf(full, sizeof full, "%s/%s", dir, nm);
+            type = stat(full, &st) != 0  ? DT_UNKNOWN
+                   : S_ISDIR(st.st_mode) ? DT_DIR
+                   : S_ISREG(st.st_mode) ? DT_REG
+                                         : DT_UNKNOWN;
+        }
+        if (type == DT_DIR && l > 8 && strcmp(nm + l - 8, ".nps5seg") == 0) {
             if (l > 13 && strcmp(nm + l - 13, ".utoc.nps5seg") == 0)
                 r[strlen(r) - 8] = 0;
             else
                 continue;
-        } else if (de->d_type == DT_DIR) {
+        } else if (type == DT_DIR) {
             if (depth < WALK_DEPTH) walk(root, r, depth + 1, out);
             continue;
         } else if (!(l > 5 && strcmp(nm + l - 5, ".utoc") == 0)) {

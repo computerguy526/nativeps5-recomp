@@ -763,6 +763,34 @@ static void test_vfs(const char *tmp) {
         rc = run(io, &q, &rx, &res);
         CHECK(rc == 0 && res.containers == 3 && res.groups_decoded == 12 && rx.bad == 0);
     }
+    // container directories reached through symlinks (translated builds link the app0 content), with a tiny segment size so
+    // that every read crosses segment edges
+    {
+        char app2[700], lnk[900];
+        snprintf(app2, sizeof app2, "%s/app2", tmp);
+        mkdir(app2, 0755);
+        snprintf(lnk, sizeof lnk, "%s/Content", app2);
+        if (symlink(paks, lnk) != 0) perror("symlink");
+        snprintf(p, sizeof p, "%s/c-ps5.ucas", paks);
+        // re-pack the split container's first partition and the packed one with 1001-byte segments
+        FILE *f = fopen(p, "rb");
+        if (f) {
+            fclose(f);
+        }
+        char bp[900];
+        snprintf(bp, sizeof bp, "%s/b-ps5.ucas.nps5seg", paks);
+        rmrf(bp);
+        write_pack(paks, "b-ps5.ucas", b.ucas.p, b.ucas.n, 1001);
+        nps5_segfile_reset();
+        ps4_vfs_init(app2);
+        rx_init(&rx, &w);
+        rx.lib_first[0] = 0;
+        rx.lib_first[1] = 4;
+        rx.lib_first[2] = 8;
+        rx.lib_n[0] = rx.lib_n[1] = rx.lib_n[2] = 4;
+        rc = run(io, &q, &rx, &res);
+        CHECK(rc == 0 && res.containers == 3 && res.groups_decoded == 12 && rx.bad == 0);
+    }
     rmrf(app);
 }
 
