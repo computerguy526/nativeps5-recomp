@@ -72,6 +72,7 @@
 #include "recomp_runtime.h"
 
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <time.h>
@@ -1263,3 +1264,6 @@ void nps5_physsub_tick_root(GuestContext *ctx) {
     }
     SHIM_RETURN();
 }
+
+// ---- [apediag]: off-by-default object tracer for one title level (nps5_apediag_shims.h) ----
+#include "nps5_apediag_shims.h"

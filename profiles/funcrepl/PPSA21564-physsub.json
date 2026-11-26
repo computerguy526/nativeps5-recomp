@@ -112,6 +112,46 @@
             "sha256": "24fb59ba1847369920f6fabc5cd33c5b483fa6b1aec42ff31771ce182c4748b4",
             "shim": "nps5_physsub_dtclamp_5",
             "wrap": true
+        },
+        {
+            "name": "apediag counter update",
+            "addr": "0x2543070",
+            "size": 689,
+            "sha256": "3605179f75eacd9a74a20d8904d28cdf1b81700f5f57194f77cde428c3336644",
+            "shim": "nps5_apediag_counter",
+            "wrap": true
+        },
+        {
+            "name": "apediag delay trigger update",
+            "addr": "0x292add0",
+            "size": 820,
+            "sha256": "07799e653db91595f04822f655153416bd67f53058a63511495c7c9a2f41846e",
+            "shim": "nps5_apediag_delay",
+            "wrap": true
+        },
+        {
+            "name": "apediag player state trigger update",
+            "addr": "0x5bc1d20",
+            "size": 9196,
+            "sha256": "9a520cdf55bdfbb059ff74172ff8ee364800ab00d660901296b67f2b6ea11ba6",
+            "shim": "nps5_apediag_pst",
+            "wrap": true
+        },
+        {
+            "name": "apediag board update",
+            "addr": "0x5161b10",
+            "size": 16389,
+            "sha256": "5a2238705bae4852fdd367eda23be6bf0cef162fb2773f28134ed952e4c4438a",
+            "shim": "nps5_apediag_pbb",
+            "wrap": true
+        },
+        {
+            "name": "apediag bot create",
+            "addr": "0x252f950",
+            "size": 52,
+            "sha256": "7389e8f0aac42c26d509046207914514a9c0caf7124f03146835b49a624dfdfb",
+            "shim": "nps5_apediag_botcreate",
+            "wrap": true
         }
     ],
     "params": [
