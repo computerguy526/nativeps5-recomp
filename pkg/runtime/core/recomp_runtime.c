@@ -1,4 +1,5 @@
 #include "recomp_runtime.h"
+#include "nps5_ue5code.h"
 #include "ps4_direct_mem.h"
 #include "ps4_sysmodule.h"
 #include "ps4_vfs.h"
@@ -1235,6 +1236,7 @@ void recomp_init_tls_modules(GuestContext *ctx, const RecompTlsModule *mods, siz
 
 void recomp_setup_entry_args(GuestContext *ctx, int argc, char **argv, uint64_t entry_addr) {
   if (!ctx || !RECOMP_MEM_OK(ctx)) return;
+  nps5_ue5_selftest_maybe(ctx); // NPS5_UE5_SELFTEST only (UE5 code-source spike); returns at once when unset
 
   uint64_t args_addr = ctx->args_addr;
   if (!args_addr) {

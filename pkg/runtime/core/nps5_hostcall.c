@@ -107,3 +107,47 @@ bool nps5_hostcall_handle_fault(void *ucontext, uint64_t fault_addr) {
   return false;
 }
 #endif
+
+// ---- host-owned contexts and n-argument calls (UE5 shader library decoding) ----
+
+uint64_t nps5_hostcall_run_n(GuestContext *ctx, uint64_t target, const uint64_t *args, unsigned n) {
+    if (!ctx || n > 16 || (n && !args)) return ~0ull;
+    uint64_t a[16] = {0};
+    for (unsigned i = 0; i < n; i++)
+        a[i] = args[i];
+    GuestContext *s_cur = g_current_ctx;
+    g_current_ctx = ctx;
+    atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed);
+    const uint64_t s_rax = ctx->rax, s_rcx = ctx->rcx, s_rdx = ctx->rdx, s_rsi = ctx->rsi, s_rdi = ctx->rdi;
+    const uint64_t s_r8 = ctx->r8, s_r9 = ctx->r9, s_r10 = ctx->r10, s_r11 = ctx->r11, s_rsp = ctx->rsp,
+                   s_rip = ctx->rip;
+    ctx->rdi = a[0];
+    ctx->rsi = a[1];
+    ctx->rdx = a[2];
+    ctx->rcx = a[3];
+    ctx->r8 = a[4];
+    ctx->r9 = a[5];
+    const unsigned stack_args = n > 6 ? n - 6 : 0;
+    // Clear of the red zone; the stack arguments 16-aligned at [rsp + 8] after the null return address (as after a CALL).
+    uint64_t sp = (s_rsp - 128 - 8ULL * stack_args) & ~15ULL;
+    for (unsigned i = 0; i < stack_args; i++)
+        *(uint64_t *)NPS5_G2H(ctx, sp + 8ULL * i) = a[6 + i];
+    sp -= 8;
+    *(uint64_t *)NPS5_G2H(ctx, sp) = 0;
+    ctx->rsp = sp;
+    recomp_dispatch(ctx, target);
+    const uint64_t ret = ctx->rax;
+    ctx->rsp = s_rsp;
+    ctx->rip = s_rip;
+    ctx->rdi = s_rdi;
+    ctx->rsi = s_rsi;
+    ctx->rdx = s_rdx;
+    ctx->rcx = s_rcx;
+    ctx->r8 = s_r8;
+    ctx->r9 = s_r9;
+    ctx->r10 = s_r10;
+    ctx->r11 = s_r11;
+    ctx->rax = s_rax;
+    g_current_ctx = s_cur;
+    return ret;
+}
