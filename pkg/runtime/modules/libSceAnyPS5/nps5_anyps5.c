@@ -387,12 +387,17 @@ static struct {
   Nps5Fr l;
   int no_freeze_av, no_freeze_load, last_frozen;
   Nps5FrLoad load;
+  // per-level floor (NPS5_FRAMERATE_MIN_LEVELS) and live override (NPS5_FRAMERATE_FILE); base_* = the configured clamp
+  const char *levels, *file, *scene;
+  double base_lo, base_hi, file_lo, file_hi;
+  uint64_t last_file_ns;
 } g_fr;
 
 // Freeze sources (see nps5_framerate_logic.h). Weak refs: the video shim and the VFS counters live in other modules.
 extern int nps5_avplayer_playing_count(void) __attribute__((weak_import));
 extern _Atomic int nps5_vfs_phase __attribute__((weak_import));
 extern _Atomic unsigned long long nps5_vfs_bytes_read __attribute__((weak_import));
+extern const char *nps5_vfs_current_scene(void) __attribute__((weak_import)); // kernel/vfs/ps4_vfs.c
 // Loading = a new levels/<name> phase appeared in the last 5 s, or the VFS read more than 6 MB within a second (+2 s);
 // the VFS part is capped per run of busy seconds (NPS5_FRAMERATE_LOAD_MAX_MS, default 8000, 0 = no cap), after that it
 // counts as streaming until 5 quiet seconds (nps5_fr_load_step). Returns 0, or 1 video, 2 phase, 3 VFS volume.
@@ -416,6 +421,17 @@ static void nps5_framerate_init(void) {
   if (!nps5_framerate_clamp(getenv("NPS5_FRAMERATE_MIN"), getenv("NPS5_FRAMERATE_MAX"), &g_fr.lo, &g_fr.hi))
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN/MAX not within 1 <= min <= max <= 240: using 20..60\n");
   nps5_fr_defaults(&g_fr.l, g_fr.lo, g_fr.hi);
+  g_fr.base_lo = g_fr.lo; g_fr.base_hi = g_fr.hi; g_fr.file_lo = -1;
+  g_fr.levels = getenv("NPS5_FRAMERATE_MIN_LEVELS");
+  if (g_fr.levels && nps5_fr_level_floor(g_fr.levels, "", 0) == -2) {
+    fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN_LEVELS=%s: want <level>=<fps 1..240>[,...] (ignored)\n", g_fr.levels);
+    g_fr.levels = NULL;
+  }
+  if (g_fr.levels && !*g_fr.levels) g_fr.levels = NULL;
+  g_fr.file = getenv("NPS5_FRAMERATE_FILE");
+  if (g_fr.file && !*g_fr.file) g_fr.file = NULL;
+  if (g_fr.levels || g_fr.file)
+    fprintf(stderr, "[framerate] clamp per level %s, live file %s\n", g_fr.levels ? g_fr.levels : "-", g_fr.file ? g_fr.file : "-");
   // NPS5_FRAMERATE_LEGACY=1 old behaviour; _NO_FREEZE_AV / _NO_FREEZE_LOAD=1 keep one freeze off; _EMA (0.02), _HYST_PCT (5),
   // _HYST_MS (1000), _WARM (60 frames without a rewrite after a freeze) tune the smoothing (nps5_fr_tune checks the ranges).
   if (getenv("NPS5_FRAMERATE_LEGACY") && atoi(getenv("NPS5_FRAMERATE_LEGACY")) > 0) g_fr.l.legacy = 1;
@@ -428,6 +444,42 @@ static void nps5_framerate_init(void) {
   nps5_fr_load_init(&g_fr.load, (uint64_t)(load_ms * 1e6));
   if (nps5_fr_tune(&g_fr.l, getenv("NPS5_FRAMERATE_EMA"), getenv("NPS5_FRAMERATE_HYST_PCT"), getenv("NPS5_FRAMERATE_HYST_MS"), getenv("NPS5_FRAMERATE_WARM")))
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_EMA (0 < v <= 1) / _HYST_PCT (0..50) / _HYST_MS (0..60000) / _WARM (0..36000): a value outside its range is ignored, the default stays\n");
+}
+
+static void nps5_framerate_write(uint8_t *b, double want) {
+  double d = want; float f = (float)(1.0 / want); uint64_t us = (uint64_t)(1e6 / want);
+  memcpy(b, &d, 8); memcpy(b + 8, &f, 4); memcpy(b + 16, &us, 8);
+  g_fr.cur = want; g_fr.rewrites++;
+}
+// Per-level floor + live file: recompute the clamp when the scene or the file changes (one pointer compare per flip,
+// the file is read at most twice a second). No-op unless NPS5_FRAMERATE_MIN_LEVELS or NPS5_FRAMERATE_FILE is set.
+static void nps5_framerate_clamp_update(uint8_t *b, uint64_t now) {
+  if (!g_fr.levels && !g_fr.file) return;
+  int changed = 0;
+  const char *sc = nps5_vfs_current_scene ? nps5_vfs_current_scene() : "";
+  if (sc != g_fr.scene) { g_fr.scene = sc; changed = 1; }
+  if (g_fr.file && now - g_fr.last_file_ns >= 500000000ull) {
+    g_fr.last_file_ns = now;
+    double lo = -1, hi = -1;
+    FILE *fp = fopen(g_fr.file, "r");
+    if (fp) {
+      char t[64] = {0};
+      if (!fgets(t, sizeof t, fp) || !nps5_fr_live_parse(t, &lo, &hi)) lo = hi = -1;
+      fclose(fp);
+    }
+    if (lo != g_fr.file_lo || hi != g_fr.file_hi) { g_fr.file_lo = lo; g_fr.file_hi = hi; changed = 1; }
+  }
+  if (!changed) return;
+  double lo, hi;
+  nps5_fr_effective(g_fr.levels, sc, g_fr.base_lo, g_fr.base_hi, g_fr.file_lo, g_fr.file_hi, &lo, &hi);
+  if (lo == g_fr.l.lo && hi == g_fr.l.hi) return;
+  const double olo = g_fr.l.lo, ohi = g_fr.l.hi;
+  double want = 0;
+  const int rw = nps5_fr_set_clamp(&g_fr.l, lo, hi, &want);
+  if (rw) nps5_framerate_write(b, want);
+  g_fr.lo = g_fr.l.lo; g_fr.hi = g_fr.l.hi;
+  fprintf(stderr, "[framerate] clamp %.0f..%.0f -> %.0f..%.0f fps (%s; scene %s)%s\n", olo, ohi, g_fr.l.lo, g_fr.l.hi,
+          g_fr.file_lo > 0 ? "live file" : "level table", sc && *sc ? sc : "(none)", rw ? ", block rewritten" : "");
 }
 
 static void nps5_framerate_tick(GuestContext *ctx) {
@@ -455,17 +507,14 @@ static void nps5_framerate_tick(GuestContext *ctx) {
     return;
   }
   g_fr.frames++;
+  nps5_framerate_clamp_update(b, now);
   const int frozen = nps5_framerate_frozen(now);
   g_fr.last_frozen = frozen;
   double want = 0, inst = 1.0 / (((double)(now - g_fr.last_ns) * 1e-9) + 1e-9);
   const int rw = nps5_fr_step(&g_fr.l, now, frozen, &want);
   g_fr.last_ns = now;
   g_fr.ema = g_fr.l.ema;
-  if (rw) {
-    double d = want; float f = (float)(1.0 / want); uint64_t us = (uint64_t)(1e6 / want);
-    memcpy(b, &d, 8); memcpy(b + 8, &f, 4); memcpy(b + 16, &us, 8);
-    g_fr.cur = want; g_fr.rewrites++;
-  }
+  if (rw) nps5_framerate_write(b, want);
   if (now - g_fr.last_log_ns >= 5000000000ull) {
     double d; float f; uint64_t us;
     memcpy(&d, b, 8); memcpy(&f, b + 8, 4); memcpy(&us, b + 16, 8);

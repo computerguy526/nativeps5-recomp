@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
   int legacy;
@@ -104,6 +105,86 @@ static inline int nps5_fr_step(Nps5Fr *f, uint64_t now_ns, int frozen, double *w
     if (now_ns - f->off_since_ns > f->hyst_ns) { *want_out = want; f->cur = want; f->rewrites++; f->off_since_ns = 0; return 1; }
   } else f->off_since_ns = 0;
   return 0;
+}
+
+// Per-level and live clamp (apesoft-2026-11-26, Apes on the Loose soft-lock at the 20 fps floor).
+//   NPS5_FRAMERATE_MIN_LEVELS=<scene>=<fps>[,<scene>=<fps>...]  floor for a level while its scene is current ([scene-open]
+//            names); unlisted scenes keep the configured floor. nps5_fr_level_floor returns that floor, def when the scene
+//            is not listed (or tab is NULL/empty), and -2 when the table is malformed (the caller ignores it, logs once).
+//   NPS5_FRAMERATE_FILE=<path>  live override, polled twice a second: "<min>" (floor) or "<min> <max>" / "<min>-<max>"
+//            (e.g. "20 20" pins the laptop's 50 ms step, "60 60" = fixed 1/60). Missing / empty / unparsable = no override.
+static inline int nps5_fr_name_ok(const char *p, size_t n) {
+  if (!n) return 0;
+  for (size_t i = 0; i < n; i++) {
+    const char c = p[i];
+    if (!(c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0;
+  }
+  return 1;
+}
+static inline double nps5_fr_level_floor(const char *tab, const char *scene, double def) {
+  if (!tab || !*tab) return def;
+  double hit = -1;
+  const char *p = tab;
+  for (;;) {
+    const char *eq = strchr(p, '=');
+    if (!eq || !nps5_fr_name_ok(p, (size_t)(eq - p))) return -2;
+    char *end = NULL;
+    const double v = strtod(eq + 1, &end);
+    if (end == eq + 1 || (*end && *end != ',') || !(v >= 1.0 && v <= 240.0)) return -2;
+    const size_t nl = (size_t)(eq - p);
+    if (hit < 0 && scene && strlen(scene) == nl && !strncmp(scene, p, nl)) hit = v;
+    if (!*end) break;
+    p = end + 1;
+  }
+  return hit >= 0 ? hit : def;
+}
+// Live file text -> clamp. Returns 1 and sets *lo (and *hi when a max is given, else leaves it) when valid.
+static inline int nps5_fr_live_parse(const char *t, double *lo, double *hi) {
+  if (!t) return 0;
+  while (*t == ' ' || *t == '\t') t++;
+  char *end = NULL;
+  const double l = strtod(t, &end);
+  if (end == t || !(l >= 1.0 && l <= 240.0)) return 0;
+  const char *q = end;
+  while (*q == ' ' || *q == '\t') q++;
+  int dash = 0;
+  if (*q == '-') { q++; dash = 1; }
+  while (*q == ' ' || *q == '\t') q++;
+  double h = -1;
+  if (dash && (!*q || *q == '\n' || *q == '\r')) return 0; // "30-": a max is missing
+  if (*q && *q != '\n' && *q != '\r') {
+    h = strtod(q, &end);
+    if (end == q || !(h >= l && h <= 240.0)) return 0;
+    q = end;
+    while (*q == ' ' || *q == '\t') q++;
+  }
+  if (*q && *q != '\n' && *q != '\r') return 0;
+  *lo = l;
+  if (h > 0) *hi = h;
+  return 1;
+}
+// The clamp that applies: a valid live file wins (file_lo > 0; file_hi > 0 also sets the max), else the level table
+// floor for the scene (base_lo when unlisted or the table is malformed), with the configured max; lo never above hi.
+static inline void nps5_fr_effective(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
+                                     double file_hi, double *lo, double *hi) {
+  double l = file_lo > 0 ? file_lo : nps5_fr_level_floor(tab, scene, base_lo);
+  const double h = file_lo > 0 && file_hi > 0 ? file_hi : base_hi;
+  if (l < 0) l = base_lo;
+  if (l > h) l = h;
+  *lo = l; *hi = h;
+}
+// Change the clamp at run time (level change or live file). lo is limited to hi. When the block value is outside the
+// new range it must follow at once (entering a floor-30 level must not wait for the hysteresis): returns 1 with *want_out.
+// Inside the range nothing is rewritten; the normal step moves it later (e.g. back down after leaving the level).
+static inline int nps5_fr_set_clamp(Nps5Fr *f, double lo, double hi, double *want_out) {
+  if (lo > hi) lo = hi;
+  f->lo = lo; f->hi = hi; f->off_since_ns = 0;
+  double want = f->cur;
+  if (want < lo) want = lo;
+  if (want > hi) want = hi;
+  if (want == f->cur) return 0;
+  f->cur = want; f->rewrites++; *want_out = want;
+  return 1;
 }
 
 // Load freeze (pure; the caller samples the VFS phase and byte counter). One call per frame.

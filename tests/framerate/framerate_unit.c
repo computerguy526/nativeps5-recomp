@@ -58,6 +58,69 @@ static void trace_case(const char *name, const double *tr, int n) {
           "trace %s: block %.1f, real %.1f fps (clamped %.1f): game speed %.0f %%", name, f.cur, real, want,
           100 * real / f.cur);
 }
+
+// apesoft: per-level floor + live clamp. Synthetic scene names only.
+static void test_level_clamp(void) {
+  const char *tab = "hero_ape_escape=30,other_level=45";
+  CHECK(nps5_fr_level_floor(tab, "hero_ape_escape", 20) == 30, "listed level floor");
+  CHECK(nps5_fr_level_floor(tab, "other_level", 20) == 45, "second entry");
+  CHECK(nps5_fr_level_floor(tab, "hub_crashsite", 20) == 20, "unlisted level must keep the configured floor");
+  CHECK(nps5_fr_level_floor(tab, "hero_ape", 20) == 20 && nps5_fr_level_floor(tab, "hero_ape_escape_2", 20) == 20, "prefix is not a match");
+  CHECK(nps5_fr_level_floor(tab, "", 20) == 20 && nps5_fr_level_floor(tab, NULL, 20) == 20, "no scene");
+  CHECK(nps5_fr_level_floor(NULL, "hero_ape_escape", 20) == 20 && nps5_fr_level_floor("", "hero_ape_escape", 25) == 25, "no table = other titles unchanged");
+  static const char *bad[] = {"x", "=30", "a=", "a=0", "a=241", "a=30x", "a b=30", "a=30,", "a=30,,b=40", "a=-5", "lvl/x=30", "a=nan"};
+  for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) CHECK(nps5_fr_level_floor(bad[i], "a", 20) == -2, "malformed table '%s' accepted", bad[i]);
+  double lo = -1, hi = -1;
+  CHECK(nps5_fr_live_parse("30\n", &lo, &hi) == 1 && lo == 30 && hi == -1, "live floor only");
+  lo = hi = -1; CHECK(nps5_fr_live_parse("20 20", &lo, &hi) == 1 && lo == 20 && hi == 20, "live pin");
+  lo = hi = -1; CHECK(nps5_fr_live_parse(" 30-60\n", &lo, &hi) == 1 && lo == 30 && hi == 60, "live range");
+  static const char *lbad[] = {"", "\n", "abc", "0", "241", "60 30", "30 x", "30 40 50", "30-", "-5"};
+  for (unsigned i = 0; i < sizeof lbad / sizeof *lbad; i++) { lo = hi = -7; CHECK(nps5_fr_live_parse(lbad[i], &lo, &hi) == 0 && lo == -7 && hi == -7, "bad live text '%s' accepted", lbad[i]); }
+  CHECK(nps5_fr_live_parse(NULL, &lo, &hi) == 0, "NULL live text");
+  // effective clamp: file wins, then level table, then the configured one
+  nps5_fr_effective(tab, "hero_ape_escape", 20, 60, -1, -1, &lo, &hi); CHECK(lo == 30 && hi == 60, "eff level");
+  nps5_fr_effective(tab, "hub_crashsite", 20, 60, -1, -1, &lo, &hi); CHECK(lo == 20 && hi == 60, "eff other level");
+  nps5_fr_effective(tab, "hero_ape_escape", 20, 60, 60, 60, &lo, &hi); CHECK(lo == 60 && hi == 60, "eff file pin");
+  nps5_fr_effective(tab, "hero_ape_escape", 20, 60, 25, -1, &lo, &hi); CHECK(lo == 25 && hi == 60, "eff file floor below the level floor still wins");
+  nps5_fr_effective(tab, "other_level", 20, 40, -1, -1, &lo, &hi); CHECK(lo == 40 && hi == 40, "floor limited to max");
+  nps5_fr_effective("garbage", "hero_ape_escape", 20, 60, -1, -1, &lo, &hi); CHECK(lo == 20 && hi == 60, "malformed table = configured");
+
+  // synthetic session: hub at 15 fps (block at the 20 floor) -> level open (floor 30, immediate) -> 15 fps in the level
+  // (block stays 30) -> an unlisted level (floor 20 again, block follows down after the hysteresis) -> back.
+  Nps5Fr f; double w = 0;
+  init(&f);
+  run(&f, 300, 1000.0 / 15, 0);
+  CHECK(f.cur == 20, "hub: block at the floor (cur %.1f)", f.cur);
+  nps5_fr_effective(tab, "hero_ape_escape", 20, 60, -1, -1, &lo, &hi);
+  CHECK(nps5_fr_set_clamp(&f, lo, hi, &w) == 1 && w == 30 && f.cur == 30, "level open must raise the block at once (w %.1f)", w);
+  CHECK(nps5_fr_set_clamp(&f, lo, hi, &w) == 0, "same clamp again must not rewrite");
+  const uint32_t r0 = f.rewrites;
+  run(&f, 600, 1000.0 / 15, 0);
+  CHECK(f.cur == 30 && f.rewrites == r0, "in level at 15 fps: block must stay at 30 (cur %.1f, %u rewrites)", f.cur, f.rewrites - r0);
+  run(&f, 60, 1000.0 / 15, 1);  // a video freeze inside the level keeps 30
+  run(&f, 300, 1000.0 / 15, 0);
+  CHECK(f.cur == 30, "after a video in the level (cur %.1f)", f.cur);
+  nps5_fr_effective(tab, "hub_crashsite", 20, 60, -1, -1, &lo, &hi);
+  CHECK(nps5_fr_set_clamp(&f, lo, hi, &w) == 0 && f.lo == 20, "leaving lowers the floor without an immediate rewrite");
+  run(&f, 300, 1000.0 / 15, 0);
+  CHECK(f.cur == 20, "after leaving: block back at 20 (cur %.1f)", f.cur);
+  // fast machine in the level: real 45 fps is above the 30 floor -> the block follows the real rate, not the floor
+  init(&f);
+  nps5_fr_effective(tab, "hero_ape_escape", 20, 60, -1, -1, &lo, &hi);
+  nps5_fr_set_clamp(&f, lo, hi, &w);
+  run(&f, 900, 1000.0 / 45, 0);
+  CHECK(fabs(f.cur - 45) <= 3, "45 fps in the level: block follows the real rate (cur %.1f)", f.cur);
+  // live pin 20..20 at 25 fps (M5 at the laptop's step): immediate, held
+  init(&f);
+  run(&f, 300, 1000.0 / 25, 0);
+  CHECK(nps5_fr_set_clamp(&f, 20, 20, &w) == 1 && f.cur == 20, "pin 20 (cur %.1f)", f.cur);
+  run(&f, 300, 1000.0 / 25, 0);
+  CHECK(f.cur == 20, "pin holds at 25 fps (cur %.1f)", f.cur);
+  CHECK(nps5_fr_set_clamp(&f, 60, 60, &w) == 1 && f.cur == 60, "pin 60");
+  run(&f, 300, 1000.0 / 25, 0);
+  CHECK(f.cur == 60, "pin 60 holds at 25 fps (cur %.1f)", f.cur);
+  CHECK(nps5_fr_set_clamp(&f, 90, 60, &w) == 0 && f.lo == 60, "lo above hi is limited");
+}
 int main(void) {
   Nps5Fr f;
   // steady 60 fps: no rewrites
@@ -188,6 +251,7 @@ int main(void) {
       else
           CHECK(f.cur == 60, "old unlimited freeze should hold 60 (cur %.1f)", f.cur);
   }
+  test_level_clamp();
   printf(fails ? "framerate_unit: %d FAILED\n" : "framerate_unit: all passed\n", fails);
   return fails != 0;
 }
