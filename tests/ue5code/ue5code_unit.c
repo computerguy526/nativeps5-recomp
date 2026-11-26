@@ -7,6 +7,7 @@
 #include "nps5_ue5code.h"
 #include "ps4_vfs.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -325,8 +326,13 @@ static void *f_open(void *u, const char *path) {
     int fd = open(p, O_RDONLY);
     return fd < 0 ? NULL : (void *)(intptr_t)(fd + 1);
 }
+static _Atomic int g_eintr, g_eintr_n; // g_eintr: every other pread is interrupted by a "signal" (-1, EINTR)
 static ssize_t f_pread(void *u, void *file, void *buf, size_t n, uint64_t off) {
     (void)u;
+    if (g_eintr && (g_eintr_n++ & 1)) {
+        errno = EINTR;
+        return -1;
+    }
     return pread((int)((intptr_t)file - 1), buf, n, (off_t)off);
 }
 static void f_close(void *u, void *file) {
@@ -507,6 +513,75 @@ static void test_basic(const char *tmp) {
         if (threads == 1) // one thread: delivered in container/library order
             for (unsigned i = 0; i < 14; i++)
                 CHECK(rx.order[i].lib == (i < 8 ? 0u : 1u) && rx.order[i].grp == (i < 8 ? i : i - 8));
+    }
+    // ABI 1.8 skip list (a resumed pass): the listed groups are neither read nor decoded nor delivered nor counted in progress.
+    // The list is given unsorted and overlapping on purpose. Library 0 groups 0..3 and library 1 groups 1..2 are skipped.
+    {
+        const KytyGpuUe5Range skip[] = {{1, 2, 2}, {0, 2, 3}, {0, 0, 2}, {1, 1, 1}, {9, 0, 5} /* no such library */};
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_init(&rx, &w);
+        rx.lib_first[0] = 0;
+        rx.lib_n[0] = 8;
+        rx.lib_first[1] = 8;
+        rx.lib_n[1] = 6;
+        q.threads = 1;
+        q.skip = skip;
+        q.skip_count = (uint32_t)(sizeof skip / sizeof *skip);
+        g_decodes = 0;
+        int rc = run(&io, &q, &rx, &res);
+        CHECK(rc == 0 && res.groups_total == 14); // the library's whole count
+        CHECK(rx.seen == 8 && rx.bad == 0 && res.groups_decoded == 8);
+        CHECK(!rx.progress_bad && rx.total_seen == 8 && rx.last_done == 8); // progress counts what is visited
+        CHECK(g_decodes == 8 - 1); // the stored group (world index 5 = library 0 group 5) needs no decoder call
+        for (unsigned i = 0; i < rx.seen && i < 8; i++) {
+            const int in_skip = (rx.order[i].lib == 0 && rx.order[i].grp <= 3) ||
+                                (rx.order[i].lib == 1 && (rx.order[i].grp == 1 || rx.order[i].grp == 2));
+            CHECK(!in_skip);
+        }
+        // a caller that knows only the query without the skip fields (struct_size says so) gets every group
+        KytyGpuUe5Query old = q;
+        rx_init(&rx, &w);
+        rx.lib_first[0] = 0;
+        rx.lib_n[0] = 8;
+        rx.lib_first[1] = 8;
+        rx.lib_n[1] = 6;
+        memset(&res, 0, sizeof res);
+        old.struct_size = KYTY_GPU_UE5_QUERY_SIZE_BASE;
+        old.abi = 1;
+        old.group = rx_group;
+        old.progress = rx_progress;
+        old.arg = &rx;
+        rc = nps5_ue5_extract(&io, &STUB, &old, &res);
+        CHECK(rc == 0 && rx.seen == 14 && res.groups_decoded == 14);
+        // everything skipped: nothing is delivered, the pass is done
+        const KytyGpuUe5Range all[] = {{0, 0, 0xffffffffu}, {1, 0, 0xffffffffu}};
+        q.skip = all;
+        q.skip_count = 2;
+        rx_init(&rx, &w);
+        rx.lib_first[0] = 0;
+        rx.lib_n[0] = 8;
+        rx.lib_first[1] = 8;
+        rx.lib_n[1] = 6;
+        rc = run(&io, &q, &rx, &res);
+        CHECK(rc == 0 && rx.seen == 0 && res.groups_decoded == 0 && res.groups_total == 14);
+    }
+    // pread interrupted by a signal (EINTR) is retried, not a failed group
+    {
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_init(&rx, &w);
+        rx.lib_first[0] = 0;
+        rx.lib_n[0] = 8;
+        rx.lib_first[1] = 8;
+        rx.lib_n[1] = 6;
+        q.threads = 1;
+        g_eintr = 1;
+        int rc = run(&io, &q, &rx, &res);
+        g_eintr = 0;
+        CHECK(rc == 0 && res.containers == 2 && res.groups_decoded == 14 && res.groups_failed == 0 && rx.bad == 0);
     }
     // the stored group (index 5) was not decoded: decodes < groups
     // max_raw_bytes: the big group (index 3, > 15000 raw) is skipped and counted
@@ -734,6 +809,15 @@ static void test_vfs(const char *tmp) {
         if (symlink("Paks", lk) != 0) perror("symlink");
         snprintf(lk, sizeof lk, "%s/Game/Paks/alias.utoc", app);
         if (symlink("a-ps5.utoc", lk) != 0) perror("symlink");
+    }
+    // A link to a table of contents whose partitions are not beside the link ("Backup" sorts before "Paks"): the container must
+    // still be listed under the path that has its .ucas, not dropped as the duplicate of an unreadable first path.
+    {
+        char lk[900];
+        snprintf(lk, sizeof lk, "%s/Game/Backup", app);
+        mkdir(lk, 0755);
+        snprintf(lk, sizeof lk, "%s/Game/Backup/a-ps5.utoc", app);
+        if (symlink("../Paks/a-ps5.utoc", lk) != 0) perror("symlink");
     }
     ps4_vfs_init(app);
     const Nps5Ue5Io *io = nps5_ue5_vfs_io();
@@ -1534,12 +1618,52 @@ static void test_guest(const char *tmp) {
         q.abi = 1;
         q.struct_size = 8;
         CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
+        q.struct_size = KYTY_GPU_UE5_QUERY_SIZE_BASE; // a caller without the skip fields is still served
+        CHECK(nps5_ue5_extract_groups(&q, &res) == 0 && G.calls == 12);
+        G.calls = 0;
         q.struct_size = sizeof q;
         q.decoder = 0;
         CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
         q.decoder = FAKE_DEC;
         CHECK(nps5_ue5_extract_groups(&q, &res) == 0 && G.calls == 12); // and the same query is fine
     }
+    nps5_ue5_set_guest_ops_for_test(NULL, NULL);
+    free(proc);
+    rmrf(app);
+}
+
+// Slowly growing groups: the guest buffers grow geometrically (a handful of allocations), not once per group.
+static void test_guest_growth(const char *tmp) {
+    char app[600], paks[700];
+    snprintf(app, sizeof app, "%s/gapp2", tmp);
+    mkdir(app, 0755);
+    snprintf(paks, sizeof paks, "%s/Paks", app);
+    mkdir(paks, 0755);
+    g_var = nps5_ue5_variants(NULL);
+    g_lib_ver = g_var->lib_min;
+    World w;
+    world_init(&w, 12, -1);
+    for (unsigned i = 0; i < 12; i++)
+        w.g[i].half = 100000 + 65536 * i; // every group needs the next 64 KiB step
+    Cont c;
+    cont_init(&c);
+    add_library(&c, &w, 0, 12, 0, -1);
+    cont_write(&c, paks, "g-ps5", 0);
+    ps4_vfs_init(app);
+    GuestContext *proc = calloc(1, sizeof(GuestContext));
+    nps5_ue5_set_guest_ops_for_test(&FAKE_OPS, proc);
+    fg_reset();
+    Rx rx;
+    KytyGpuUe5Result res;
+    KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 1};
+    rx_for(&rx, &w, 12);
+    q.group = rx_group;
+    q.progress = rx_progress;
+    q.arg = &rx;
+    int rc = nps5_ue5_extract_groups(&q, &res);
+    CHECK(rc == 0 && res.groups_decoded == 12 && rx.bad == 0 && G.bad_g2h == 0);
+    CHECK(G.allocs == G.frees && G.live == 0);
+    CHECK(G.allocs <= 14); // one per group and buffer would be 25
     nps5_ue5_set_guest_ops_for_test(NULL, NULL);
     free(proc);
     rmrf(app);
@@ -1563,6 +1687,7 @@ int main(void) {
     test_logs(tmp);
     test_synth_variants(tmp);
     test_guest(tmp);
+    test_guest_growth(tmp);
     rmrf(tmp);
     printf(fails ? "ue5code: %d FAILED\n" : "ue5code: all ok\n", fails);
     return fails ? 1 : 0;

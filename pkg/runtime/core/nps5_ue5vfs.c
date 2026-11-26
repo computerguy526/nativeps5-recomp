@@ -24,6 +24,7 @@ typedef struct Names {
     struct stat *
         dirs; // directories walked: (st_dev, st_ino), so a link back to an ancestor or a second link to one is not walked again
     size_t ndirs, capdirs;
+    const char *root; // the application root the relative paths are under
     int oom;
 } Names;
 
@@ -61,12 +62,37 @@ static int dir_seen(Names *out, const char *dir) {
     return 0;
 }
 
-// Adds a container (rel path r; fs path of the toc or its .nps5seg folder) unless the same file was listed already.
+// 1 when the container at rel path r has its data beside it (<base>.ucas, plain or packed): a link to a table of contents does
+// not bring the partitions along, so such a path cannot be read even though its realpath is a good container.
+static int has_data(const Names *out, const char *r) {
+    const size_t l = strlen(r);
+    if (l < 5 || strcmp(r + l - 5, ".utoc") != 0) return 0;
+    char p[4400];
+    struct stat st;
+    snprintf(p, sizeof p, "%s/%.*s.ucas", out->root, (int)(l - 5), r);
+    if (stat(p, &st) == 0) return 1;
+    snprintf(p, sizeof p, "%s/%.*s.ucas.nps5seg", out->root, (int)(l - 5), r);
+    return stat(p, &st) == 0;
+}
+
+// Adds a container (rel path r; fs path of the toc or its .nps5seg folder) unless the same file was listed already. Of two paths
+// to one file the first is kept, unless it has no partitions beside it and the new one has (then the new path replaces it).
 static void add_container(Names *out, const char *r, const char *fs) {
     char rp[4200];
     if (!realpath(fs, rp)) snprintf(rp, sizeof rp, "%s", fs);
-    for (size_t i = 0; i < out->nreal; i++)
-        if (strcmp(out->real[i], rp) == 0) return;
+    for (size_t i = 0; i < out->nreal; i++) {
+        if (strcmp(out->real[i], rp) != 0) continue;
+        if (!has_data(out, out->v[i]) && has_data(out, r)) {
+            char *b = strdup(r);
+            if (!b) {
+                out->oom = 1;
+                return;
+            }
+            free(out->v[i]);
+            out->v[i] = b;
+        }
+        return;
+    }
     char *a = strdup(rp), *b = strdup(r);
     if (!a || !b || names_push(&out->real, &out->nreal, &out->capreal, a) != 0) {
         free(a);
@@ -133,6 +159,7 @@ static int vfs_list(void *user, int (*cb)(void *arg, const char *path), void *ar
     const char *root = ps4_vfs_get_app_root();
     if (!root || !*root) return 0;
     Names nm = {0};
+    nm.root = root;
     walk(root, "", 0, &nm);
     qsort(nm.v, nm.n, sizeof *nm.v, cmp_str);
     for (size_t i = 0; i < nm.nreal; i++)
