@@ -171,7 +171,7 @@ func TestKytySeam(t *testing.T) {
 	bin := filepath.Join(dir, "route_test")
 	args := append([]string{"-g", "-O1", "-w", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...)
 	args = append(args, "../../tests/kyty_seam/route_test.c", "modules/libSceAnyPS5/nps5_anyps5_thunks.c", "modules/libSceAnyPS5/nps5_kyty.c",
-		"modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", fakeDirect, "-o", bin)
+		"modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "../../tests/kyty_seam/ue5_stub.c", fakeDirect, "-o", bin)
 	build(args...)
 	// The seam's own sources compile without warnings.
 	build(append(append([]string{"-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...), "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c")...)
@@ -214,6 +214,17 @@ func TestKytySeam(t *testing.T) {
 	if out, err := run("noentry", append(kyty, "KYTY_STUB_NO_NID_ENTRY=1")...); err != nil || !strings.Contains(out, "ROUTE OK noentry") {
 		t.Fatalf("noentry: %v\n%s", err, out)
 	}
+	// ABI 1.8 guest_ready: called once with extract_ue5_shader_groups usable inside; not called for a library whose guest_ready
+	// is null or whose struct ends at 1.7 (the host still accepts it).
+	if out, err := run("ready", kyty...); err != nil || !strings.Contains(out, "ROUTE OK ready") {
+		t.Fatalf("ready: %v\n%s", err, out)
+	}
+	if out, err := run("noready", append(kyty, "KYTY_STUB_NO_GUEST_READY=1")...); err != nil || !strings.Contains(out, "ROUTE OK noready") {
+		t.Fatalf("noready: %v\n%s", err, out)
+	}
+	if out, err := run("ready17", append(kyty, "KYTY_STUB_API17=1")...); err != nil || !strings.Contains(out, "ROUTE OK ready17") {
+		t.Fatalf("ready17: %v\n%s", err, out)
+	}
 	// A missing NID: start-up succeeds and says so; the call aborts and names the export.
 	out, err := run("missing", append(kyty, "KYTY_STUB_MISSING=Yw0jKSqop+E")...)
 	if err == nil || !strings.Contains(out, "calling the missing export") || !strings.Contains(out, "sceAgcDcbDrawIndexAuto (NID Yw0jKSqop+E") ||
@@ -254,7 +265,7 @@ func TestKytySeamVM(t *testing.T) {
 	bin := filepath.Join(dir, "vm_seam_test")
 	args := append([]string{"-g", "-O1", "-w", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...)
 	args = append(args, "../../tests/kyty_seam/vm_seam_test.c", "../../tests/memory_vm_test/stubs.c", "core/nps5_vm.c", "core/nps5_mem.c",
-		"kernel/memory/ps4_direct_mem.c", "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "-Wl,-undefined,dynamic_lookup", "-o", bin)
+		"kernel/memory/ps4_direct_mem.c", "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "../../tests/kyty_seam/ue5_stub.c", "-Wl,-undefined,dynamic_lookup", "-o", bin)
 	if out, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
@@ -265,50 +276,4 @@ func TestKytySeamVM(t *testing.T) {
 		t.Fatalf("vm seam test:\n%s", out)
 	}
 	t.Logf("%s", out)
-}
-
-// TestKytyRouteTable: the routable set is exactly the 84 graphics NIDs of AstroHybrid's kyty_gpu export table, each
-// with one AnyPS5 export; only those thunks changed shape.
-func TestKytyRouteTable(t *testing.T) {
-	routes, err := thunkgen.KytyRoutes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	libs := map[string]int{}
-	for _, r := range routes {
-		libs[r.Lib]++
-	}
-	if len(routes) != 84 || libs["libSceAgc.prx"] != 66 || libs["libSceAgcDriver.prx"] != 7 || libs["libSceVideoOut.prx"] != 11 {
-		t.Fatalf("routes: %d %v", len(routes), libs)
-	}
-	descs, err := thunkgen.AnyPS5Descs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	routed, direct := 0, 0
-	for _, d := range descs {
-		if d.RouteNID == "" {
-			if strings.HasPrefix(d.HLE, "aps5_rt_") {
-				t.Errorf("%s calls through a route pointer but is not routed", d.Shim)
-			}
-			continue
-		}
-		routed++
-		if d.RouteTarget != "" {
-			direct++
-			if d.HLE != "aps5_rt_"+d.RouteTarget {
-				t.Errorf("%s: pointer %s for %s", d.Shim, d.HLE, d.RouteTarget)
-			}
-		}
-	}
-	if routed != 84 || direct != 73 {
-		t.Fatalf("routed %d (direct %d), want 84 (73)", routed, direct)
-	}
-	src, err := os.ReadFile("modules/libSceAnyPS5/nps5_anyps5_thunks.c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(string(src), "(void *)kyty_raw_"); n != 84 {
-		t.Fatalf("generated table has %d routes: run go run ./pkg/thunkgen/gen", n)
-	}
 }

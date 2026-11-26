@@ -23,6 +23,12 @@ GuestContext *nps5_hostcall_ctx(void);
 // returns its RAX (what the fault bridge does for a library that branches to a guest address). Only inside a bracket.
 uint64_t nps5_hostcall_run(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t target);
 
+// Runs the guest function `target` on `ctx` (any guest context, e.g. one made by nps5_hostctx_create) from the calling host
+// thread, with n <= 16 System V integer arguments: args[0..5] in rdi, rsi, rdx, rcx, r8, r9, args[6..] on the guest stack as
+// after a CALL. Arguments are passed as given (guest values). Returns rax, or ~0 when ctx is null or n > 16. The calling thread's
+// current-context pointer is ctx for the duration of the call. Not a bracketed call: no t_ctx is needed.
+uint64_t nps5_hostcall_run_n(GuestContext *ctx, uint64_t target, const uint64_t *args, unsigned n);
+
 // Calls of guest functions made this way (diagnostics).
 uint64_t nps5_hostcall_count(void);
 

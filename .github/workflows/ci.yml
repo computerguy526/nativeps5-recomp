@@ -48,7 +48,12 @@ jobs:
         run: |
           # shellcheck disable=SC2046
           go test $(go list ./... | grep -vE '/pkg/(lifter|runtime|emitter)$')
-          go test ./pkg/runtime -run 'TestHostAccessHooks|TestFontGlyphAPI' -count=1
+          # TestKytyRouteTable has no build tag and must run here (the script fails when it is missing, skipped or not built).
+          .github/nps5-ci/require_tests.sh ./pkg/runtime TestKytyRouteTable
+          # these two are darwin-only host tests (C builds): they run where the job runs on macOS (scripts/ci/run-local.sh), not on ubuntu
+          if [ "$(uname -s)" = Darwin ]; then
+            .github/nps5-ci/require_tests.sh ./pkg/runtime TestHostAccessHooks TestFontGlyphAPI
+          fi
           go test ./pkg/lifter -run 'PatchValue' -count=1
           go test ./pkg/emitter -run 'Patch|Shipped|AstroStubs' -count=1
 
@@ -67,7 +72,7 @@ jobs:
             exit 0
           fi
           failed=0
-          for t in clock framerate haptics avsync avloop kernelfs diag hlesys hostcall lean libc online perf_sampler uemalloc yield audio_capture pthread_exit; do
+          for t in clock framerate haptics avsync avloop kernelfs diag hlesys hostcall ue5code lean libc online perf_sampler uemalloc yield audio_capture pthread_exit; do
             echo "::group::$t"
             bash "tools/${t}_unit.sh" || { echo "::error::${t}_unit failed"; failed=1; }
             echo "::endgroup::"

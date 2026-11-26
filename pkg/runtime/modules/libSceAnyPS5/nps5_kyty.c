@@ -44,6 +44,7 @@
 #include "nps5_kyty.h"
 #include "nps5_kyty_watch.h"
 #include "nps5_mem.h"
+#include "nps5_ue5code.h"
 #include "ps4_vfs.h"
 #include "recomp_runtime.h"
 
@@ -413,6 +414,17 @@ static int cb_fault_load_apply(void *user, const void *bytes, uint32_t size) {
   (void)user;
   return nps5_kyty_watch_fault_load_apply(bytes, size);
 }
+static int cb_extract_ue5(void *user, const KytyGpuUe5Query *q, KytyGpuUe5Result *out) {
+    (void)user;
+    if (!q || !out) return -1;
+    const int rc = nps5_ue5_extract_groups(q, out);
+    KLOG("UE5 shader library: rc %d, %u containers, %u libraries, %u groups (%u decoded, %u failed, %u skipped), %llu "
+         "-> %llu bytes, %llu ms",
+         rc, out->containers, out->libraries, out->groups_total, out->groups_decoded, out->groups_failed,
+         out->groups_skipped, (unsigned long long)out->compressed_bytes, (unsigned long long)out->raw_bytes,
+         (unsigned long long)out->ms);
+    return rc;
+}
 
 static KytyGpuHostCallbacks g_host = {
     .struct_size = sizeof(KytyGpuHostCallbacks),
@@ -434,6 +446,7 @@ static KytyGpuHostCallbacks g_host = {
     .call_guest = cb_call_guest,
     .fault_load = cb_fault_load,
     .fault_load_apply = cb_fault_load_apply,
+    .extract_ue5_shader_groups = cb_extract_ue5,
 };
 
 // ---- runtime wiring -----------------------------------------------------------------------------------------------
@@ -654,12 +667,14 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   if (!get) fatal("kyty_gpu has no KytyGpuGetApi");
   g_api = get(KYTY_GPU_ABI_VERSION);
   if (!g_api) fatal("kyty_gpu refused this host's ABI (KytyGpuGetApi returned null)");
-  if ((g_api->abi_version >> 16) != KYTY_GPU_ABI_VERSION_MAJOR || g_api->struct_size < sizeof(KytyGpuApi) || (g_api->abi_version & 0xffff) < 6)
-    fatal("kyty_gpu is not an ABI 1.6 library (hosted memory): rebuild it with this kytyGpuApi.h");
+  if ((g_api->abi_version >> 16) != KYTY_GPU_ABI_VERSION_MAJOR || g_api->struct_size < KYTY_GPU_API_SIZE_1_7 ||
+      (g_api->abi_version & 0xffff) < 6)
+      fatal("kyty_gpu is not an ABI 1.6 library (hosted memory): rebuild it with this kytyGpuApi.h");
   // The watch table is built for one host page size.
   if (getpagesize() != (1 << NPS5_KW_HOST_SHIFT)) fatal("host page size is not the one the watch table was built for");
   if (!g_api->init || !g_api->register_memory || !g_api->unregister_memory) fatal("kyty_gpu lacks init/register_memory/unregister_memory");
 
+  nps5_ue5_set_process(ctx);
   const Nps5Arena *a = &g_nps5_arena;
   g_info = (KytyGpuHostInfo){.struct_size = sizeof g_info,
                              .flags = KYTY_GPU_HOST_HOSTED_MEMORY | KYTY_GPU_HOST_MAIN_QUEUE,
@@ -761,6 +776,19 @@ bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image) {
   return true;
 }
 
+// Once, on the launch thread (the guest thread, never the process's main thread, which runs the window loop), after the image,
+// static TLS and preloaded modules are up and before the guest entry: lets a 1.8 library read the UE5 shader library through
+// extract_ue5_shader_groups. May block for the whole launch phase. A 1.7 library (no guest_ready) is left alone.
+void nps5_kyty_guest_ready(GuestContext *ctx) {
+    static int called;
+    if (!g_active || !g_api || called) return;
+    called = 1;
+    if (g_api->struct_size < sizeof(KytyGpuApi) || !g_api->guest_ready || !g_host.extract_ue5_shader_groups) return;
+    nps5_ue5_set_process(ctx);
+    const int rc = g_api->guest_ready();
+    KLOG("guest_ready -> %d", rc);
+}
+
 // Pad vibration audio to the Kyty library's DualSense haptics (USB 4-channel device / Bluetooth HID audio). lr: stereo
 // float frames. Returns the microseconds queued, 0 when the library is not loaded or no DualSense took it. Called from
 // the haptics pump thread (never the audio thread).
@@ -776,4 +804,5 @@ uint64_t nps5_kyty_queue_pad_audio(uint32_t freq, const float *lr, uint32_t fram
 #else
 #include <stdint.h>
 uint64_t nps5_kyty_queue_pad_audio(uint32_t freq, const float *lr, uint32_t frames) { (void)freq; (void)lr; (void)frames; return 0; }
+void nps5_kyty_guest_ready(GuestContext *ctx) { (void)ctx; }
 #endif // NPS5_HAVE_ANYPS5_AGC

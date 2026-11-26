@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 
 #define GUEST_FN 0x42c0dd0ULL       // a guest code address: unmapped in the host (below 4 GiB)
+#define GUEST_FN14 0x42c0e40ULL // the n-argument guest function (nps5_hostcall_run_n)
 #define GUEST_RAM 0x200000000ULL    // guest address of the test's 1 MiB of guest memory
 
 static int fails;
@@ -28,6 +29,7 @@ uint64_t g_recomp_call_model;
 bool (*g_nps5_hostcall_fault_hook)(void *ucontext, uint64_t fault_addr);
 uintptr_t recomp_dispatch_miss(GuestContext *ctx, uint64_t rip, uint32_t reason) { (void)ctx; (void)rip; (void)reason; return 0; }
 bool recomp_pc_in_guest_code(uint64_t pc) { (void)pc; return false; }
+_Thread_local GuestContext *g_current_ctx;
 
 static GuestContext C;
 static uint64_t seen[6], seen_rsp, nested;
@@ -45,6 +47,28 @@ static void guest_callback(GuestContext *ctx) {
   *(uint32_t *)(ctx->mem_base + ctx->rdi) = 0xc0ffee; // writes through the guest address it was given
   ctx->rax = ctx->rsi + 1;
   ctx->rsp += 8;
+}
+
+// The n-argument guest function: records the six register arguments, the stack arguments at [rsp + 8...] and the
+// current context, returns the sum of all fourteen.
+static uint64_t seen14[14], seen14_rsp;
+static GuestContext *seen14_cur;
+static void guest_fn14(GuestContext *ctx) {
+    seen14[0] = ctx->rdi;
+    seen14[1] = ctx->rsi;
+    seen14[2] = ctx->rdx;
+    seen14[3] = ctx->rcx;
+    seen14[4] = ctx->r8;
+    seen14[5] = ctx->r9;
+    for (int i = 0; i < 8; i++)
+        seen14[6 + i] = *(uint64_t *)(ctx->mem_base + ctx->rsp + 8 + 8 * i);
+    seen14_rsp = ctx->rsp;
+    seen14_cur = g_current_ctx;
+    uint64_t sum = 0;
+    for (int i = 0; i < 14; i++)
+        sum += seen14[i];
+    ctx->rax = sum;
+    ctx->rsp += 8;
 }
 
 static sigjmp_buf jb;
@@ -69,6 +93,8 @@ int main(void) {
   l3[GUEST_FN & DISPATCH_LEVEL_MASK] = guest_callback;
   l2[(GUEST_FN >> DISPATCH_L2_SHIFT) & DISPATCH_LEVEL_MASK] = l3;
   g_dispatch_l1[(GUEST_FN >> DISPATCH_L1_SHIFT) & DISPATCH_LEVEL_MASK] = l2;
+
+  l3[GUEST_FN14 & DISPATCH_LEVEL_MASK] = guest_fn14;
 
   struct sigaction sa = {0};
   sa.sa_sigaction = on_fault;
@@ -100,6 +126,40 @@ int main(void) {
 
   // 3. After the bracket closed: a fault again.
   if (sigsetjmp(jb, 1) == 0) { cb(ram, 1, 2, 3, 4, 5); CHECK(!"call after leave returned"); }
+
+  // 4. nps5_hostcall_run_n: a host-owned context, no bracket; 14 arguments (6 in registers, 8 on the stack as after a CALL).
+  {
+      static GuestContext H;
+      H.mem_base = arena;
+      H.mem_size = C.mem_size;
+      H.rsp = GUEST_RAM + 0xC0000;
+      H.rdi = 0x5555;
+      H.rax = 0x6666;
+      const uint64_t a[14] = {GUEST_RAM + 0x10, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+      const uint64_t before = nps5_hostcall_count();
+      g_current_ctx = &C;
+      const uint64_t r = nps5_hostcall_run_n(&H, GUEST_FN14, a, 14);
+      uint64_t want = 0;
+      for (int i = 0; i < 14; i++) {
+          want += a[i];
+          CHECK(seen14[i] == a[i]);
+      }
+      CHECK(r == want);
+      CHECK((seen14_rsp & 15) == 8 && seen14_rsp < GUEST_RAM + 0xC0000 - 128 - 64);
+      CHECK(seen14_cur == &H && g_current_ctx == &C); // current context swapped for the call only
+      CHECK(H.rsp == GUEST_RAM + 0xC0000 && H.rdi == 0x5555 && H.rax == 0x6666); // context state restored
+      CHECK(nps5_hostcall_count() == before + 1);
+      CHECK(nps5_hostcall_ctx() == NULL); // no bracket opened
+      // fewer arguments: unused registers are zero, nothing on the stack is read as an argument
+      const uint64_t b[3] = {1, 2, 3};
+      memset(seen14, 0xff, sizeof seen14);
+      CHECK(nps5_hostcall_run_n(&H, GUEST_FN14, b, 3) ==
+            6 + seen14[6] + seen14[7] + seen14[8] + seen14[9] + seen14[10] + seen14[11] + seen14[12] + seen14[13]);
+      CHECK(seen14[0] == 1 && seen14[2] == 3 && seen14[3] == 0 && seen14[5] == 0);
+      CHECK(nps5_hostcall_run_n(NULL, GUEST_FN14, a, 14) == ~0ull);
+      CHECK(nps5_hostcall_run_n(&H, GUEST_FN14, a, 17) == ~0ull);
+      CHECK(nps5_hostcall_run_n(&H, GUEST_FN14, NULL, 2) == ~0ull);
+  }
 
   printf(fails ? "hostcall_unit: %d FAILURES\n" : "hostcall_unit: all passed\n", fails);
   return fails ? 1 : 0;
