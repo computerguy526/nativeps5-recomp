@@ -327,6 +327,22 @@ func prologueByte(b byte) bool {
 // they and everything only they call are missing from the translation.
 var seedAfterUD2 = os.Getenv("NPS5_SEED_AFTER_UD2") == "1"
 
+// SetPackedLayout turns the packed-code discovery rules on for this process: entries behind a ud2 or
+// an unconditional jmp are seeded (gapEntryOK) and fall-into entries are kept (keepFallInto). It is
+// what NPS5_SEED_AFTER_UD2=1 does, as a translator flag (-packed-layout) so a title profile can set
+// it; the environment variable keeps working. Call it before NewDisassembler; off never clears an
+// environment opt-in.
+func SetPackedLayout(on bool) {
+	if !on {
+		return
+	}
+	seedAfterUD2 = true
+	keepFallInto = true
+}
+
+// PackedLayout reports whether the packed-code discovery rules are on (flag or environment).
+func PackedLayout() bool { return seedAfterUD2 }
+
 func gapEntryOK(img *elfloader.Image, addr uint64) bool {
 	prev := img.Bytes(addr-1, 1)
 	afterPad := len(prev) == 1 && (prev[0] == 0xCC || prev[0] == 0x90 || prev[0] == 0xC3)

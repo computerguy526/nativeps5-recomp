@@ -268,31 +268,9 @@ func DiscoverCompanionModules(elfPath, appDir string, image *Image) []ModuleRef 
 		}
 	}
 
+	visited := make(map[string]struct{})
 	for _, root := range roots {
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			name := d.Name()
-			if strings.HasPrefix(name, ".") {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.IsDir() {
-				// Don't recurse into output/build dirs if they are inside the app dir
-				if name == "build" || name == "build_asm" || name == ".git" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			ext := strings.ToLower(filepath.Ext(name))
-			if ext == ".prx" || ext == ".sprx" {
-				addModuleRef(&out, seen, path, name)
-			}
-			return nil
-		})
+		walkModuleDir(root, visited, func(path, name string) { addModuleRef(&out, seen, path, name) })
 	}
 
 	for _, ref := range ReferencedModuleNames(image) {
@@ -315,6 +293,61 @@ func DiscoverCompanionModules(elfPath, appDir string, image *Image) []ModuleRef 
 		}
 	}
 	return out
+}
+
+// dumperArtefactDirs are folders some dump tools add to a game folder for their own emulator: not
+// the game's modules. fakelib/libSceAmpr.sprx linked as a companion would replace the Ampr HLE.
+var dumperArtefactDirs = map[string]struct{}{"fakelib": {}}
+
+// walkModuleDir calls visit for every .prx/.sprx below dir. Unlike filepath.WalkDir it follows
+// symbolic links to directories (a folder of links to a dump is the documented way to leave the
+// dumper's artefacts out), each real directory once. Hidden entries (.git among them), build output folders and the
+// dumper artefact folders are skipped.
+func walkModuleDir(dir string, visited map[string]struct{}, visit func(path, name string)) {
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return
+	}
+	if abs, err := filepath.Abs(real); err == nil {
+		real = abs
+	}
+	if _, ok := visited[real]; ok {
+		return
+	}
+	visited[real] = struct{}{}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		isDir := e.IsDir()
+		if e.Type()&os.ModeSymlink != 0 {
+			if fi, err := os.Stat(path); err == nil {
+				isDir = fi.IsDir()
+			} else {
+				continue // dangling link
+			}
+		}
+		if isDir {
+			if name == "build" || name == "build_asm" {
+				continue
+			}
+			if _, ok := dumperArtefactDirs[strings.ToLower(name)]; ok {
+				continue
+			}
+			walkModuleDir(path, visited, visit)
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext == ".prx" || ext == ".sprx" {
+			visit(path, name)
+		}
+	}
 }
 
 // Overlaps reports whether two loaded images share any virtual address bytes.

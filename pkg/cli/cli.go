@@ -67,6 +67,10 @@ type Config struct {
 	// AllowUnsupported keeps unsupported guest instructions as diagnostic stubs; by default they
 	// fail the translation with a list.
 	AllowUnsupported bool
+	// PackedLayout: the title packs functions with no alignment, ending them with ud2 or an
+	// unconditional jmp (-packed-layout, same as translate-time NPS5_SEED_AFTER_UD2=1): relocation
+	// targets behind those are entries and fall-into entries are kept (pkg/disasm SetPackedLayout).
+	PackedLayout bool
 	// SeedsFrom: tier1_misses.jsonl / run bundle / runs dir (comma separated) whose served
 	// misses are added to the CFG entry points (docs/m1/tier1.md).
 	SeedsFrom string
@@ -157,6 +161,7 @@ Options:
       -asan               Compile with AddressSanitizer and LeakSanitizer (default: false)
       -json               Emit progress as JSON lines on stdout (the log goes to stderr)
       -allow-unsupported  Keep unsupported guest instructions as diagnostic stubs (default: fail the build with a list)
+      -packed-layout      Discovery for titles packed without function alignment: entries behind ud2/jmp, fall-into entries kept (= NPS5_SEED_AFTER_UD2=1)
       -addr-mode <mode>   Guest memory addressing: base (host = guest + bias, default), identity (guest VA == host VA),
                           or auto (identity when the title has no fixed-address evidence, else base)
       -keep-asm           Keep the generated .s files (default: each chunk is assembled and its .s deleted at once);
@@ -306,6 +311,7 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.BoolVar(&cfg.TSO, "tso", cfg.TSO, "x86 memory ordering: acquire/release for non-stack guest memory")
 	fs.StringVar(&cfg.TSOElide, "tso-elide", cfg.TSOElide, "Stack accesses without ordering: off, stack or stack-region")
 	fs.BoolVar(&cfg.AllowUnsupported, "allow-unsupported", false, "Keep unsupported guest instructions as diagnostic stubs")
+	fs.BoolVar(&cfg.PackedLayout, "packed-layout", false, "Discovery for titles packed without function alignment (entries behind ud2/jmp; as NPS5_SEED_AFTER_UD2=1)")
 	fs.StringVar(&cfg.AddrMode, "addr-mode", cfg.AddrMode, "Guest memory addressing: base, identity or auto")
 	fs.StringVar(&cfg.X87, "x87", cfg.X87, "x87 model: f80 (80-bit, default) or f64 (doubles)")
 	fs.StringVar(&cfg.SimdLiveness, "simd-liveness", cfg.SimdLiveness, "Vector lane liveness: abi (default), strict or off")
@@ -609,6 +615,8 @@ func Execute(args []string) (err error) {
 	hle := emitter.NewHLEReport(loaded, moduleInfos)
 	fmt.Fprint(logw, hle.ImportSummary())
 
+	disasm.SetPackedLayout(cfg.PackedLayout)
+	cfg.PackedLayout = disasm.PackedLayout() // the environment opt-in counts too (tier-1 manifest, stamp)
 	d, err := disasm.NewDisassembler(loaded)
 	if err != nil {
 		return fmt.Errorf("failed to initialize disassembler: %w", err)

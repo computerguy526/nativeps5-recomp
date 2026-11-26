@@ -154,3 +154,42 @@ func TestSarosProfileHandShaderStack(t *testing.T) {
 		}
 	}
 }
+
+// TestSarosProfileTranslateArgs: SAROS is translated with the packed-code discovery and with the unsupported MMX / moffs
+// sites as stubs (the bring-up translation did both; without them `nps5 build` refuses the title or the UE main thread
+// loops in dispatch). No other title gets them from its profile.
+func TestSarosProfileTranslateArgs(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NPS5_PROFILES", "")
+	p, _, err := LoadProfile("", "PPSA07631", repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := p.Args(func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, a := range args {
+		have[a] = true
+	}
+	for _, want := range []string{"-packed-layout", "-allow-unsupported"} {
+		if !have[want] {
+			t.Errorf("PPSA07631 translate args %v lack %s", args, want)
+		}
+	}
+	for _, id := range []string{"PPSA21564", "PPSA28997"} {
+		q, _, err := LoadProfile("", id, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range q.Translate.Args {
+			if a == "-packed-layout" {
+				t.Errorf("%s must not set -packed-layout", id)
+			}
+		}
+	}
+}

@@ -41,6 +41,9 @@ func translationStamp(cfg *Config) (string, error) {
 	fmt.Fprintf(h, "cfg=%s|%s|%s|%t|%t|%t|%s|%s|%d|%t|%t|%s|%s\n", cfg.AddrMode, cfg.CallModel, cfg.X87, cfg.TSO, cfg.AllowUnsupported,
 		cfg.AllSymbols, cfg.GPU, strings.Join(cfg.ExcludeModules, ","), cfg.ChunkSize, cfg.asmComments(), cfg.KeepAsm, cfg.AppDir, os.Getenv("NPS5_ANYPS5_BUILD"))
 	fmt.Fprintf(h, "liftmisc=%t|%t|%t|%t\n", cfg.CallIC, cfg.FpCmpFuse, cfg.PushPopFuse, cfg.JmpIC)
+	if cfg.PackedLayout || os.Getenv("NPS5_SEED_AFTER_UD2") == "1" {
+		fmt.Fprintf(h, "packed=1\n") // only when on: other titles keep their stamp
+	}
 	if cfg.ROLoads || cfg.RedZoneLeaf || cfg.BMIPeep {
 		fmt.Fprintf(h, "lift2=%t|%t|%t\n", cfg.ROLoads, cfg.RedZoneLeaf, cfg.BMIPeep)
 	}

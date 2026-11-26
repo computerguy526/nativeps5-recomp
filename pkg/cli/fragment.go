@@ -244,6 +244,7 @@ func prepareFragmentEnv(manifest string) (*fragEnv, error) {
 	lifter.SetRedZoneLeaf(info.RedZoneLeaf)
 	lifter.SetBMIPeep(info.BMIPeep)
 	lifter.SetColdOutline(info.ColdOutline)
+	disasm.SetPackedLayout(info.PackedLayout) // the title's discovery rules (entries behind ud2/jmp, fall-into kept)
 	if fi, err := os.Stat(info.Elf); err != nil {
 		return nil, ferr(fragModuleChanged, "input ELF: %v", err)
 	} else if fi.Size() != info.ElfSize || fi.ModTime().UnixNano() != info.ElfMtimeNs {

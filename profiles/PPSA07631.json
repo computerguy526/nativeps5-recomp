@@ -1,6 +1,9 @@
 {
     "name": "PPSA07631",
-    "translate": {},
+    "notes": [
+        "translate: -packed-layout = the packed-code discovery the title was brought up with (NPS5_SEED_AFTER_UD2=1: functions packed without alignment, ending in ud2 or jmp; without it the UE main thread loops in dispatch). -allow-unsupported: 18-29 MMX / moffs forms the lifter does not lower, never reached at run time."
+    ],
+    "translate": {"args": ["-allow-unsupported", "-packed-layout"]},
     "env": {
         "NPS5_UNRESOLVED_RET0": "1",
         "NPS5_AVPLAYER_CLOSE_CALLER_CTX": "1",

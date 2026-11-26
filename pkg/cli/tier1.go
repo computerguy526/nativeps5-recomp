@@ -51,6 +51,7 @@ type tier1Info struct {
 	LayoutHash       string   `json:"layout_hash,omitempty"` // emitter.LayoutHash(): runtime struct offsets the text bakes in
 	CodeABI          int      `json:"code_abi,omitempty"`    // emitter.ABIVersion
 	AllowUnsupported bool     `json:"allow_unsupported"`
+	PackedLayout     bool     `json:"packed_layout,omitempty"` // -packed-layout / NPS5_SEED_AFTER_UD2: fragments discover the same way
 	AllSymbols       bool     `json:"all_symbols"`
 	CallModel        string   `json:"call_model"` // flat or nested: the lifter's model, fragments are lifted in it
 	X87              string   `json:"x87,omitempty"`
@@ -125,7 +126,7 @@ func writeTier1Artifacts(cfg *Config, funcs []disasm.ReachableFunc) (cfile strin
 	}
 	info := tier1Info{
 		ABI: Tier1ABI, Elf: elfAbs, ElfSHA256: sum, ElfSize: fi.Size(), ElfMtimeNs: fi.ModTime().UnixNano(),
-		AppDir: cfg.AppDir, AddrMode: cfg.AddrMode, TSO: cfg.TSO, CallIC: cfg.CallIC, FpCmpFuse: cfg.FpCmpFuse, PushPopFuse: cfg.PushPopFuse, JmpIC: cfg.JmpIC, ColdOutline: cfg.ColdOutline, LayoutHash: emitter.KeyLayoutHash(), CodeABI: emitter.ABIVersion, ROLoads: cfg.ROLoads, RedZoneLeaf: cfg.RedZoneLeaf, BMIPeep: cfg.BMIPeep, TSOElide: cfg.TSOElide, AllowUnsupported: cfg.AllowUnsupported,
+		AppDir: cfg.AppDir, AddrMode: cfg.AddrMode, TSO: cfg.TSO, CallIC: cfg.CallIC, FpCmpFuse: cfg.FpCmpFuse, PushPopFuse: cfg.PushPopFuse, JmpIC: cfg.JmpIC, ColdOutline: cfg.ColdOutline, LayoutHash: emitter.KeyLayoutHash(), CodeABI: emitter.ABIVersion, ROLoads: cfg.ROLoads, RedZoneLeaf: cfg.RedZoneLeaf, BMIPeep: cfg.BMIPeep, TSOElide: cfg.TSOElide, AllowUnsupported: cfg.AllowUnsupported, PackedLayout: cfg.PackedLayout,
 		AllSymbols: cfg.AllSymbols, CallModel: lifter.GetCallModel().String(), X87: cfg.X87, SimdLiveness: cfg.SimdLiveness, GPU: cfg.GPU,
 		ExcludeModules: cfg.ExcludeModules, HLEMalloc: cfg.HLEMalloc, HLEReplace: absOrEmpty(cfg.HLEReplace), Patches: absOrEmpty(cfg.Patches),
 		Translator: exe, TranslatorSHA256: exeSum,
@@ -231,6 +232,10 @@ func tier1Version(i *tier1Info) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%t|%t|%t|%s|%s|%s|%s|%x|%t|ic=%t,%t,%t,%t|cold=%t|layout=%s|abi=%d|simd=%s", i.ABI, i.LoweringID, i.AddrMode, i.CallModel, i.TSO,
 		i.AllowUnsupported, i.AllSymbols, i.X87, i.GPU, strings.Join(i.ExcludeModules, ","), i.Elf, i.TSORelax, i.NoPeephole,
 		i.CallIC, i.FpCmpFuse, i.PushPopFuse, i.JmpIC, i.ColdOutline, i.LayoutHash, i.CodeABI, i.SimdLiveness)))
+	if i.PackedLayout {
+		// Only when set: the version of a title translated without it is what it was before the option existed.
+		h = sha256.Sum256([]byte(fmt.Sprintf("%x|packed", h)))
+	}
 	if len(i.TSOStrict) != 0 {
 		// Only for a non-empty list: the version of a title without one is what it was before the option existed.
 		h = sha256.Sum256([]byte(fmt.Sprintf("%x|strict=%x", h, i.TSOStrict)))
