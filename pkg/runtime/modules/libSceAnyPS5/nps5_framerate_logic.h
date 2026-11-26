@@ -17,6 +17,7 @@
 //   legacy   NPS5_FRAMERATE_LEGACY=1: the old behaviour (fast EMA, rewrite at >= 0.75 fps change, no freeze).
 #pragma once
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -194,6 +195,17 @@ static inline int nps5_fr_hotkey_accept(unsigned long long *last_ns, unsigned lo
   if (*last_ns && now_ns >= *last_ns && now_ns - *last_ns < NPS5_FR_HOTKEY_DEBOUNCE_NS) return 0;
   *last_ns = now_ns ? now_ns : 1;
   return 1;
+}
+// Claim one press atomically (debounce + shared timestamp). accept() writes the accepted time into the local copy, so the
+// CAS must publish that copy while expecting the value it read; passing the same variable as both (the first version) never
+// succeeded and the window thread spun forever on the first accepted press (apediag_local_2 hang, 2026-11-26).
+static inline int nps5_fr_hotkey_claim(_Atomic unsigned long long *last_ns, unsigned long long now_ns) {
+  unsigned long long seen = atomic_load(last_ns);
+  for (;;) {
+    unsigned long long upd = seen;
+    if (!nps5_fr_hotkey_accept(&upd, now_ns)) return 0;
+    if (atomic_compare_exchange_weak(last_ns, &seen, upd)) return 1;
+  }
 }
 static inline void nps5_fr_effective_hk(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
                                         double file_hi, int hk, double hk_fps, double *lo, double *hi) {

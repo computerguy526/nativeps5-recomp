@@ -1,6 +1,7 @@
 // Host test of the [framerate] decision logic (pkg/runtime/modules/libSceAnyPS5/nps5_framerate_logic.h). Build/run: tools/framerate_unit.sh
 #include "../../pkg/runtime/modules/libSceAnyPS5/nps5_framerate_logic.h"
 #include <stdio.h>
+#include <unistd.h>
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static uint64_t T;
@@ -134,6 +135,13 @@ static void test_hotkey(void) {
     CHECK(nps5_fr_hotkey_accept(&last, 1240000000ull) == 0, "still inside the window (measured from the accepted press, 240 ms)");
     CHECK(nps5_fr_hotkey_accept(&last, 1300000000ull) == 1, "a press 300 ms later accepted");
     CHECK(nps5_fr_hotkey_accept(&last, 1200000000ull) == 1, "clock going backwards is accepted, not stuck"); }
+  { // the claim loop must terminate (a spinning window thread hung the game, apediag_local_2): alarm kills a regression
+    alarm(10);
+    _Atomic unsigned long long last = 0;
+    CHECK(nps5_fr_hotkey_claim(&last, 5000000000ull) == 1 && atomic_load(&last) == 5000000000ull, "claim: first press accepted and stored");
+    CHECK(nps5_fr_hotkey_claim(&last, 5100000000ull) == 0 && atomic_load(&last) == 5000000000ull, "claim: second handler dropped, stamp kept");
+    CHECK(nps5_fr_hotkey_claim(&last, 5400000000ull) == 1 && atomic_load(&last) == 5400000000ull, "claim: later press accepted (old stamp > 250 ms)");
+    alarm(0); }
   int s = 0, seq[7]; for (int i = 0; i < 7; i++) { s = nps5_fr_hotkey_next(s); seq[i] = s; }
   CHECK(seq[0] == 1 && seq[1] == 2 && seq[2] == 1 && seq[3] == 2 && seq[5] == 2 && seq[6] == 1, "toggle: default -> floor -> off -> floor -> off");
   CHECK(nps5_fr_hotkey_next(-1) == 1 && nps5_fr_hotkey_next(9) == 1, "bad state -> floor");

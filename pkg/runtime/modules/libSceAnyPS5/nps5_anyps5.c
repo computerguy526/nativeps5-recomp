@@ -494,9 +494,8 @@ void nps5_framerate_hotkey(void) {
   const double fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
   if (fps <= 0) return;
   static _Atomic unsigned long long last_ns; // both key handlers (Metal window, Kyty window) can call: one press = one cycle
-  unsigned long long seen = atomic_load(&last_ns);
   const unsigned long long now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-  do { if (!nps5_fr_hotkey_accept(&seen, now)) return; } while (!atomic_compare_exchange_weak(&last_ns, &seen, now));
+  if (!nps5_fr_hotkey_claim(&last_ns, now)) return;
   int old = atomic_load(&g_fr_hk), nw;
   do nw = nps5_fr_hotkey_next(old); while (!atomic_compare_exchange_weak(&g_fr_hk, &old, nw));
   static const char *const nm[] = {"configured", "floor", "off"};
