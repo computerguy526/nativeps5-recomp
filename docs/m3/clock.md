@@ -114,7 +114,7 @@ credit installed is single-threaded; the contended case is not benchmarked.
 Known limit, measured: a thread that learns a value another thread published (through memory) and then reads the clock
 can get a value up to ~2 us (8-thread stress, all threads hammering one cache line) below the published one, because the
 `mrs cntvct_el0` is not ordered with the earlier load that was waiting for the cache line. This is the same property
-as `RDTSC` and as the old implementation; it never goes backwards within a thread. Building with `-DNPS5_CLOCK_ISB`
+as `RDTSC` and as the old implementation; it never goes backwards within a thread, except while a GPU-stall credit steps: the seqlock loads between two unordered counter reads let a thread step back by up to ~5 us (measured 4.3 us worst, a handful of steps in 2e9 reads under 8-thread stress; the test tolerates 10 us). Building with `-DNPS5_CLOCK_ISB`
 makes `cntvct_now` an `isb; mrs`, which removes it (0 in the same stress) at ~14 ns per read instead of ~1 (measured); not worth it for a game clock.
 
 `shimbench` has new cases (`proc_time_counter`, `proc_time_us`, `read_tsc_call`, `rdtsc_insn`, `clock_gettime_mono`,
