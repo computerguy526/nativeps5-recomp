@@ -48,7 +48,12 @@ jobs:
         run: |
           # shellcheck disable=SC2046
           go test $(go list ./... | grep -vE '/pkg/(lifter|runtime|emitter)$')
-          go test ./pkg/runtime -run 'TestHostAccessHooks|TestFontGlyphAPI|TestKytyRouteTable' -count=1
+          # TestKytyRouteTable has no build tag and must run here (the script fails when it is missing, skipped or not built).
+          .github/nps5-ci/require_tests.sh ./pkg/runtime TestKytyRouteTable
+          # these two are darwin-only host tests (C builds): they run where the job runs on macOS (scripts/ci/run-local.sh), not on ubuntu
+          if [ "$(uname -s)" = Darwin ]; then
+            .github/nps5-ci/require_tests.sh ./pkg/runtime TestHostAccessHooks TestFontGlyphAPI
+          fi
           go test ./pkg/lifter -run 'PatchValue' -count=1
           go test ./pkg/emitter -run 'Patch|Shipped|AstroStubs' -count=1
 
