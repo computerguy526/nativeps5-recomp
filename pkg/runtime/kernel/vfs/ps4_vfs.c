@@ -478,12 +478,28 @@ static void vfs_mount_overlay(void) {
 // Read-time level fix (nps5_levelfix.h): a patched copy of a known level file, mounted read-only over its guest path.
 static int vfs_lf_resolve(void *u, const char *g, char *h, size_t n) { (void)u; return ps4_vfs_resolve(g, h, n); }
 static int vfs_lf_in_root(void *u, const char *h) { (void)u; return vfs_host_in_app_root(h); }
-static int vfs_lf_cache(void *u, char *d, size_t n) { (void)u; return ps4_vfs_userdata_dir("levelfix", d, n); }
+// The patched copy goes to a cache directory next to the program cache, not into the per-title userdata (the save area).
+static int vfs_lf_cache(void *u, char *d, size_t n) {
+  (void)u;
+  char ud[1100] = {0};
+  const char *root = getenv("NPS5_USERDATA_DIR");
+  if (root && *root) snprintf(ud, sizeof ud, "%s", root);
+  else if (!ps4_vfs_userdata_dir("savedata", ud, sizeof ud)) ud[0] = 0; // default layout: the save area itself
+  const char *tid = ps4_vfs_title_id();
+  if (!nps5_lf_pick_cache_dir(getenv("NPS5_LEVELFIX_CACHE_DIR"), getenv("KYTY_PROGRAM_CACHE_PATH"), getenv("PS4RECOMP_CACHE_DIR"),
+                              getenv("HOME"), tid && *tid ? tid : NULL, ud, d, n)) {
+    fprintf(stderr, "[levelfix] no cache directory outside the userdata\n");
+    return 0;
+  }
+  if (vfs_host_in_app_root(d)) return 0;
+  return vfs_mkdir_p(d) == 0;
+}
 static int vfs_lf_mount(void *u, const char *g, const char *h) { (void)u; return ps4_vfs_mount_ro(g, h); }
 
+static nps5_lf_state g_lf_state; // once per launch: ps4_vfs_init may run again, the mounts are re-made from this record
 static void vfs_mount_levelfix(void) {
-  nps5_lf_env env = { ps4_vfs_title_id(), getenv("NPS5_LEVELFIX"), vfs_lf_resolve, vfs_lf_in_root, vfs_lf_cache, vfs_lf_mount, NULL };
-  nps5_levelfix_run(&env, nps5_lf_table, sizeof(nps5_lf_table) / sizeof(nps5_lf_table[0]));
+  nps5_lf_env env = { ps4_vfs_title_id(), getenv("NPS5_LEVELFIX"), vfs_lf_resolve, vfs_lf_in_root, vfs_lf_cache, vfs_lf_mount, NULL, &g_lf_state };
+  nps5_levelfix_apply(&env, nps5_lf_table, sizeof(nps5_lf_table) / sizeof(nps5_lf_table[0]));
 }
 
 void ps4_vfs_init(const char *app_root) {

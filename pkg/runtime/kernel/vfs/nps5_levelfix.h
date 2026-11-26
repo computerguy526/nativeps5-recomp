@@ -8,6 +8,10 @@
 //   - the source must hash to the table's sha256 when it comes from the game folder; a file that comes from NPS5_OVERLAY_DIR
 //     (scenery overlay / launcher-fixed file) is already derived from it, so only the structure is checked there;
 //   - value == old -> replaced by new ("applied"); value == new -> nothing to do ("already"); anything else -> "skipped: why".
+// The patched copy lives in a CACHE directory (nps5_lf_pick_cache_dir: NPS5_LEVELFIX_CACHE_DIR, else next to the program cache
+// KYTY_PROGRAM_CACHE_PATH, else $PS4RECOMP_CACHE_DIR, else <app support>/nativeps5/<title>/gpu-cache), never in the per-title
+// userdata (the save area), and never inside the game folder.
+// It runs ONCE per launch (nps5_levelfix_apply): a second ps4_vfs_init (which clears the mounts) only re-mounts the recorded copies.
 // Default ON for the titles in the table; NPS5_LEVELFIX=0 opts out. One log line per level at init.
 #ifndef NPS5_LEVELFIX_H
 #define NPS5_LEVELFIX_H
@@ -157,6 +161,30 @@ static int nps5_lf_apply(const char *in, size_t n, const nps5_lf_entry *e, int s
 #undef LF_SKIP
 }
 
+// ---- cache directory choice (pure) ---------------------------------------------------------------------------------------
+// Picks the directory of the patched copies; 1 and out set, or 0 when no safe place exists. A directory inside the per-title
+// userdata root (the save area) is refused, so a patched level is never written next to the player's saves.
+static int nps5_lf_under(const char *path, const char *root) {
+  if (!root || !*root) return 0;
+  size_t n = strlen(root);
+  while (n > 1 && root[n - 1] == '/') n--;
+  return strncmp(path, root, n) == 0 && (path[n] == '/' || path[n] == 0);
+}
+static int nps5_lf_pick_cache_dir(const char *explicit_dir, const char *program_cache_path, const char *recomp_cache_dir,
+                                  const char *home, const char *tid, const char *userdata_root, char *out, size_t sz) {
+  int n = -1;
+  if (explicit_dir && *explicit_dir) n = snprintf(out, sz, "%s", explicit_dir);
+  else if (program_cache_path && strchr(program_cache_path, '/')) {
+    const char *sl = strrchr(program_cache_path, '/');
+    n = snprintf(out, sz, "%.*s/levelfix", (int)(sl - program_cache_path), program_cache_path);
+    if (sl == program_cache_path) n = snprintf(out, sz, "/levelfix");
+  } else if (recomp_cache_dir && *recomp_cache_dir) n = snprintf(out, sz, "%s/levelfix", recomp_cache_dir);
+  else if (home && *home && tid && *tid) n = snprintf(out, sz, "%s/Library/Application Support/nativeps5/%s/gpu-cache/levelfix", home, tid);
+  if (n < 0 || (size_t)n >= sz) return 0;
+  if (nps5_lf_under(out, userdata_root)) return 0;
+  return 1;
+}
+
 // ---- driver (file layer behind callbacks, so a test can fake it) ---------------------------------------------------------
 typedef struct {
   const char *title;   // title id ("" = unknown)
@@ -166,7 +194,17 @@ typedef struct {
   int (*cache_dir)(void *u, char *dir, size_t sz);                   // 1 and a created directory, or 0
   int (*mount_ro)(void *u, const char *guest, const char *host);
   void *u;
+  struct nps5_lf_state *st; // once-per-launch memory (NULL = every call runs)
 } nps5_lf_env;
+
+// Once per launch: the mounts made by the first run, kept so a later init (which clears the mounts) can re-mount without
+// re-reading or re-hashing anything and without another log line.
+#define NPS5_LF_MAX_MOUNTS 8
+typedef struct nps5_lf_state {
+  int ran;
+  int n;
+  char guest[NPS5_LF_MAX_MOUNTS][600], host[NPS5_LF_MAX_MOUNTS][1100];
+} nps5_lf_state;
 
 static int nps5_lf_read_file(const char *path, char **buf, size_t *n) {
   FILE *f = fopen(path, "rb");
@@ -221,9 +259,28 @@ static int nps5_levelfix_run(const nps5_lf_env *env, const nps5_lf_entry *tab, s
     free(out);
     if (!ok) { nps5_lf_log(e, "skipped: cannot write the cache copy"); continue; }
     if (env->mount_ro(env->u, guest, path) != 0) { nps5_lf_log(e, "skipped: mount failed"); continue; }
+    if (env->st && env->st->n < NPS5_LF_MAX_MOUNTS) {
+      snprintf(env->st->guest[env->st->n], sizeof env->st->guest[0], "%s", guest);
+      snprintf(env->st->host[env->st->n], sizeof env->st->host[0], "%s", path);
+      env->st->n++;
+    }
     nps5_lf_log(e, "applied");
     mounted++;
   }
+  return mounted;
+}
+
+// Entry point of ps4_vfs_init: the first call runs the table; later calls only re-mount what the first one made.
+static int nps5_levelfix_apply(const nps5_lf_env *env, const nps5_lf_entry *tab, size_t ntab) {
+  nps5_lf_state *st = env->st;
+  if (!st) return nps5_levelfix_run(env, tab, ntab);
+  if (!st->ran) {
+    st->ran = 1;
+    return nps5_levelfix_run(env, tab, ntab);
+  }
+  int mounted = 0;
+  for (int i = 0; i < st->n; i++)
+    if (env->mount_ro(env->u, st->guest[i], st->host[i]) == 0) mounted++;
   return mounted;
 }
 

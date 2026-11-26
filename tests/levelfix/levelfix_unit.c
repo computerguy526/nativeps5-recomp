@@ -35,6 +35,7 @@ static int f_resolve(void *u, const char *g, char *h, size_t n) {
 }
 static int f_in_root(void *u, const char *h) { Fake *f = u; return strncmp(h, f->app, strlen(f->app)) == 0; }
 static int f_cache(void *u, char *d, size_t n) { Fake *f = u; snprintf(d, n, "%s", f->cache); return 1; }
+static int f_nocache(void *u, char *d, size_t n) { (void)u; (void)d; (void)n; return 0; }
 static int f_mount(void *u, const char *g, const char *h) {
   Fake *f = u; f->mounted++; snprintf(f->mguest, sizeof f->mguest, "%s", g); snprintf(f->mhost, sizeof f->mhost, "%s", h); return 0;
 }
@@ -132,6 +133,57 @@ int main(void) {
   // built-in table: shape only
   CHECK(!strcmp(nps5_lf_table[0].title, "PPSA21564") && nps5_lf_table[0].obj_len == 59 && strlen(nps5_lf_table[0].src) == 64 &&
         strlen(nps5_lf_table[0].old_v) == strlen(nps5_lf_table[0].new_v));
+  // cache directory choice: explicit > next to the program cache > recomp cache dir > app support; never the save area
+  { char o[600];
+    CHECK(nps5_lf_pick_cache_dir("/x/explicit", "/p/c/T.programs.bin", "/r", "/h", "T", NULL, o, sizeof o) && !strcmp(o, "/x/explicit"));
+    CHECK(nps5_lf_pick_cache_dir(NULL, "/p/c/T.programs.bin", "/r", "/h", "T", NULL, o, sizeof o) && !strcmp(o, "/p/c/levelfix"));
+    CHECK(nps5_lf_pick_cache_dir("", "/T.programs.bin", NULL, NULL, NULL, NULL, o, sizeof o) && !strcmp(o, "/levelfix"));
+    CHECK(nps5_lf_pick_cache_dir(NULL, "noslash.bin", "/r", "/h", "T", NULL, o, sizeof o) && !strcmp(o, "/r/levelfix"));
+    CHECK(nps5_lf_pick_cache_dir(NULL, NULL, NULL, "/h", "T", NULL, o, sizeof o) &&
+          !strcmp(o, "/h/Library/Application Support/nativeps5/T/gpu-cache/levelfix"));
+    CHECK(!nps5_lf_pick_cache_dir(NULL, NULL, NULL, NULL, "T", NULL, o, sizeof o));       // nothing to go on
+    CHECK(!nps5_lf_pick_cache_dir(NULL, NULL, NULL, "/h", NULL, NULL, o, sizeof o));      // no title id
+    CHECK(!nps5_lf_pick_cache_dir(NULL, "/save/T/p.bin", NULL, NULL, NULL, "/save/T", o, sizeof o)); // inside the userdata: refused
+    CHECK(!nps5_lf_pick_cache_dir("/save/T", NULL, NULL, NULL, NULL, "/save/T/", o, sizeof o));      // the root itself, trailing slash
+    CHECK(nps5_lf_pick_cache_dir("/save/T2/c", NULL, NULL, NULL, NULL, "/save/T", o, sizeof o));     // sibling with a shared prefix is fine
+    char tiny[8]; CHECK(!nps5_lf_pick_cache_dir("/long/long/long", NULL, NULL, NULL, NULL, NULL, tiny, sizeof tiny));
+  }
+  // the patched copy is written only into the cache dir (never the game folder); a second driver run, as a second
+  // ps4_vfs_init would make it, re-mounts the SAME file without reading, hashing or logging anything again
+  FRESH(); setup(&f, tmp, d);
+  { nps5_lf_state st; memset(&st, 0, sizeof st);
+    nps5_lf_env env = { "PPSATEST1", NULL, f_resolve, f_in_root, f_cache, f_mount, &f, &st };
+    f.mounted = 0;
+    CHECK(nps5_levelfix_apply(&env, &E, 1) == 1 && f.mounted == 1 && st.ran == 1 && st.n == 1);
+    char first[1100]; snprintf(first, sizeof first, "%s", f.mhost);
+    CHECK(strncmp(first, f.cache, strlen(f.cache)) == 0 && strncmp(first, f.app, strlen(f.app)) != 0);
+    // break the source: a second real run could not apply it; the recorded mount must still be re-made
+    char gp[800]; snprintf(gp, sizeof gp, "%s/%s", f.app, REL); unlink(gp);
+    f.mounted = 0; f.mhost[0] = 0;
+    CHECK(nps5_levelfix_apply(&env, &E, 1) == 1 && f.mounted == 1 && !strcmp(first, f.mhost) && st.n == 1);
+    CHECK(!strcmp(f.mguest, "/app0/lvl/level.lvx"));
+    CHECK(nps5_levelfix_apply(&env, &E, 1) == 1 && st.n == 1);  // third init: still one record
+  }
+  // a title that is not in the table still counts as run once and mounts nothing
+  FRESH(); setup(&f, tmp, d);
+  { nps5_lf_state st; memset(&st, 0, sizeof st);
+    nps5_lf_env env = { "PPSAOTHER", NULL, f_resolve, f_in_root, f_cache, f_mount, &f, &st };
+    f.mounted = 0;
+    CHECK(nps5_levelfix_apply(&env, &E, 1) == 0 && st.ran == 1 && nps5_levelfix_apply(&env, &E, 1) == 0 && f.mounted == 0); }
+  // a skipped first run (sha mismatch) stays skipped: no mount appears on the second init
+  FRESH(); setup(&f, tmp, d); E.src = "0000000000000000000000000000000000000000000000000000000000000000";
+  { nps5_lf_state st; memset(&st, 0, sizeof st);
+    nps5_lf_env env = { "PPSATEST1", NULL, f_resolve, f_in_root, f_cache, f_mount, &f, &st };
+    f.mounted = 0; CHECK(nps5_levelfix_apply(&env, &E, 1) == 0 && nps5_levelfix_apply(&env, &E, 1) == 0 && f.mounted == 0); }
+  // no cache directory available: skipped, nothing written to the game folder
+  FRESH(); setup(&f, tmp, d);
+  { nps5_lf_env env = { "PPSATEST1", NULL, f_resolve, f_in_root, f_nocache, f_mount, &f, NULL };
+    f.mounted = 0; CHECK(nps5_levelfix_run(&env, &E, 1) == 0 && f.mounted == 0);
+    char gp[800]; snprintf(gp, sizeof gp, "%s/%s", f.app, REL); char *g = slurp(gp, NULL); CHECK(g && !strcmp(g, d)); free(g); }
+  // the whole table: ps4_vfs.c must not put the copy under a userdata kind directory
+  { FILE *fp = fopen("pkg/runtime/kernel/vfs/ps4_vfs.c", "rb");
+    if (fp) { char *src = malloc(1 << 20); size_t k = fread(src, 1, (1 << 20) - 1, fp); src[k] = 0; fclose(fp);
+      CHECK(strstr(src, "userdata_dir(\"levelfix\"") == NULL); CHECK(strstr(src, "nps5_levelfix_apply") != NULL); free(src); } }
   free(d);
   char cmd[800]; snprintf(cmd, sizeof cmd, "rm -rf %s", t0); if (system(cmd)) {}
   if (fails) printf("levelfix_unit: %d FAILED\n", fails); else printf("levelfix_unit: all passed\n");
