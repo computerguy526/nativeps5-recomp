@@ -17,6 +17,10 @@
 //   pbb      (partial break board class, update): window +0x5d0..0x7d0
 //   bot      (bot class, collected from its create function): window +0x1680..0x16c0, FSM object *(+0x1690) window +0x60..0xa0 (state id +0x78); polled once per frame
 #include "nps5_apediag_logic.h"
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 #define AD_NCLS 5
 enum { AD_COUNTER, AD_DELAY, AD_PST, AD_PBB, AD_BOT };
@@ -118,10 +122,18 @@ static void ad_init(void) {
     fprintf(stderr, "[apediag] on: log %s, %d ids\n", path, g_ad_nids);
 }
 
+// Guest memory is sparse: a value that merely looks like a pointer (the identity scan follows every qword of an object) can name
+// an unmapped page below mem_size. The read goes through the kernel (vm_read_overwrite), which fails instead of faulting.
 static int ad_rd(const GuestContext *ctx, uint64_t g, void *dst, size_t n) {
     if (g < 0x10000 || g + n > ctx->mem_size) return 0;
+#ifdef __APPLE__
+    mach_vm_size_t got = 0;
+    return mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)NPS5_G2H(ctx, g), n,
+                                  (mach_vm_address_t)(uintptr_t)dst, &got) == KERN_SUCCESS && got == n;
+#else
     memcpy(dst, NPS5_G2H(ctx, g), n);
     return 1;
+#endif
 }
 
 static void ad_line(const char *cls, uint64_t addr, int id, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
