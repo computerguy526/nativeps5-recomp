@@ -29,7 +29,8 @@ typedef struct {
 static inline uint32_t nps5_ad_fnv(const void *p, size_t n) {
     const uint8_t *s = (const uint8_t *)p;
     uint32_t h = 0x811c9dc5u;
-    for (size_t i = 0; i < n; i++) h = (h ^ s[i]) * 0x01000193u;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ s[i]) * 0x01000193u;
     return h;
 }
 
@@ -46,15 +47,18 @@ static inline int nps5_ad_ids_parse(const char *text, Nps5AdId *out, int max) {
         line[len] = 0;
         p = e ? e + 1 : p + len;
         char *hash = line;
-        while (*hash == ' ' || *hash == '\t') hash++;
+        while (*hash == ' ' || *hash == '\t')
+            hash++;
         if (!*hash || *hash == '#') continue;
         char *end = NULL;
         unsigned long v = strtoul(hash, &end, 16);
         if (end == hash) continue;
-        while (*end == ' ' || *end == '\t') end++;
+        while (*end == ' ' || *end == '\t')
+            end++;
         char *lab = end;
         size_t ll = strlen(lab);
-        while (ll && (lab[ll - 1] == '\r' || lab[ll - 1] == ' ')) lab[--ll] = 0;
+        while (ll && (lab[ll - 1] == '\r' || lab[ll - 1] == ' '))
+            lab[--ll] = 0;
         out[n].hash = (uint32_t)v;
         snprintf(out[n].label, sizeof out[n].label, "%s", *lab ? lab : "id");
         n++;
@@ -134,8 +138,8 @@ static inline int nps5_ad_diff(Nps5AdObj *o, const uint8_t *cur, char *out, size
 
 // Counter rule of the title (counter, Type 0): a bot is "ready" when its state is `want` and it has been in it
 // longer than `thr` seconds; the counter fires when ready >= count.
-static inline int nps5_ad_ready_count(const uint32_t *state, const float *tin, const uint8_t *valid, int n, uint32_t want,
-                                      float thr) {
+static inline int nps5_ad_ready_count(const uint32_t *state, const float *tin, const uint8_t *valid, int n,
+                                      uint32_t want, float thr) {
     int r = 0;
     for (int i = 0; i < n; i++)
         if (valid[i] && state[i] == want && tin[i] > thr) r++;

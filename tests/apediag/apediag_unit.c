@@ -3,7 +3,15 @@
 #include "../../pkg/runtime/modules/libSceAnyPS5/nps5_apediag_logic.h"
 #include <stdio.h>
 static int fails;
-#define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
+#define CHECK(c, ...)                                                                                                  \
+    do {                                                                                                               \
+        if (!(c)) {                                                                                                    \
+            fails++;                                                                                                   \
+            printf("FAIL %s:%d: ", __FILE__, __LINE__);                                                                \
+            printf(__VA_ARGS__);                                                                                       \
+            printf("\n");                                                                                              \
+        }                                                                                                              \
+    } while (0)
 
 static void put32(uint8_t *b, size_t off, uint32_t v) { memcpy(b + off, &v, 4); }
 
@@ -47,14 +55,18 @@ int main(void) {
     for (uint32_t v = 1; v <= 6; v++) { // a timer at +4
         put32(w, 4, v * 100);
         int l = nps5_ad_diff(&o, w, out, sizeof out, 3);
-        if (v <= 3) CHECK(l == 1 && strstr(out, "+0x5d4"), "timer change %u listed: %s", v, out);
-        else CHECK(l == 0, "timer muted after 3 changes (v=%u listed %d)", v, l);
+        if (v <= 3)
+            CHECK(l == 1 && strstr(out, "+0x5d4"), "timer change %u listed: %s", v, out);
+        else
+            CHECK(l == 0, "timer muted after 3 changes (v=%u listed %d)", v, l);
     }
     put32(w, 0x10, 3);
-    CHECK(nps5_ad_diff(&o, w, out, sizeof out, 3) == 1 && strstr(out, "+0x5e0:2->3"), "other offsets still reported: %s", out);
+    CHECK(nps5_ad_diff(&o, w, out, sizeof out, 3) == 1 && strstr(out, "+0x5e0:2->3"),
+          "other offsets still reported: %s", out);
     // tiny output buffer never overflows
     char tiny[16];
-    put32(w, 0x14, 9); put32(w, 0x18, 9);
+    put32(w, 0x14, 9);
+    put32(w, 0x18, 9);
     nps5_ad_diff(&o, w, tiny, sizeof tiny, 3);
     CHECK(strlen(tiny) < sizeof tiny, "tiny buffer terminated");
     // window clamp
@@ -76,24 +88,33 @@ int main(void) {
 
     // delay trigger state names
     CHECK(!strcmp(nps5_ad_dt_state_name(0), "Wait") && !strcmp(nps5_ad_dt_state_name(1), "EnterDelay") &&
-              !strcmp(nps5_ad_dt_state_name(5), "Leave") && !strcmp(nps5_ad_dt_state_name(6), "?"), "state names");
+              !strcmp(nps5_ad_dt_state_name(5), "Leave") && !strcmp(nps5_ad_dt_state_name(6), "?"),
+          "state names");
 
     // line budget: untagged objects stop at their cap, tagged ones go further, the total always wins
     Nps5AdBudget b = {10, 0, 2, 5};
     Nps5AdObj u, t;
-    nps5_ad_obj_init(&u, 1, 0, 8); nps5_ad_obj_init(&t, 2, 0, 8); t.id = 0;
+    nps5_ad_obj_init(&u, 1, 0, 8);
+    nps5_ad_obj_init(&t, 2, 0, 8);
+    t.id = 0;
     int gu = 0, gt = 0;
-    for (int i = 0; i < 20; i++) gu += nps5_ad_budget_take(&b, &u);
+    for (int i = 0; i < 20; i++)
+        gu += nps5_ad_budget_take(&b, &u);
     CHECK(gu == 2, "untagged cap: %d", gu);
-    for (int i = 0; i < 20; i++) gt += nps5_ad_budget_take(&b, &t);
+    for (int i = 0; i < 20; i++)
+        gt += nps5_ad_budget_take(&b, &t);
     CHECK(gt == 5, "tagged cap: %d", gt);
     nps5_ad_obj_init(&u, 3, 0, 8);
     int more = 0;
     b.used = 9;
-    for (int i = 0; i < 5; i++) more += nps5_ad_budget_take(&b, &u);
+    for (int i = 0; i < 5; i++)
+        more += nps5_ad_budget_take(&b, &u);
     CHECK(more == 1, "total cap wins: %d", more);
 
-    if (fails) { printf("%d failed\n", fails); return 1; }
+    if (fails) {
+        printf("%d failed\n", fails);
+        return 1;
+    }
     printf("apediag_unit: all passed\n");
     return 0;
 }

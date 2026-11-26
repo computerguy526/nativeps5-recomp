@@ -391,8 +391,8 @@ static struct {
   const char *levels, *file, *scene;
   double base_lo, base_hi, file_lo, file_hi;
   uint64_t last_file_ns;
-  double hk_fps;   // NPS5_FRAMERATE_HOTKEY floor, 0 = hotkey off
-  int hk_applied;  // hotkey state the clamp was last computed for
+  double hk_fps; // NPS5_FRAMERATE_HOTKEY floor, 0 = hotkey off
+  int hk_applied; // hotkey state the clamp was last computed for
 } g_fr;
 // Hotkey state (0 configured / 1 floor / 2 off), written by the window thread, read by the flip thread.
 static _Atomic int g_fr_hk;
@@ -425,18 +425,22 @@ static void nps5_framerate_init(void) {
   if (!nps5_framerate_clamp(getenv("NPS5_FRAMERATE_MIN"), getenv("NPS5_FRAMERATE_MAX"), &g_fr.lo, &g_fr.hi))
     fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN/MAX not within 1 <= min <= max <= 240: using 20..60\n");
   nps5_fr_defaults(&g_fr.l, g_fr.lo, g_fr.hi);
-  g_fr.base_lo = g_fr.lo; g_fr.base_hi = g_fr.hi; g_fr.file_lo = -1;
+  g_fr.base_lo = g_fr.lo;
+  g_fr.base_hi = g_fr.hi;
+  g_fr.file_lo = -1;
   g_fr.levels = getenv("NPS5_FRAMERATE_MIN_LEVELS");
   if (g_fr.levels && nps5_fr_level_floor(g_fr.levels, "", 0) == -2) {
-    fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN_LEVELS=%s: want <level>=<fps 1..240>[,...] (ignored)\n", g_fr.levels);
-    g_fr.levels = NULL;
+      fprintf(stderr, "[framerate] NPS5_FRAMERATE_MIN_LEVELS=%s: want <level>=<fps 1..240>[,...] (ignored)\n",
+              g_fr.levels);
+      g_fr.levels = NULL;
   }
   if (g_fr.levels && !*g_fr.levels) g_fr.levels = NULL;
   g_fr.file = getenv("NPS5_FRAMERATE_FILE");
   g_fr.hk_fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
   if (g_fr.file && !*g_fr.file) g_fr.file = NULL;
   if (g_fr.levels || g_fr.file)
-    fprintf(stderr, "[framerate] clamp per level %s, live file %s\n", g_fr.levels ? g_fr.levels : "-", g_fr.file ? g_fr.file : "-");
+      fprintf(stderr, "[framerate] clamp per level %s, live file %s\n", g_fr.levels ? g_fr.levels : "-",
+              g_fr.file ? g_fr.file : "-");
   // NPS5_FRAMERATE_LEGACY=1 old behaviour; _NO_FREEZE_AV / _NO_FREEZE_LOAD=1 keep one freeze off; _EMA (0.02), _HYST_PCT (5),
   // _HYST_MS (1000), _WARM (60 frames without a rewrite after a freeze) tune the smoothing (nps5_fr_tune checks the ranges).
   if (getenv("NPS5_FRAMERATE_LEGACY") && atoi(getenv("NPS5_FRAMERATE_LEGACY")) > 0) g_fr.l.legacy = 1;
@@ -452,55 +456,80 @@ static void nps5_framerate_init(void) {
 }
 
 static void nps5_framerate_write(uint8_t *b, double want) {
-  double d = want; float f = (float)(1.0 / want); uint64_t us = (uint64_t)(1e6 / want);
-  memcpy(b, &d, 8); memcpy(b + 8, &f, 4); memcpy(b + 16, &us, 8);
-  g_fr.cur = want; g_fr.rewrites++;
+    double d = want;
+    float f = (float)(1.0 / want);
+    uint64_t us = (uint64_t)(1e6 / want);
+    memcpy(b, &d, 8);
+    memcpy(b + 8, &f, 4);
+    memcpy(b + 16, &us, 8);
+    g_fr.cur = want;
+    g_fr.rewrites++;
 }
 // Per-level floor + live file: recompute the clamp when the scene or the file changes (one pointer compare per flip,
 // the file is read at most twice a second). No-op unless NPS5_FRAMERATE_MIN_LEVELS or NPS5_FRAMERATE_FILE is set.
 static void nps5_framerate_clamp_update(uint8_t *b, uint64_t now) {
-  if (!g_fr.levels && !g_fr.file && g_fr.hk_fps <= 0) return;
-  int changed = 0;
-  const int hk = g_fr.hk_fps > 0 ? atomic_load(&g_fr_hk) : 0;
-  if (hk != g_fr.hk_applied) { g_fr.hk_applied = hk; changed = 1; }
-  const char *sc = nps5_vfs_current_scene ? nps5_vfs_current_scene() : "";
-  if (sc != g_fr.scene) { g_fr.scene = sc; changed = 1; }
-  if (g_fr.file && now - g_fr.last_file_ns >= 500000000ull) {
-    g_fr.last_file_ns = now;
-    double lo = -1, hi = -1;
-    FILE *fp = fopen(g_fr.file, "r");
-    if (fp) {
-      char t[64] = {0};
-      if (!fgets(t, sizeof t, fp) || !nps5_fr_live_parse(t, &lo, &hi)) lo = hi = -1;
-      fclose(fp);
+    if (!g_fr.levels && !g_fr.file && g_fr.hk_fps <= 0) return;
+    int changed = 0;
+    const int hk = g_fr.hk_fps > 0 ? atomic_load(&g_fr_hk) : 0;
+    if (hk != g_fr.hk_applied) {
+        g_fr.hk_applied = hk;
+        changed = 1;
     }
-    if (lo != g_fr.file_lo || hi != g_fr.file_hi) { g_fr.file_lo = lo; g_fr.file_hi = hi; changed = 1; }
-  }
-  if (!changed) return;
-  double lo, hi;
-  nps5_fr_effective_hk(g_fr.levels, sc, g_fr.base_lo, g_fr.base_hi, g_fr.file_lo, g_fr.file_hi, hk, g_fr.hk_fps, &lo, &hi);
-  if (lo == g_fr.l.lo && hi == g_fr.l.hi) return;
-  const double olo = g_fr.l.lo, ohi = g_fr.l.hi;
-  double want = 0;
-  const int rw = nps5_fr_set_clamp(&g_fr.l, lo, hi, &want);
-  if (rw) nps5_framerate_write(b, want);
-  g_fr.lo = g_fr.l.lo; g_fr.hi = g_fr.l.hi;
-  fprintf(stderr, "[framerate] clamp %.0f..%.0f -> %.0f..%.0f fps (%s; scene %s)%s\n", olo, ohi, g_fr.l.lo, g_fr.l.hi,
-          hk ? "hotkey" : g_fr.file_lo > 0 ? "live file" : "level table", sc && *sc ? sc : "(none)", rw ? ", block rewritten" : "");
+    const char *sc = nps5_vfs_current_scene ? nps5_vfs_current_scene() : "";
+    if (sc != g_fr.scene) {
+        g_fr.scene = sc;
+        changed = 1;
+    }
+    if (g_fr.file && now - g_fr.last_file_ns >= 500000000ull) {
+        g_fr.last_file_ns = now;
+        double lo = -1, hi = -1;
+        FILE *fp = fopen(g_fr.file, "r");
+        if (fp) {
+            char t[64] = {0};
+            if (!fgets(t, sizeof t, fp) || !nps5_fr_live_parse(t, &lo, &hi)) lo = hi = -1;
+            fclose(fp);
+        }
+        if (lo != g_fr.file_lo || hi != g_fr.file_hi) {
+            g_fr.file_lo = lo;
+            g_fr.file_hi = hi;
+            changed = 1;
+        }
+    }
+    if (!changed) return;
+    double lo, hi;
+    nps5_fr_effective_hk(g_fr.levels, sc, g_fr.base_lo, g_fr.base_hi, g_fr.file_lo, g_fr.file_hi, hk, g_fr.hk_fps, &lo,
+                         &hi);
+    if (lo == g_fr.l.lo && hi == g_fr.l.hi) return;
+    const double olo = g_fr.l.lo, ohi = g_fr.l.hi;
+    double want = 0;
+    const int rw = nps5_fr_set_clamp(&g_fr.l, lo, hi, &want);
+    if (rw) nps5_framerate_write(b, want);
+    g_fr.lo = g_fr.l.lo;
+    g_fr.hi = g_fr.l.hi;
+    fprintf(stderr, "[framerate] clamp %.0f..%.0f -> %.0f..%.0f fps (%s; scene %s)%s\n", olo, ohi, g_fr.l.lo, g_fr.l.hi,
+            hk                 ? "hotkey"
+            : g_fr.file_lo > 0 ? "live file"
+                               : "level table",
+            sc && *sc ? sc : "(none)", rw ? ", block rewritten" : "");
 }
 
 // Window thread (Cmd+Shift+F, ps4_metal_screen.m): cycle the live floor. Ignored unless NPS5_FRAMERATE_HOTKEY is set.
 void nps5_framerate_hotkey(void) {
-  const double fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
-  if (fps <= 0) return;
-  static _Atomic unsigned long long last_ns; // both key handlers (Metal window, Kyty window) can call: one press = one cycle
-  const unsigned long long now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-  if (!nps5_fr_hotkey_claim(&last_ns, now)) return;
-  int old = atomic_load(&g_fr_hk), nw;
-  do nw = nps5_fr_hotkey_next(old); while (!atomic_compare_exchange_weak(&g_fr_hk, &old, nw));
-  static const char *const nm[] = {"configured", "floor", "off"};
-  if (nw == 1) fprintf(stderr, "[framerate] hotkey: floor %.0f fps (slow motion below it)\n", fps);
-  else fprintf(stderr, "[framerate] hotkey: %s\n", nw == 2 ? "off (base clamp, no level floor / live file)" : nm[nw]);
+    const double fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
+    if (fps <= 0) return;
+    static _Atomic unsigned long long
+        last_ns; // both key handlers (Metal window, Kyty window) can call: one press = one cycle
+    const unsigned long long now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!nps5_fr_hotkey_claim(&last_ns, now)) return;
+    int old = atomic_load(&g_fr_hk), nw;
+    do
+        nw = nps5_fr_hotkey_next(old);
+    while (!atomic_compare_exchange_weak(&g_fr_hk, &old, nw));
+    static const char *const nm[] = {"configured", "floor", "off"};
+    if (nw == 1)
+        fprintf(stderr, "[framerate] hotkey: floor %.0f fps (slow motion below it)\n", fps);
+    else
+        fprintf(stderr, "[framerate] hotkey: %s\n", nw == 2 ? "off (base clamp, no level floor / live file)" : nm[nw]);
 }
 static void nps5_framerate_tick(GuestContext *ctx) {
   if (g_fr.state < 0) return;

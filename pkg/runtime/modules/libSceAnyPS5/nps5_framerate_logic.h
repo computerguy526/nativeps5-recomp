@@ -115,64 +115,72 @@ static inline int nps5_fr_step(Nps5Fr *f, uint64_t now_ns, int frozen, double *w
 //   NPS5_FRAMERATE_FILE=<path>  live override, polled twice a second: "<min>" (floor) or "<min> <max>" / "<min>-<max>"
 //            (e.g. "20 20" pins the laptop's 50 ms step, "60 60" = fixed 1/60). Missing / empty / unparsable = no override.
 static inline int nps5_fr_name_ok(const char *p, size_t n) {
-  if (!n) return 0;
-  for (size_t i = 0; i < n; i++) {
-    const char c = p[i];
-    if (!(c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0;
-  }
-  return 1;
+    if (!n) return 0;
+    for (size_t i = 0; i < n; i++) {
+        const char c = p[i];
+        if (!(c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0;
+    }
+    return 1;
 }
 static inline double nps5_fr_level_floor(const char *tab, const char *scene, double def) {
-  if (!tab || !*tab) return def;
-  double hit = -1;
-  const char *p = tab;
-  for (;;) {
-    const char *eq = strchr(p, '=');
-    if (!eq || !nps5_fr_name_ok(p, (size_t)(eq - p))) return -2;
-    char *end = NULL;
-    const double v = strtod(eq + 1, &end);
-    if (end == eq + 1 || (*end && *end != ',') || !(v >= 1.0 && v <= 240.0)) return -2;
-    const size_t nl = (size_t)(eq - p);
-    if (hit < 0 && scene && strlen(scene) == nl && !strncmp(scene, p, nl)) hit = v;
-    if (!*end) break;
-    p = end + 1;
-  }
-  return hit >= 0 ? hit : def;
+    if (!tab || !*tab) return def;
+    double hit = -1;
+    const char *p = tab;
+    for (;;) {
+        const char *eq = strchr(p, '=');
+        if (!eq || !nps5_fr_name_ok(p, (size_t)(eq - p))) return -2;
+        char *end = NULL;
+        const double v = strtod(eq + 1, &end);
+        if (end == eq + 1 || (*end && *end != ',') || !(v >= 1.0 && v <= 240.0)) return -2;
+        const size_t nl = (size_t)(eq - p);
+        if (hit < 0 && scene && strlen(scene) == nl && !strncmp(scene, p, nl)) hit = v;
+        if (!*end) break;
+        p = end + 1;
+    }
+    return hit >= 0 ? hit : def;
 }
 // Live file text -> clamp. Returns 1 and sets *lo (and *hi when a max is given, else leaves it) when valid.
 static inline int nps5_fr_live_parse(const char *t, double *lo, double *hi) {
-  if (!t) return 0;
-  while (*t == ' ' || *t == '\t') t++;
-  char *end = NULL;
-  const double l = strtod(t, &end);
-  if (end == t || !(l >= 1.0 && l <= 240.0)) return 0;
-  const char *q = end;
-  while (*q == ' ' || *q == '\t') q++;
-  int dash = 0;
-  if (*q == '-') { q++; dash = 1; }
-  while (*q == ' ' || *q == '\t') q++;
-  double h = -1;
-  if (dash && (!*q || *q == '\n' || *q == '\r')) return 0; // "30-": a max is missing
-  if (*q && *q != '\n' && *q != '\r') {
-    h = strtod(q, &end);
-    if (end == q || !(h >= l && h <= 240.0)) return 0;
-    q = end;
-    while (*q == ' ' || *q == '\t') q++;
-  }
-  if (*q && *q != '\n' && *q != '\r') return 0;
-  *lo = l;
-  if (h > 0) *hi = h;
-  return 1;
+    if (!t) return 0;
+    while (*t == ' ' || *t == '\t')
+        t++;
+    char *end = NULL;
+    const double l = strtod(t, &end);
+    if (end == t || !(l >= 1.0 && l <= 240.0)) return 0;
+    const char *q = end;
+    while (*q == ' ' || *q == '\t')
+        q++;
+    int dash = 0;
+    if (*q == '-') {
+        q++;
+        dash = 1;
+    }
+    while (*q == ' ' || *q == '\t')
+        q++;
+    double h = -1;
+    if (dash && (!*q || *q == '\n' || *q == '\r')) return 0; // "30-": a max is missing
+    if (*q && *q != '\n' && *q != '\r') {
+        h = strtod(q, &end);
+        if (end == q || !(h >= l && h <= 240.0)) return 0;
+        q = end;
+        while (*q == ' ' || *q == '\t')
+            q++;
+    }
+    if (*q && *q != '\n' && *q != '\r') return 0;
+    *lo = l;
+    if (h > 0) *hi = h;
+    return 1;
 }
 // The clamp that applies: a valid live file wins (file_lo > 0; file_hi > 0 also sets the max), else the level table
 // floor for the scene (base_lo when unlisted or the table is malformed), with the configured max; lo never above hi.
 static inline void nps5_fr_effective(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
                                      double file_hi, double *lo, double *hi) {
-  double l = file_lo > 0 ? file_lo : nps5_fr_level_floor(tab, scene, base_lo);
-  const double h = file_lo > 0 && file_hi > 0 ? file_hi : base_hi;
-  if (l < 0) l = base_lo;
-  if (l > h) l = h;
-  *lo = l; *hi = h;
+    double l = file_lo > 0 ? file_lo : nps5_fr_level_floor(tab, scene, base_lo);
+    const double h = file_lo > 0 && file_hi > 0 ? file_hi : base_hi;
+    if (l < 0) l = base_lo;
+    if (l > h) l = h;
+    *lo = l;
+    *hi = h;
 }
 // Keyboard hotkey (NPS5_FRAMERATE_HOTKEY=1 or a floor in fps 20..240; Cmd+Shift+F). States: 0 = configured (level
 //   table / live file / base clamp; the start state only), 1 = floor <fps> (default 30), 2 = off (the base clamp only:
@@ -180,51 +188,63 @@ static inline void nps5_fr_effective(const char *tab, const char *scene, double 
 //   The hotkey beats the live file and the level table while it is not 0.
 // nps5_fr_hotkey_cfg: env text -> floor fps, 0 = hotkey off (unset, "0", junk, or outside 20..240; "1" means 30).
 static inline double nps5_fr_hotkey_cfg(const char *t) {
-  if (!t || !*t) return 0;
-  char *end = NULL;
-  const double v = strtod(t, &end);
-  if (end == t || *end) return 0;
-  if (v == 1.0) return 30.0;
-  return (v >= 20.0 && v <= 240.0) ? v : 0;
+    if (!t || !*t) return 0;
+    char *end = NULL;
+    const double v = strtod(t, &end);
+    if (end == t || *end) return 0;
+    if (v == 1.0) return 30.0;
+    return (v >= 20.0 && v <= 240.0) ? v : 0;
 }
 static inline int nps5_fr_hotkey_next(int s) { return s == 1 ? 2 : 1; }
 // Two key handlers (the Metal window's and Kyty's SDL window) may both see one key press: a call within
 // NPS5_FR_HOTKEY_DEBOUNCE_NS of the last accepted one is dropped. *last_ns is updated when the call is accepted.
 #define NPS5_FR_HOTKEY_DEBOUNCE_NS 250000000ull
 static inline int nps5_fr_hotkey_accept(unsigned long long *last_ns, unsigned long long now_ns) {
-  if (*last_ns && now_ns >= *last_ns && now_ns - *last_ns < NPS5_FR_HOTKEY_DEBOUNCE_NS) return 0;
-  *last_ns = now_ns ? now_ns : 1;
-  return 1;
+    if (*last_ns && now_ns >= *last_ns && now_ns - *last_ns < NPS5_FR_HOTKEY_DEBOUNCE_NS) return 0;
+    *last_ns = now_ns ? now_ns : 1;
+    return 1;
 }
 // Claim one press atomically (debounce + shared timestamp). accept() writes the accepted time into the local copy, so the
 // CAS must publish that copy while expecting the value it read; passing the same variable as both (the first version) never
 // succeeded and the window thread spun forever on the first accepted press (apediag_local_2 hang, 2026-11-26).
 static inline int nps5_fr_hotkey_claim(_Atomic unsigned long long *last_ns, unsigned long long now_ns) {
-  unsigned long long seen = atomic_load(last_ns);
-  for (;;) {
-    unsigned long long upd = seen;
-    if (!nps5_fr_hotkey_accept(&upd, now_ns)) return 0;
-    if (atomic_compare_exchange_weak(last_ns, &seen, upd)) return 1;
-  }
+    unsigned long long seen = atomic_load(last_ns);
+    for (;;) {
+        unsigned long long upd = seen;
+        if (!nps5_fr_hotkey_accept(&upd, now_ns)) return 0;
+        if (atomic_compare_exchange_weak(last_ns, &seen, upd)) return 1;
+    }
 }
-static inline void nps5_fr_effective_hk(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
-                                        double file_hi, int hk, double hk_fps, double *lo, double *hi) {
-  if (hk == 1 && hk_fps > 0) { *hi = base_hi; *lo = hk_fps > base_hi ? base_hi : hk_fps; return; }
-  if (hk == 2) { *lo = base_lo > base_hi ? base_hi : base_lo; *hi = base_hi; return; }
-  nps5_fr_effective(tab, scene, base_lo, base_hi, file_lo, file_hi, lo, hi);
+static inline void nps5_fr_effective_hk(const char *tab, const char *scene, double base_lo, double base_hi,
+                                        double file_lo, double file_hi, int hk, double hk_fps, double *lo, double *hi) {
+    if (hk == 1 && hk_fps > 0) {
+        *hi = base_hi;
+        *lo = hk_fps > base_hi ? base_hi : hk_fps;
+        return;
+    }
+    if (hk == 2) {
+        *lo = base_lo > base_hi ? base_hi : base_lo;
+        *hi = base_hi;
+        return;
+    }
+    nps5_fr_effective(tab, scene, base_lo, base_hi, file_lo, file_hi, lo, hi);
 }
 // Change the clamp at run time (level change or live file). lo is limited to hi. When the block value is outside the
 // new range it must follow at once (entering a floor-30 level must not wait for the hysteresis): returns 1 with *want_out.
 // Inside the range nothing is rewritten; the normal step moves it later (e.g. back down after leaving the level).
 static inline int nps5_fr_set_clamp(Nps5Fr *f, double lo, double hi, double *want_out) {
-  if (lo > hi) lo = hi;
-  f->lo = lo; f->hi = hi; f->off_since_ns = 0;
-  double want = f->cur;
-  if (want < lo) want = lo;
-  if (want > hi) want = hi;
-  if (want == f->cur) return 0;
-  f->cur = want; f->rewrites++; *want_out = want;
-  return 1;
+    if (lo > hi) lo = hi;
+    f->lo = lo;
+    f->hi = hi;
+    f->off_since_ns = 0;
+    double want = f->cur;
+    if (want < lo) want = lo;
+    if (want > hi) want = hi;
+    if (want == f->cur) return 0;
+    f->cur = want;
+    f->rewrites++;
+    *want_out = want;
+    return 1;
 }
 
 // Load freeze (pure; the caller samples the VFS phase and byte counter). One call per frame.

@@ -1720,8 +1720,9 @@ static void metal_screen_pump_events_main(void) {
                 // Cmd+Shift+F: live frame-rate floor cycle (NPS5_FRAMERATE_HOTKEY=1, see nps5_anyps5.c). Consumed:
                 // not forwarded to the pad (F) or the menu bar. No-op when the AnyPS5 module / env is absent.
                 if (event.keyCode == 3 &&
-                    (event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask & (NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagControl)) ==
-                        (NSEventModifierFlagCommand | NSEventModifierFlagShift)) {
+                    (event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask &
+                     (NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption |
+                      NSEventModifierFlagControl)) == (NSEventModifierFlagCommand | NSEventModifierFlagShift)) {
                     extern void nps5_framerate_hotkey(void) __attribute__((weak_import));
                     if (!event.isARepeat && nps5_framerate_hotkey) nps5_framerate_hotkey();
                     continue;

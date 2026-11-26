@@ -62,9 +62,11 @@ static struct {
     uint32_t st;
     int seen;
 } g_ad_dt[AD_SLOTS];
-static PsWrap g_w_ad[AD_NCLS] = {{.shim = "nps5_apediag_counter"}, {.shim = "nps5_apediag_delay"},
-                                  {.shim = "nps5_apediag_pst"},     {.shim = "nps5_apediag_pbb"},
-                                  {.shim = "nps5_apediag_botcreate"}};
+static PsWrap g_w_ad[AD_NCLS] = {{.shim = "nps5_apediag_counter"},
+                                 {.shim = "nps5_apediag_delay"},
+                                 {.shim = "nps5_apediag_pst"},
+                                 {.shim = "nps5_apediag_pbb"},
+                                 {.shim = "nps5_apediag_botcreate"}};
 
 static uint64_t ad_now_ns(void) {
     struct timespec ts;
@@ -129,7 +131,8 @@ static int ad_rd(const GuestContext *ctx, uint64_t g, void *dst, size_t n) {
 #ifdef __APPLE__
     mach_vm_size_t got = 0;
     return mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)NPS5_G2H(ctx, g), n,
-                                  (mach_vm_address_t)(uintptr_t)dst, &got) == KERN_SUCCESS && got == n;
+                                  (mach_vm_address_t)(uintptr_t)dst, &got) == KERN_SUCCESS &&
+           got == n;
 #else
     memcpy(dst, NPS5_G2H(ctx, g), n);
     return 1;
@@ -145,8 +148,8 @@ static void ad_line(const char *cls, uint64_t addr, int id, const char *fmt, ...
     vsnprintf(body, sizeof body, fmt, ap);
     va_end(ap);
     fprintf(g_ad_f, "t=%.3f f=%llu %s 0x%llx%s%s%s\n", (double)(ad_now_ns() - g_ad_t0_ns) / 1e9,
-            (unsigned long long)atomic_load_explicit(&g_ps_world_n, memory_order_relaxed), cls, (unsigned long long)addr,
-            id >= 0 ? " id=" : "", id >= 0 ? g_ad_ids[id].label : "", body);
+            (unsigned long long)atomic_load_explicit(&g_ps_world_n, memory_order_relaxed), cls,
+            (unsigned long long)addr, id >= 0 ? " id=" : "", id >= 0 ? g_ad_ids[id].label : "", body);
     fflush(g_ad_f);
 }
 
@@ -227,7 +230,8 @@ static Nps5AdObj *ad_watch(GuestContext *ctx, int cls, uint64_t addr, uint32_t l
     if (o->id < 0 && g_ad_nids && (o->lines & 7u) == 0) {
         char how[64];
         o->id = ad_identify(ctx, addr, how, sizeof how);
-        if (o->id >= 0 && nps5_ad_budget_take(&g_ad_budget, o)) ad_line(g_ad_cls_name[cls], addr, o->id, " TAGGED via %s", how);
+        if (o->id >= 0 && nps5_ad_budget_take(&g_ad_budget, o))
+            ad_line(g_ad_cls_name[cls], addr, o->id, " TAGGED via %s", how);
     }
     char d[700];
     if (nps5_ad_diff(o, cur, d, sizeof d, 12) && nps5_ad_budget_take(&g_ad_budget, o)) {
@@ -274,8 +278,10 @@ static void ad_counter_note(GuestContext *ctx, uint64_t this, Nps5AdObj *o) {
     ad_rd(ctx, this + 0x5f8, &count, 4);
     ad_rd(ctx, this + 0x630, &type, 4);
     uint8_t valid[AD_MAXBOTS];
-    for (int i = 0; i < g_ad_nbot; i++) valid[i] = g_ad_bot_state[i] != 0xffffffffu;
-    const int ready = nps5_ad_ready_count(g_ad_bot_state, g_ad_bot_tin, valid, g_ad_nbot, AD_BOT_READY_STATE, AD_BOT_READY_SECS);
+    for (int i = 0; i < g_ad_nbot; i++)
+        valid[i] = g_ad_bot_state[i] != 0xffffffffu;
+    const int ready =
+        nps5_ad_ready_count(g_ad_bot_state, g_ad_bot_tin, valid, g_ad_nbot, AD_BOT_READY_STATE, AD_BOT_READY_SECS);
     int k = -1;
     for (int i = 0; i < 16; i++)
         if (g_ad_cnt[i].addr == this) k = i;
@@ -288,8 +294,8 @@ static void ad_counter_note(GuestContext *ctx, uint64_t this, Nps5AdObj *o) {
     if (k < 0) return;
     if (!g_ad_cnt[k].seen || g_ad_cnt[k].count != count || g_ad_cnt[k].ready != ready || g_ad_cnt[k].type != type) {
         if (o && nps5_ad_budget_take(&g_ad_budget, o))
-            ad_line("counter", this, o->id, " count=%d type=%u ready=%d/%d bots=%d%s", count, type, ready, count, g_ad_nbot,
-                    ready >= count && count > 0 ? " FIRES" : "");
+            ad_line("counter", this, o->id, " count=%d type=%u ready=%d/%d bots=%d%s", count, type, ready, count,
+                    g_ad_nbot, ready >= count && count > 0 ? " FIRES" : "");
         g_ad_cnt[k].seen = 1;
         g_ad_cnt[k].count = count;
         g_ad_cnt[k].ready = ready;
@@ -330,7 +336,8 @@ void nps5_apediag_botcreate(GuestContext *ctx) {
         const uint64_t ret = ctx->rax;
         pthread_mutex_lock(&g_ad_mu);
         int have = 0;
-        for (int i = 0; i < g_ad_nbot; i++) have |= g_ad_bot[i] == ret;
+        for (int i = 0; i < g_ad_nbot; i++)
+            have |= g_ad_bot[i] == ret;
         if (!have && g_ad_nbot < AD_MAXBOTS) {
             g_ad_bot[g_ad_nbot] = ret;
             g_ad_bot_state[g_ad_nbot++] = 0xffffffffu;
