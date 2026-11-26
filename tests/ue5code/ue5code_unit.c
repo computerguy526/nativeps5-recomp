@@ -4,6 +4,7 @@
 // VFS with a gamepack .nps5seg pack and a split container (partitions).
 #include "nps5_ue5core.h"
 #include "nps5_segfile.h"
+#include "nps5_ue5code.h"
 #include "ps4_vfs.h"
 
 #include <fcntl.h>
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 static int fails;
@@ -381,6 +383,7 @@ typedef struct Rx {
     unsigned stop_after; // cancel after this many groups (0 = never)
     uint32_t last_done, total_seen;
     int progress_bad;
+    unsigned progress_calls;
     World *w;
     unsigned lib_first[4]; // world index of group 0 of each library
     unsigned lib_n[4];
@@ -409,9 +412,14 @@ static int rx_group(void *arg, const KytyGpuUe5Group *g) {
     pthread_mutex_unlock(&r->mu);
     return stop;
 }
+static int g_slow_progress;
+static unsigned g_slow_seed = 1;
 static void rx_progress(void *arg, uint32_t done, uint32_t total) {
     Rx *r = arg; // called under the reader's own lock: monotonic
-    if (done < r->last_done || done > total) r->progress_bad = 1;
+    if (g_slow_progress)
+        usleep((useconds_t)(rand_r(&g_slow_seed) % 50)); // widens any window between counting and reporting
+    r->progress_calls++;
+    if (done < r->last_done || done > total || done != r->progress_calls - 1) r->progress_bad = 1;
     r->last_done = done;
     r->total_seen = total;
 }
@@ -716,6 +724,17 @@ static void test_vfs(const char *tmp) {
     // a stray non-container file and a hidden dir are ignored
     snprintf(p, sizeof p, "%s/readme.txt", paks);
     wfile(p, "x", 1);
+    // links that lead back to the same containers: to an ancestor (a loop), a second way to a folder, a second name of a file.
+    // Each container must be listed (and decoded) once.
+    {
+        char lk[900];
+        snprintf(lk, sizeof lk, "%s/loop", app);
+        if (symlink(".", lk) != 0) perror("symlink");
+        snprintf(lk, sizeof lk, "%s/Game/Paks2", app);
+        if (symlink("Paks", lk) != 0) perror("symlink");
+        snprintf(lk, sizeof lk, "%s/Game/Paks/alias.utoc", app);
+        if (symlink("a-ps5.utoc", lk) != 0) perror("symlink");
+    }
     ps4_vfs_init(app);
     const Nps5Ue5Io *io = nps5_ue5_vfs_io();
     Rx rx;
@@ -1024,6 +1043,508 @@ static void test_fuzz(const char *tmp) {
     rmrf(dir);
 }
 
+// ---- progress order under load (M2): every call reports exactly the next count, the last is total ----
+static void test_progress_stress(const char *tmp) {
+    char dir[600];
+    snprintf(dir, sizeof dir, "%s/prog", tmp);
+    mkdir(dir, 0755);
+    g_var = nps5_ue5_variants(NULL);
+    g_lib_ver = g_var->lib_min;
+    World w;
+    world_init(&w, 64, -1);
+    for (unsigned i = 0; i < 64; i++) {
+        w.g[i].half = 40 + i; // tiny groups: the threads finish them at the same moment
+        w.g[i].nshaders = 1;
+    }
+    Cont c;
+    cont_init(&c);
+    add_library(&c, &w, 0, 64, 0, -1);
+    cont_write(&c, dir, "p", 0);
+    FileIo fio = {.n = 1};
+    snprintf(fio.root, sizeof fio.root, "%s", dir);
+    fio.names[0] = "p.utoc";
+    Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+    g_slow_progress = 1;
+    int bad_reps = 0;
+    for (int rep = 0; rep < 50; rep++) {
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_for(&rx, &w, 64);
+        q.threads = 8;
+        int rc = run(&io, &q, &rx, &res);
+        if (rc != 0 || rx.progress_bad || rx.last_done != 64 || rx.total_seen != 64 || rx.progress_calls != 65 ||
+            rx.seen != 64 || rx.bad)
+            bad_reps++;
+    }
+    g_slow_progress = 0;
+    CHECK(bad_reps == 0);
+    rmrf(dir);
+}
+
+// ---- stderr capture ----
+static int cap_saved = -1;
+static char cap_path[700];
+static void cap_begin(const char *tmp) {
+    fflush(stderr);
+    snprintf(cap_path, sizeof cap_path, "%s/stderr.txt", tmp);
+    cap_saved = dup(2);
+    int f = open(cap_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    dup2(f, 2);
+    close(f);
+}
+static char *cap_end(void) {
+    fflush(stderr);
+    dup2(cap_saved, 2);
+    close(cap_saved);
+    FILE *f = fopen(cap_path, "rb");
+    char *b = calloc(1, 1 << 16);
+    if (f) {
+        if (fread(b, 1, (1 << 16) - 1, f) == 0) b[0] = 0;
+        fclose(f);
+    }
+    return b;
+}
+static unsigned count_str(const char *h, const char *n) {
+    unsigned k = 0;
+    for (const char *p = h; (p = strstr(p, n)); p += strlen(n))
+        k++;
+    return k;
+}
+
+// ---- refusal log lines (m4) and short TOC reads (m3) ----
+static void test_logs(const char *tmp) {
+    char dir[600];
+    snprintf(dir, sizeof dir, "%s/logs", tmp);
+    mkdir(dir, 0755);
+    g_var = nps5_ue5_variants(NULL);
+    g_lib_ver = g_var->lib_min;
+    struct {
+        const char *what;
+        int version;
+        int flags;
+        unsigned parts;
+        size_t trunc;
+        const char *want;
+        unsigned want_n;
+    } T[] = {
+        {"unknown TOC version, 5 containers", 9, 0, 1, 0, "not in the version table", 1},
+        {"encrypted, 4 containers", 8, 2, 1, 0, "container is encrypted", 1},
+        {"too many partitions, 3 containers", 8, 0, 70, 0, "unsupported table of contents header", 1},
+    };
+    for (unsigned i = 0; i < sizeof T / sizeof *T; i++) {
+        FileIo fio = {.n = 0};
+        snprintf(fio.root, sizeof fio.root, "%s", dir);
+        static char names[8][32];
+        const unsigned nc = 3 + i % 3;
+        for (unsigned k = 0; k < nc; k++) {
+            World w;
+            world_init(&w, 3, -1);
+            Cont c;
+            cont_init(&c);
+            c.version = (uint8_t)T[i].version;
+            c.flags = (uint8_t)T[i].flags;
+            add_library(&c, &w, 0, 3, 0, -1);
+            c.parts = T[i].parts;
+            c.part_size = 1 << 20;
+            snprintf(names[k], sizeof names[k], "c%u_%u", i, k);
+            cont_write(&c, dir, names[k], 0);
+            char nm[40];
+            snprintf(nm, sizeof nm, "%s.utoc", names[k]);
+            static char full[8][40];
+            snprintf(full[k], sizeof full[k], "%s", nm);
+            fio.names[fio.n++] = full[k];
+        }
+        Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+        World w;
+        world_init(&w, 3, -1);
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_for(&rx, &w, 3);
+        cap_begin(tmp);
+        int rc = run(&io, &q, &rx, &res);
+        char *log = cap_end();
+        if (count_str(log, T[i].want) != T[i].want_n || rc != -1 || count_str(log, "containers refused") != 1)
+            printf("  case %s: rc %d\n%s\n", T[i].what, rc, log);
+        CHECK(rc == -1 && rx.seen == 0);
+        CHECK(count_str(log, T[i].want) == T[i].want_n); // one line for the reason, not one per container
+        CHECK(count_str(log, "containers refused") == 1); // and a count
+        free(log);
+    }
+    // a table of contents that is shorter than its header (or unreadable): refused quietly, nothing else is opened
+    {
+        World w;
+        world_init(&w, 3, -1);
+        Cont c;
+        cont_init(&c);
+        add_library(&c, &w, 0, 3, 0, -1);
+        cont_write(&c, dir, "short", 50);
+        FileIo fio = {.n = 1};
+        snprintf(fio.root, sizeof fio.root, "%s", dir);
+        fio.names[0] = "short.utoc";
+        Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_for(&rx, &w, 3);
+        cap_begin(tmp);
+        int rc = run(&io, &q, &rx, &res);
+        char *log = cap_end();
+        CHECK(rc == -1 && rx.seen == 0 && res.containers == 0);
+        CHECK(count_str(log, "not in the version table") == 0 && count_str(log, "refused") == 0);
+        free(log);
+    }
+    rmrf(dir);
+}
+
+// ---- the version table drives the reader (M4): strides, chunk types, abi, row validation ----
+static void test_synth_variants(const char *tmp) {
+    char dir[600];
+    snprintf(dir, sizeof dir, "%s/synth", tmp);
+    mkdir(dir, 0755);
+    unsigned nb;
+    const Nps5Ue5Variant *b = nps5_ue5_variants(&nb);
+    // golden values of the built-in row, written down here and not read from the table: the shipped PS5 builds (TOC 5..8,
+    // library version 1, chunk types 8/9, element sizes 20 20 12 8 8 16 4, oodlelz14 abi)
+    CHECK(nb == 1 && b[0].toc_min == 5 && b[0].toc_max == 8 && b[0].lib_min == 1 && b[0].lib_max == 1);
+    CHECK(b[0].chunk_library == 8 && b[0].chunk_group == 9 && b[0].abi == 1);
+    const uint32_t gold[7] = {20, 20, 12, 8, 8, 16, 4};
+    CHECK(memcmp(b[0].elem, gold, sizeof gold) == 0);
+    static Nps5Ue5Variant rows[6];
+    rows[0] = b[0];
+    rows[1] = (Nps5Ue5Variant){"synth-padded", 20, 22, 3, 4, 10, 11, {24, 32, 12, 16, 12, 20, 8}, 1};
+    rows[2] = (Nps5Ue5Variant){"synth-short-group", 30, 30, 1, 1, 8, 9, {20, 20, 12, 8, 8, 12, 4}, 1};
+    rows[3] = (Nps5Ue5Variant){"synth-abi2", 40, 40, 1, 1, 8, 9, {20, 20, 12, 8, 8, 16, 4}, 2};
+    rows[4] = (Nps5Ue5Variant){"synth-wide-id", 50, 50, 1, 1, 8, 9, {20, 20, 16, 8, 8, 16, 4}, 1};
+    rows[5] = (Nps5Ue5Variant){"synth-short-index", 60, 60, 1, 1, 8, 9, {20, 20, 12, 8, 8, 16, 2}, 1};
+    cap_begin(tmp);
+    nps5_ue5_set_variants_for_test(rows, 6);
+    char *log = cap_end();
+    CHECK(count_str(log, "refused") ==
+          3); // rows 2, 4 and 5 cannot hold what the reader reads; row 3 (abi 2) is a valid row
+    free(log);
+    // padded row: groups are found and decoded through the row's strides and chunk types
+    for (uint32_t tv = 20; tv <= 22; tv++) {
+        for (uint32_t lv = 3; lv <= 4; lv++) {
+            g_var = &rows[1];
+            g_lib_ver = lv;
+            World w;
+            world_init(&w, 7, 2);
+            Cont c;
+            cont_init(&c);
+            c.version = (uint8_t)tv;
+            add_library(&c, &w, 0, 7, 0, -1);
+            cont_write(&c, dir, "pad", 0);
+            FileIo fio = {.n = 1};
+            snprintf(fio.root, sizeof fio.root, "%s", dir);
+            fio.names[0] = "pad.utoc";
+            Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+            Rx rx;
+            KytyGpuUe5Result res;
+            KytyGpuUe5Query q = {0};
+            rx_for(&rx, &w, 7);
+            q.threads = 3;
+            CHECK(run(&io, &q, &rx, &res) == 0 && res.groups_decoded == 7);
+            CHECK(res.groups_total == 7 && res.groups_failed == 0 && rx.seen == 7 && rx.bad == 0);
+        }
+    }
+    // the same fixture read with the built-in row's sizes would not match: the padded sizes really are in use
+    {
+        g_var = &rows[1];
+        g_lib_ver = 3;
+        World w;
+        world_init(&w, 7, -1);
+        Cont c;
+        cont_init(&c);
+        c.version = 5; // a TOC version of the built-in row, with the padded library
+        add_library(&c, &w, 0, 7, 0, -1);
+        cont_write(&c, dir, "mix", 0);
+        FileIo fio = {.n = 1};
+        snprintf(fio.root, sizeof fio.root, "%s", dir);
+        fio.names[0] = "mix.utoc";
+        Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_for(&rx, &w, 7);
+        int rc = run(&io, &q, &rx, &res);
+        CHECK(!(rc == 0 && rx.seen == 7 && rx.bad == 0)); // never read as if it were padded
+    }
+    // rows that cannot hold what the reader reads, and a row of another decoder abi: the container is refused, nothing decoded
+    const uint32_t bad_toc[4] = {30, 40, 50, 60};
+    for (int k = 0; k < 4; k++) {
+        g_var = &rows[2 + k];
+        g_lib_ver = 1;
+        World w;
+        world_init(&w, 5, -1);
+        Cont c;
+        cont_init(&c);
+        c.version = (uint8_t)bad_toc[k];
+        add_library(&c, &w, 0, 5, 0, -1);
+        cont_write(&c, dir, "badrow", 0);
+        FileIo fio = {.n = 1};
+        snprintf(fio.root, sizeof fio.root, "%s", dir);
+        fio.names[0] = "badrow.utoc";
+        Nps5Ue5Io io = {&fio, f_list, f_open, f_pread, f_close};
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {0};
+        rx_for(&rx, &w, 5);
+        g_decodes = 0;
+        CHECK(run(&io, &q, &rx, &res) == -1 && rx.seen == 0 && g_decodes == 0 && res.containers == 0);
+    }
+    nps5_ue5_set_variants_for_test(NULL, 0);
+    g_var = nps5_ue5_variants(NULL);
+    g_lib_ver = g_var->lib_min;
+    rmrf(dir);
+}
+
+// ---- the guest decoder binding (nps5_ue5code.c) against a stand-in guest ----
+#define FAKE_DEC 0x4c0de0ULL
+typedef struct FA {
+    uint64_t addr;
+    size_t size;
+    uint8_t *host;
+    int live;
+} FA;
+static struct {
+    pthread_mutex_t mu;
+    FA a[512];
+    unsigned na;
+    uint64_t next;
+    int ctx_created, ctx_destroyed, allocs, frees, live, bad_free, bad_g2h, bad_args, calls;
+    int fail_alloc_at; // the Nth vm_alloc fails with (uint64_t)-1 (0 = never)
+    int fail_ctx;
+    int decoder_ok;
+    int fail_id; // the decoder returns 0 for the group whose first word is this id
+    uint8_t canary[1 << 20]; // what an address the host did not hand out maps to (large enough for any copy)
+} G;
+
+static void fg_reset(void) {
+    for (unsigned i = 0; i < G.na; i++)
+        free(G.a[i].host);
+    memset(&G, 0, sizeof G);
+    pthread_mutex_init(&G.mu, NULL);
+    G.next = 0x1000000;
+    G.decoder_ok = 1;
+    G.fail_id = -1;
+}
+static GuestContext *fg_ctx_create(GuestContext *p, uint64_t stack) {
+    (void)p;
+    (void)stack;
+    pthread_mutex_lock(&G.mu);
+    GuestContext *c = G.fail_ctx ? NULL : calloc(1, sizeof(GuestContext));
+    if (c) G.ctx_created++;
+    pthread_mutex_unlock(&G.mu);
+    return c;
+}
+static void fg_ctx_destroy(GuestContext *c) {
+    pthread_mutex_lock(&G.mu);
+    G.ctx_destroyed++;
+    pthread_mutex_unlock(&G.mu);
+    free(c);
+}
+static uint64_t fg_alloc(GuestContext *p, size_t n) {
+    (void)p;
+    pthread_mutex_lock(&G.mu);
+    G.allocs++;
+    if (G.fail_alloc_at && G.allocs == G.fail_alloc_at) {
+        pthread_mutex_unlock(&G.mu);
+        return (uint64_t)-1; // recomp_vm_alloc's failure value
+    }
+    FA *a = &G.a[G.na++];
+    a->addr = G.next;
+    a->size = n;
+    a->host = malloc(n);
+    a->live = 1;
+    G.next += (n + 0xffff) & ~0xffffull;
+    G.next += 0x10000;
+    G.live++;
+    uint64_t r = a->addr;
+    pthread_mutex_unlock(&G.mu);
+    return r;
+}
+static void fg_free(GuestContext *p, uint64_t addr, size_t n) {
+    (void)p;
+    pthread_mutex_lock(&G.mu);
+    int ok = 0;
+    for (unsigned i = 0; i < G.na; i++)
+        if (G.a[i].live && G.a[i].addr == addr && G.a[i].size == n) {
+            G.a[i].live = 0;
+            G.live--;
+            G.frees++;
+            ok = 1;
+            break;
+        }
+    if (!ok) G.bad_free++;
+    pthread_mutex_unlock(&G.mu);
+}
+static FA *fg_find(uint64_t addr) { // under G.mu
+    for (unsigned i = 0; i < G.na; i++)
+        if (G.a[i].live && addr >= G.a[i].addr && addr < G.a[i].addr + G.a[i].size) return &G.a[i];
+    return NULL;
+}
+static void *fg_g2h(GuestContext *p, uint64_t addr) {
+    (void)p;
+    pthread_mutex_lock(&G.mu);
+    FA *a = fg_find(addr);
+    void *r = a ? a->host + (addr - a->addr) : (G.bad_g2h++, (void *)G.canary); // an address the host did not hand out
+    pthread_mutex_unlock(&G.mu);
+    return r;
+}
+static int fg_decoder_ok(uint64_t v) { return G.decoder_ok && v == FAKE_DEC; }
+// The stand-in for the guest's OodleLZ_Decompress: checks the 14 arguments where the real call puts them, "decodes" with the
+// test codec into the raw buffer, returns the raw length (0 = failure).
+static uint64_t fg_call(GuestContext *c, uint64_t target, const uint64_t *a, unsigned n) {
+    (void)c;
+    pthread_mutex_lock(&G.mu);
+    G.calls++;
+    FA *ac = fg_find(a[0]), *ar = fg_find(a[2]), *am = fg_find(a[11]);
+    const int ok = target == FAKE_DEC && n == 14 && ac && ar && am && a[0] == ac->addr + 0 &&
+                   a[0] + a[1] <= ac->addr + ac->size && a[2] + a[3] <= ar->addr + ar->size && a[4] == 1 && a[5] == 1 &&
+                   !a[6] && !a[7] && !a[8] && !a[9] && !a[10] && a[11] == am->addr && a[12] == (8ull << 20) &&
+                   am->size == (8ull << 20) && a[13] == 3 && ac != ar && am != ac && am != ar;
+    if (!ok) G.bad_args++;
+    uint8_t *comp = ac ? ac->host + (a[0] - ac->addr) : NULL, *raw = ar ? ar->host + (a[2] - ar->addr) : NULL;
+    pthread_mutex_unlock(&G.mu);
+    if (!ok) return 0;
+    uint32_t id;
+    memcpy(&id, comp, 4);
+    if ((int)id == G.fail_id) return 0;
+    const uint32_t cl = (uint32_t)a[1], rl = (uint32_t)a[3];
+    for (uint32_t i = 0; i < rl; i++)
+        raw[i] = comp[i % cl] ^ (i >= cl ? 0x11 : 0);
+    return rl;
+}
+static const Nps5Ue5GuestOps FAKE_OPS = {fg_ctx_create, fg_ctx_destroy, fg_alloc,     fg_free,
+                                         fg_call,       fg_g2h,         fg_decoder_ok};
+
+static void test_guest(const char *tmp) {
+    char app[600], paks[700];
+    snprintf(app, sizeof app, "%s/gapp", tmp);
+    mkdir(app, 0755);
+    snprintf(paks, sizeof paks, "%s/Paks", app);
+    mkdir(paks, 0755);
+    g_var = nps5_ue5_variants(NULL);
+    g_lib_ver = g_var->lib_min;
+    World w;
+    world_init(&w, 12, -1);
+    w.g[5].half = 70000; // larger than the first 64 KiB buffer: the guest buffers grow
+    w.g[9].half = 150000;
+    Cont c;
+    cont_init(&c);
+    add_library(&c, &w, 0, 12, 0, -1);
+    cont_write(&c, paks, "g-ps5", 0);
+    ps4_vfs_init(app);
+    GuestContext *proc = calloc(1, sizeof(GuestContext));
+    nps5_ue5_set_guest_ops_for_test(&FAKE_OPS, proc);
+    for (int thr = 1; thr <= 8; thr *= 2) { // 1, 2, 4, 8
+        fg_reset();
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = (uint32_t)thr};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.progress = rx_progress;
+        q.arg = &rx;
+        int rc = nps5_ue5_extract_groups(&q, &res);
+        CHECK(rc == 0 && res.groups_decoded == 12 && res.groups_failed == 0 && rx.seen == 12 && rx.bad == 0);
+        CHECK(!rx.progress_bad && rx.last_done == 12);
+        CHECK(G.bad_args == 0 && G.bad_g2h == 0 && G.bad_free == 0 && G.calls == 12);
+        CHECK(G.ctx_created >= 1 && G.ctx_created == G.ctx_destroyed);
+        CHECK(G.allocs == G.frees && G.live == 0);
+        if (thr == 1) CHECK(G.allocs == 7); // decoder memory + comp and raw buffers: 1 + (1 + 2 grows) x 2
+    }
+    // the decoder fails on every group: -2 (the first group), nothing delivered, everything released
+    {
+        fg_reset();
+        G.fail_id = 100;
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 2};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.arg = &rx;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -2 && rx.seen == 0 && res.groups_failed == 1);
+        CHECK(G.allocs == G.frees && G.live == 0 && G.ctx_created == G.ctx_destroyed);
+    }
+    // vm_alloc fails (returns (uint64_t)-1, never 0): the feature goes off cleanly, nothing is written to the "guest", every
+    // earlier allocation is released. Failing at each of the first allocations covers the decoder memory (1), the compressed
+    // buffer (2) and the raw buffer (3) of the first group.
+    for (int at = 1; at <= 3; at++) {
+        fg_reset();
+        G.fail_alloc_at = at;
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 1};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.arg = &rx;
+        int rc = nps5_ue5_extract_groups(&q, &res);
+        CHECK(rc == -2 && rx.seen == 0);
+        CHECK(G.bad_g2h == 0 && G.bad_free == 0 && G.bad_args == 0); // never touched the address -1
+        CHECK(G.live == 0 && G.ctx_created == G.ctx_destroyed);
+    }
+    // a growth that fails in the middle of the run is a counted failure; the rest is delivered
+    {
+        fg_reset();
+        G.fail_alloc_at = 4; // the compressed buffer of the first group that needs more than 64 KiB
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 1};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.arg = &rx;
+        int rc = nps5_ue5_extract_groups(&q, &res);
+        CHECK(rc == 0 && res.groups_failed >= 1 && res.groups_decoded + res.groups_failed == 12 && rx.bad == 0);
+        CHECK(G.bad_g2h == 0 && G.bad_free == 0 && G.live == 0 && G.ctx_created == G.ctx_destroyed);
+    }
+    // the context cannot be created
+    {
+        fg_reset();
+        G.fail_ctx = 1;
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 2};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.arg = &rx;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -2 && rx.seen == 0 && G.live == 0 && G.calls == 0);
+    }
+    // refused before anything is read or called: decoder address that is not guest code, unknown abi, short struct, no decoder
+    {
+        fg_reset();
+        Rx rx;
+        KytyGpuUe5Result res;
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = FAKE_DEC, .threads = 2};
+        rx_for(&rx, &w, 12);
+        q.group = rx_group;
+        q.arg = &rx;
+        G.decoder_ok = 0;
+        cap_begin(tmp);
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0 && G.ctx_created == 0 && rx.seen == 0);
+        free(cap_end());
+        G.decoder_ok = 1;
+        q.decoder = FAKE_DEC + 8; // another address: not the stand-in's
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
+        q.decoder = FAKE_DEC;
+        q.abi = 2;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
+        q.abi = 1;
+        q.struct_size = 8;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
+        q.struct_size = sizeof q;
+        q.decoder = 0;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == -1 && G.calls == 0);
+        q.decoder = FAKE_DEC;
+        CHECK(nps5_ue5_extract_groups(&q, &res) == 0 && G.calls == 12); // and the same query is fine
+    }
+    nps5_ue5_set_guest_ops_for_test(NULL, NULL);
+    free(proc);
+    rmrf(app);
+}
+
 int main(void) {
     char *tmp = mktmp();
     if (!tmp) {
@@ -1038,6 +1559,10 @@ int main(void) {
     test_variants(tmp);
     test_failures(tmp);
     test_fuzz(tmp);
+    test_progress_stress(tmp);
+    test_logs(tmp);
+    test_synth_variants(tmp);
+    test_guest(tmp);
     rmrf(tmp);
     printf(fails ? "ue5code: %d FAILED\n" : "ue5code: all ok\n", fails);
     return fails ? 1 : 0;

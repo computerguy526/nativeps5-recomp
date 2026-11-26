@@ -19,51 +19,113 @@
 typedef struct Names {
     char **v;
     size_t n, cap;
+    char **real; // realpaths of the containers listed (one container is listed once, however many links lead to it)
+    size_t nreal, capreal;
+    struct stat *
+        dirs; // directories walked: (st_dev, st_ino), so a link back to an ancestor or a second link to one is not walked again
+    size_t ndirs, capdirs;
+    int oom;
 } Names;
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
+static int names_push(char ***v, size_t *n, size_t *cap, char *s) {
+    if (*n == *cap) {
+        const size_t nc = *cap ? *cap * 2 : 16;
+        char **nv = realloc(*v, nc * sizeof **v);
+        if (!nv) return -1;
+        *v = nv;
+        *cap = nc;
+    }
+    (*v)[(*n)++] = s;
+    return 0;
+}
+
+// 1 when the directory was already walked (or cannot be identified), else records it.
+static int dir_seen(Names *out, const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) != 0) return 1;
+    for (size_t i = 0; i < out->ndirs; i++)
+        if (out->dirs[i].st_dev == st.st_dev && out->dirs[i].st_ino == st.st_ino) return 1;
+    if (out->ndirs == out->capdirs) {
+        const size_t nc = out->capdirs ? out->capdirs * 2 : 16;
+        struct stat *nd = realloc(out->dirs, nc * sizeof *nd);
+        if (!nd) {
+            out->oom = 1;
+            return 1;
+        }
+        out->dirs = nd;
+        out->capdirs = nc;
+    }
+    out->dirs[out->ndirs++] = st;
+    return 0;
+}
+
+// Adds a container (rel path r; fs path of the toc or its .nps5seg folder) unless the same file was listed already.
+static void add_container(Names *out, const char *r, const char *fs) {
+    char rp[4200];
+    if (!realpath(fs, rp)) snprintf(rp, sizeof rp, "%s", fs);
+    for (size_t i = 0; i < out->nreal; i++)
+        if (strcmp(out->real[i], rp) == 0) return;
+    char *a = strdup(rp), *b = strdup(r);
+    if (!a || !b || names_push(&out->real, &out->nreal, &out->capreal, a) != 0) {
+        free(a);
+        free(b);
+        out->oom = 1;
+        return;
+    }
+    if (names_push(&out->v, &out->n, &out->cap, b) != 0) {
+        free(b);
+        out->nreal--;
+        free(a);
+        out->oom = 1;
+    }
+}
+
 static void walk(const char *root, const char *rel, int depth, Names *out) {
     char dir[2048];
     snprintf(dir, sizeof dir, "%s%s%s", root, *rel ? "/" : "", rel);
+    if (dir_seen(out, dir)) return;
     DIR *d = opendir(dir);
     if (!d) return;
+    // entries in name order, so that of two paths to one thing the same one is listed on every run
+    char **ents = NULL;
+    size_t nent = 0, capent = 0;
     struct dirent *de;
     while ((de = readdir(d))) {
-        const char *nm = de->d_name;
-        if (nm[0] == '.') continue;
-        char r[2048];
-        snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", nm);
-        const size_t l = strlen(nm);
-        unsigned char type = de->d_type;
-        if (type == DT_LNK ||
-            type == DT_UNKNOWN) { // linked folders and files (the translated builds link app0 content)
-            struct stat st;
-            char full[4200];
-            snprintf(full, sizeof full, "%s/%s", dir, nm);
-            type = stat(full, &st) != 0  ? DT_UNKNOWN
-                   : S_ISDIR(st.st_mode) ? DT_DIR
-                   : S_ISREG(st.st_mode) ? DT_REG
-                                         : DT_UNKNOWN;
+        if (de->d_name[0] == '.') continue;
+        char *c = strdup(de->d_name);
+        if (!c || names_push(&ents, &nent, &capent, c) != 0) {
+            free(c);
+            out->oom = 1;
+            break;
         }
-        if (type == DT_DIR && l > 8 && strcmp(nm + l - 8, ".nps5seg") == 0) {
-            if (l > 13 && strcmp(nm + l - 13, ".utoc.nps5seg") == 0)
-                r[strlen(r) - 8] = 0;
-            else
-                continue;
-        } else if (type == DT_DIR) {
-            if (depth < WALK_DEPTH) walk(root, r, depth + 1, out);
-            continue;
-        } else if (!(l > 5 && strcmp(nm + l - 5, ".utoc") == 0)) {
-            continue;
-        }
-        if (out->n == out->cap) {
-            out->cap = out->cap ? out->cap * 2 : 16;
-            out->v = realloc(out->v, out->cap * sizeof *out->v);
-        }
-        out->v[out->n++] = strdup(r);
     }
     closedir(d);
+    qsort(ents, nent, sizeof *ents, cmp_str);
+    for (size_t ei = 0; ei < nent; ei++) {
+        const char *nm = ents[ei];
+        char r[2048], full[4200];
+        snprintf(r, sizeof r, "%s%s%s", rel, *rel ? "/" : "", nm);
+        snprintf(full, sizeof full, "%s/%s", dir, nm);
+        const size_t l = strlen(nm);
+        struct stat st;
+        // stat follows links: linked folders and files count (the translated builds link app0 content)
+        const int type = stat(full, &st) != 0 ? 0 : S_ISDIR(st.st_mode) ? 1 : S_ISREG(st.st_mode) ? 2 : 0;
+        if (type == 1 && l > 8 && strcmp(nm + l - 8, ".nps5seg") == 0) {
+            if (l > 13 && strcmp(nm + l - 13, ".utoc.nps5seg") == 0) {
+                r[strlen(r) - 8] = 0;
+                add_container(out, r, full);
+            }
+        } else if (type == 1) {
+            if (depth < WALK_DEPTH) walk(root, r, depth + 1, out);
+        } else if (type == 2 && l > 5 && strcmp(nm + l - 5, ".utoc") == 0) {
+            add_container(out, r, full);
+        }
+    }
+    for (size_t i = 0; i < nent; i++)
+        free(ents[i]);
+    free(ents);
 }
 
 static int vfs_list(void *user, int (*cb)(void *arg, const char *path), void *arg) {
@@ -73,6 +135,10 @@ static int vfs_list(void *user, int (*cb)(void *arg, const char *path), void *ar
     Names nm = {0};
     walk(root, "", 0, &nm);
     qsort(nm.v, nm.n, sizeof *nm.v, cmp_str);
+    for (size_t i = 0; i < nm.nreal; i++)
+        free(nm.real[i]);
+    free(nm.real);
+    free(nm.dirs);
     int rc = 0;
     for (size_t i = 0; i < nm.n; i++) {
         if (!rc) rc = cb(arg, nm.v[i]);

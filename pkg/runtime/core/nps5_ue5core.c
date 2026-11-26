@@ -35,18 +35,66 @@
 
 // The version table. The library header version (u32 at offset 0 of the library chunk) is 1 in the shipped PS5 builds of the two
 // UE5 titles this was written for; the array layout was checked on both (every shader and group accounted for).
-static const Nps5Ue5Variant g_variants[] = {
+static const Nps5Ue5Variant g_builtin_variants[] = {
     {"ue5-ps5-iostore", 5, 8, 1, 1, 8, 9, {20, 20, 12, 8, 8, 16, 4}, 1},
 };
 
+#define MAX_VARIANTS 8
+static const Nps5Ue5Variant *g_variants = g_builtin_variants;
+static unsigned g_nvariants = sizeof g_builtin_variants / sizeof *g_builtin_variants;
+static unsigned char g_row_ok[MAX_VARIANTS];
+static pthread_once_t g_row_once = PTHREAD_ONCE_INIT;
+
+// What the reader needs of a row, checked once (at the first use of the table): the reader strides every library array by the
+// row's element size and reads fixed-size heads out of the elements, so a row that cannot hold them is refused (never read).
+// elem: [0] map hash, [1] shader hash, [2] group chunk id (the 12 B IoStore chunk id), [3] map entry, [4] shader entry (first
+// u32 read), [5] group entry (4 x u32 read), [6] shader index (u32 read).
+static const char *row_problem(const Nps5Ue5Variant *r) {
+    if (!r->name || !r->name[0]) return "no name";
+    if (r->toc_min > r->toc_max || r->toc_max > 255) return "bad TOC version range";
+    if (r->lib_min > r->lib_max) return "bad library version range";
+    for (int i = 0; i < 7; i++)
+        if (!r->elem[i] || r->elem[i] > 256) return "element size out of range (1..256)";
+    if (r->elem[2] != 12) return "group chunk id element is not 12 bytes";
+    if (r->elem[4] < 4) return "shader entry element below 4 bytes";
+    if (r->elem[5] < 16) return "group entry element below 16 bytes";
+    if (r->elem[6] < 4) return "shader index element below 4 bytes";
+    return NULL;
+}
+
+static void rows_validate(void) {
+    memset(g_row_ok, 0, sizeof g_row_ok);
+    for (unsigned i = 0; i < g_nvariants && i < MAX_VARIANTS; i++) {
+        const char *bad = row_problem(&g_variants[i]);
+        g_row_ok[i] = bad == NULL;
+        if (bad) fprintf(stderr, "[ue5code] version table row %u (%s) refused: %s\n", i, g_variants[i].name, bad);
+    }
+}
+
+static void rows_once(void) { rows_validate(); }
+
 const Nps5Ue5Variant *nps5_ue5_variants(unsigned *count) {
-    if (count) *count = (unsigned)(sizeof g_variants / sizeof *g_variants);
+    if (count) *count = g_nvariants;
     return g_variants;
 }
 
+// Tests only: replaces the table (rows are copied by pointer; keep them alive), NULL restores the built-in one.
+void nps5_ue5_set_variants_for_test(const Nps5Ue5Variant *rows, unsigned n) {
+    pthread_once(&g_row_once, rows_once);
+    if (!rows) {
+        g_variants = g_builtin_variants;
+        g_nvariants = sizeof g_builtin_variants / sizeof *g_builtin_variants;
+    } else {
+        g_variants = rows;
+        g_nvariants = n > MAX_VARIANTS ? MAX_VARIANTS : n;
+    }
+    rows_validate();
+}
+
 static const Nps5Ue5Variant *variant_for_toc(uint32_t v) {
-    for (size_t i = 0; i < sizeof g_variants / sizeof *g_variants; i++)
-        if (v >= g_variants[i].toc_min && v <= g_variants[i].toc_max) return &g_variants[i];
+    pthread_once(&g_row_once, rows_once);
+    for (unsigned i = 0; i < g_nvariants; i++)
+        if (g_row_ok[i] && v >= g_variants[i].toc_min && v <= g_variants[i].toc_max) return &g_variants[i];
     return NULL;
 }
 
@@ -89,6 +137,7 @@ typedef struct Lib {
     uint32_t nse, nge, ni;
     const uint8_t *gids, *se, *ge, *idx;
     uint32_t ngroups;
+    const Nps5Ue5Variant *var; // the row whose element sizes stride the arrays above
 } Lib;
 
 typedef struct Job {
@@ -102,6 +151,7 @@ typedef struct Env {
     const Nps5Ue5Io *io;
     const Nps5Ue5Decoder *dec;
     unsigned logged;
+    unsigned refused[4], refused_lib; // containers refused per reason (RF_*), libraries refused for their version
     const KytyGpuUe5Query *q;
     uint32_t max_raw;
     Container **cont;
@@ -117,6 +167,8 @@ typedef struct Env {
     pthread_mutex_t prog_mu;
     uint32_t total;
 } Env;
+
+enum { RF_VERSION, RF_ENCRYPTED, RF_HEADER, RF_ABI };
 
 #define LOG_LIMIT 12
 static void ulog(Env *e, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -266,8 +318,8 @@ static int vec_grow(void **p, size_t *cap, size_t need, size_t esz) {
 // Parses a library chunk into l (takes ownership of data). 0 = ok.
 static int lib_parse(Lib *l, const Nps5Ue5Variant *var, uint8_t *data, uint32_t len, int *bad_version) {
     uint64_t o = 4;
-    // arrays in order: map hashes (20), shader hashes (20), group ids (12), map entries (8), shader entries (8),
-    // group entries (16), shader indices (4)
+    // arrays in order: map hashes, shader hashes, group ids, map entries, shader entries, group entries, shader indices;
+    // the element sizes come from the version row
     const uint32_t *esz = var->elem;
     uint32_t cnt[7];
     const uint8_t *ptr[7];
@@ -286,6 +338,7 @@ static int lib_parse(Lib *l, const Nps5Ue5Variant *var, uint8_t *data, uint32_t 
         o += (uint64_t)cnt[i] * esz[i];
     }
     l->data = data;
+    l->var = var;
     l->gids = ptr[2];
     l->se = ptr[4];
     l->ge = ptr[5];
@@ -303,18 +356,47 @@ static int load_container(Env *e, const char *toc_path) {
     void *tf = io->open(io->user, toc_path);
     if (!tf) return 0;
     uint8_t h[TOC_HEADER_MIN];
-    int ok = read_full(io, tf, h, sizeof h, 0) == 0 && memcmp(h, "-==--==--==--==-", 16) == 0;
+    memset(h, 0, sizeof h);
+    if (read_full(io, tf, h, sizeof h, 0) != 0) { // short or unreadable table of contents: nothing to look at
+        io->close(io->user, tf);
+        return 0;
+    }
+    int ok = memcmp(h, "-==--==--==--==-", 16) == 0;
     const uint32_t version = h[16], hsize = rd32(h + 20), nent = rd32(h + 24), nblk = rd32(h + 28),
                    blksz_entry = rd32(h + 32), namelen = rd32(h + 40), block_size = rd32(h + 44), parts = rd32(h + 52),
                    nseeds = rd32(h + 84), nover = rd32(h + 96);
     const uint8_t flags = h[80];
     const Nps5Ue5Variant *var = ok ? variant_for_toc(version) : NULL;
-    if (ok && !var)
-        ulog(e, "%s: IoStore TOC version %u is not in the version table (new UE version?): not read", toc_path,
-             version);
-    if (!ok || !var || hsize < TOC_HEADER_MIN || blksz_entry != 12 || (flags & 2) || !block_size ||
-        block_size > (1u << 28) || !parts || parts > MAX_PARTITIONS || namelen > 256 || nent > (1u << 26) ||
-        nblk > (1u << 28)) {
+    if (!ok) {
+        io->close(io->user, tf);
+        return 0;
+    }
+    if (!var) {
+        if (!e->refused[RF_VERSION]++)
+            ulog(e, "%s: IoStore TOC version %u is not in the version table (new UE version?): not read", toc_path,
+                 version);
+        io->close(io->user, tf);
+        return 0;
+    }
+    if (e->q->abi != var->abi) {
+        if (!e->refused[RF_ABI]++)
+            ulog(e, "%s: table row %s has decoder abi %u, the query asks for %u: not read", toc_path, var->name,
+                 var->abi, e->q->abi);
+        io->close(io->user, tf);
+        return 0;
+    }
+    if (flags & 2) {
+        if (!e->refused[RF_ENCRYPTED]++) ulog(e, "%s: container is encrypted: not read", toc_path);
+        io->close(io->user, tf);
+        return 0;
+    }
+    if (hsize < TOC_HEADER_MIN || blksz_entry != 12 || !block_size || block_size > (1u << 28) || !parts ||
+        parts > MAX_PARTITIONS || namelen > 256 || nent > (1u << 26) || nblk > (1u << 28)) {
+        if (!e->refused[RF_HEADER]++)
+            ulog(e,
+                 "%s: unsupported table of contents header (header size %u, block entry size %u, %u partitions): not "
+                 "read",
+                 toc_path, hsize, blksz_entry, parts);
         io->close(io->user, tf);
         return 0;
     }
@@ -389,10 +471,12 @@ static int load_container(Env *e, const char *toc_path) {
         Lib l = {0};
         int bad_version = -1;
         if (!buf || read_chunk(e, c, off, len, buf) != 0 || lib_parse(&l, var, buf, (uint32_t)len, &bad_version) != 0) {
-            if (buf && bad_version >= 0)
-                ulog(e, "%s: shader library header version %d is not in the version table (new UE version?): not read",
-                     toc_path, bad_version);
-            else if (buf)
+            if (buf && bad_version >= 0) {
+                if (!e->refused_lib++)
+                    ulog(e,
+                         "%s: shader library header version %d is not in the version table (new UE version?): not read",
+                         toc_path, bad_version);
+            } else if (buf)
                 ulog(e, "%s: shader library chunk unreadable or malformed: not read", toc_path);
             free(buf);
             continue;
@@ -434,7 +518,8 @@ typedef struct Thread {
 
 static int run_job(Env *e, Thread *t, const Job *j) {
     const Lib *l = j->lib;
-    const uint8_t *g = l->ge + 16ull * j->group;
+    const uint32_t *esz = l->var->elem;
+    const uint8_t *g = l->ge + (uint64_t)esz[5] * j->group;
     const uint32_t go = rd32(g), n = rd32(g + 4), unc = rd32(g + 8), comp = rd32(g + 12);
     if (unc > e->max_raw) return R_SKIP;
     if (!comp || !unc || j->len != comp || comp > unc || (uint64_t)go + n > l->ni) return R_FAIL_IO;
@@ -457,8 +542,8 @@ static int run_job(Env *e, Thread *t, const Job *j) {
         t->freq_cap = n;
     }
     for (uint32_t k = 0; k < n; k++) {
-        const uint32_t si = rd32(l->idx + 4ull * (go + k));
-        t->freq[k] = si < l->nse ? rd32(l->se + 8ull * si) & 15 : 0;
+        const uint32_t si = rd32(l->idx + (uint64_t)esz[6] * (go + k));
+        t->freq[k] = si < l->nse ? rd32(l->se + (uint64_t)esz[4] * si) & 15 : 0;
     }
     atomic_fetch_add(&e->comp_bytes, comp);
     atomic_fetch_add(&e->raw_bytes, unc);
@@ -479,12 +564,11 @@ static void account(Env *e, int r) {
         atomic_fetch_add(&e->skipped, 1);
     else
         atomic_fetch_add(&e->failed, 1);
+    // The count and the report are one step under the lock: progress is delivered in increasing order, ending at total.
+    pthread_mutex_lock(&e->prog_mu);
     const uint32_t d = atomic_fetch_add(&e->done, 1) + 1;
-    if (e->q->progress) {
-        pthread_mutex_lock(&e->prog_mu);
-        e->q->progress(e->q->arg, d, e->total);
-        pthread_mutex_unlock(&e->prog_mu);
-    }
+    if (e->q->progress) e->q->progress(e->q->arg, d, e->total);
+    pthread_mutex_unlock(&e->prog_mu);
 }
 
 static void thread_free(Env *e, Thread *t) {
@@ -532,12 +616,18 @@ int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyG
     pthread_mutex_init(&e->prog_mu, NULL);
     int rc = 0;
     io->list(io->user, collect_cb, e);
+    {
+        const unsigned n = e->refused[0] + e->refused[1] + e->refused[2] + e->refused[3];
+        if (n > 1)
+            ulog(e, "%u containers refused: unknown version %u, encrypted %u, unsupported header %u, decoder abi %u", n,
+                 e->refused[RF_VERSION], e->refused[RF_ENCRYPTED], e->refused[RF_HEADER], e->refused[RF_ABI]);
+    }
     out->containers = (uint32_t)e->ncont;
     out->libraries = (uint32_t)e->nlibs;
     for (size_t li = 0; li < e->nlibs; li++) {
         const Lib *l = &e->libs[li];
         for (uint32_t gi = 0; gi < l->ngroups; gi++) {
-            const struct Slot *s = tab_get(l->c, l->gids + 12ull * gi);
+            const struct Slot *s = tab_get(l->c, l->gids + (uint64_t)l->var->elem[2] * gi);
             if (!s) continue;
             if (vec_grow((void **)&e->jobs, &e->capjobs, e->njobs + 1, sizeof *e->jobs) != 0) {
                 rc = -1;

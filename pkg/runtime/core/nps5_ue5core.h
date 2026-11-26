@@ -23,6 +23,11 @@ typedef struct Nps5Ue5Variant {
     uint8_t abi; // decoder convention (KytyGpuUe5Query.abi)
 } Nps5Ue5Variant;
 const Nps5Ue5Variant *nps5_ue5_variants(unsigned *count);
+// Every row is validated once (the reader strides the library arrays by elem[]); a row that cannot hold what the reader reads
+// (elem[2] != 12, elem[4] < 4, elem[5] < 16, elem[6] < 4, a size of 0 or over 256, bad ranges) is refused with a log line and
+// never matches. A container is read only when its row's abi equals the query's abi.
+// Tests only: replace the table (rows are used by pointer, keep them alive); NULL restores the built-in table.
+void nps5_ue5_set_variants_for_test(const Nps5Ue5Variant *rows, unsigned n);
 
 // Where the containers live. Paths are relative to the application root ("Game/Content/Paks/pakchunk0-ps5.utoc"), '/'
 // separated; the same strings go to open().
@@ -47,7 +52,8 @@ typedef struct Nps5Ue5Decoder {
 // The runtime VFS as file access: containers under /app0 (the application root), plain or .nps5seg (nps5_ue5vfs.c).
 const Nps5Ue5Io *nps5_ue5_vfs_io(void);
 
-// Same contract as extract_ue5_shader_groups in the ABI. q->decoder and q->abi are not looked at here.
+// Same contract as extract_ue5_shader_groups in the ABI. q->decoder is not looked at here; q->abi must equal the abi of the
+// container's table row (other containers are not read).
 int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyGpuUe5Query *q, KytyGpuUe5Result *out);
 
 #endif
