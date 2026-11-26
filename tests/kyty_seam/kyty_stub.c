@@ -117,6 +117,26 @@ static int api_start(void) {
   if (g.host && g.host->run_on_main_thread) g.host->run_on_main_thread(g.host->user, on_main, &g.in_main_thread, 1);
   return KYTY_GPU_OK;
 }
+static int stub_group(void *arg, const KytyGpuUe5Group *gr) {
+    (void)arg;
+    static const uint8_t want[4] = {1, 2, 3, 4};
+    if (gr->raw_bytes == 4 && gr->shader_count == 1 && gr->frequencies && gr->frequencies[0] == 5 &&
+        memcmp(gr->bytes, want, 4) == 0)
+        g.extract_groups++;
+    return 0;
+}
+// ABI 1.8: what the real library does at guest_ready: read the UE5 shader library through the host.
+static int api_guest_ready(void) {
+    g.guest_ready_calls++;
+    if (g.host && g.host->struct_size > KYTY_GPU_HOST_CALLBACKS_SIZE_1_7 && g.host->extract_ue5_shader_groups) {
+        KytyGpuUe5Query q = {.struct_size = sizeof q, .abi = 1, .decoder = 0x1000, .group = stub_group};
+        KytyGpuUe5Result r;
+        g.extract_rc = g.host->extract_ue5_shader_groups(g.host->user, &q, &r);
+    } else {
+        g.extract_rc = -100;
+    }
+    return 0;
+}
 static void api_shutdown(void) { record(STUB_SHUTDOWN); }
 static int api_register(uint64_t base, uint64_t size, uint32_t flags, const void *alias) {
   KytyStubCall *c = record(STUB_REGISTER);
@@ -179,6 +199,7 @@ static KytyGpuApi g_api = {
     .nid_entry = nid_entry,
     .handle_fault = api_fault,
     .protect_memory = api_protect,
+    .guest_ready = api_guest_ready,
 };
 
 KYTY_GPU_EXPORT const KytyGpuApi *KytyGpuGetApi(uint32_t abi_version) {
@@ -189,5 +210,8 @@ KYTY_GPU_EXPORT const KytyGpuApi *KytyGpuGetApi(uint32_t abi_version) {
   g_missing = getenv("KYTY_STUB_MISSING");
   if ((e = getenv("KYTY_STUB_ABI"))) g_api.abi_version = (KYTY_GPU_ABI_VERSION_MAJOR << 16) | (uint32_t)atoi(e);
   if (getenv("KYTY_STUB_NO_NID_ENTRY")) g_api.nid_entry = NULL;
+  if (getenv("KYTY_STUB_NO_GUEST_READY")) g_api.guest_ready = NULL; // a 1.8 library without guest_ready
+  if (getenv("KYTY_STUB_API17"))
+      g_api.struct_size = KYTY_GPU_API_SIZE_1_7; // a 1.7 library: no guest_ready field at all
   return &g_api;
 }

@@ -214,6 +214,17 @@ func TestKytySeam(t *testing.T) {
 	if out, err := run("noentry", append(kyty, "KYTY_STUB_NO_NID_ENTRY=1")...); err != nil || !strings.Contains(out, "ROUTE OK noentry") {
 		t.Fatalf("noentry: %v\n%s", err, out)
 	}
+	// ABI 1.8 guest_ready: called once with extract_ue5_shader_groups usable inside; not called for a library whose guest_ready
+	// is null or whose struct ends at 1.7 (the host still accepts it).
+	if out, err := run("ready", kyty...); err != nil || !strings.Contains(out, "ROUTE OK ready") {
+		t.Fatalf("ready: %v\n%s", err, out)
+	}
+	if out, err := run("noready", append(kyty, "KYTY_STUB_NO_GUEST_READY=1")...); err != nil || !strings.Contains(out, "ROUTE OK noready") {
+		t.Fatalf("noready: %v\n%s", err, out)
+	}
+	if out, err := run("ready17", append(kyty, "KYTY_STUB_API17=1")...); err != nil || !strings.Contains(out, "ROUTE OK ready17") {
+		t.Fatalf("ready17: %v\n%s", err, out)
+	}
 	// A missing NID: start-up succeeds and says so; the call aborts and names the export.
 	out, err := run("missing", append(kyty, "KYTY_STUB_MISSING=Yw0jKSqop+E")...)
 	if err == nil || !strings.Contains(out, "calling the missing export") || !strings.Contains(out, "sceAgcDcbDrawIndexAuto (NID Yw0jKSqop+E") ||

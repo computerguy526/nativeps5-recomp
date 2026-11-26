@@ -29,6 +29,9 @@ typedef struct KytyStubState {
   int fault_disarms;                // handle_fault disarms the page through protect_guest (default 1)
   int serve_loads;                  // handle_fault of a load: complete it through fault_load/fault_load_apply with the bytes 0xA0, 0xA1, ...
                                     // (a stand-in for the page's published copy) and leave the page armed
+  int guest_ready_calls; // ABI 1.8: guest_ready was called
+  int extract_rc; // what extract_ue5_shader_groups returned inside guest_ready (-100: host offers none)
+  int extract_groups; // groups delivered to the stub's group callback, with the expected bytes
   int in_main_thread;               // set by the function start_graphics ran through run_on_main_thread
 } KytyStubState;
 

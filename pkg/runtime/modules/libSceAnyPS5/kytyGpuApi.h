@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 7u
+#define KYTY_GPU_ABI_VERSION_MINOR 8u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -141,6 +141,40 @@ typedef struct KytyGpuHostInfo {
 #define KYTY_GPU_WATCH_WRITE  1u /* trap the first store */
 #define KYTY_GPU_WATCH_ACCESS 2u /* trap the first load or store */
 
+/* clang-format off */ /* (the Kyty copy of this header keeps its tab style, byte for byte) */
+/* ---- ABI 1.8 (nativeps5): UE5 shader library extraction ----
+ * Called by the library from a host thread (never a guest thread), before or while the game runs. The host reads every IoStore
+ * container under app0 (through its file layer: plain files and .nps5seg packs), parses the shader library chunks (type 8), and
+ * for each shader group (type 9 chunk) decodes it by calling the guest decoder at `decoder` with convention `abi` on a guest
+ * context the host owns (own guest stack + decoder memory), then calls `group` with the decoded bytes. Groups are taken in
+ * container/library order (with threads > 1 they are delivered as they complete, so the order of delivery is only guaranteed
+ * with threads = 1); decoded bytes are valid only during the call. progress(done, total) counts groups (total known after
+ * the TOCs are read). Returns 0 = done (see out), -1 unsupported (no IoStore / abi unknown), -2 decoder call failed on the first
+ * group, -3 cancelled. Null on hosts older than 1.8 (struct_size tells). */
+typedef struct KytyGpuUe5Group {
+	uint32_t library;            /* index of the library in delivery order */
+	uint32_t group;              /* group index in its library */
+	uint32_t shader_count;       /* from the library's group entry */
+	uint32_t raw_bytes;          /* decoded size (= the library's uncompressed size) */
+	const uint32_t* frequencies; /* shader_count entries: low 4 bits of the library shader entry (stage) */
+	const uint8_t*  bytes;       /* raw_bytes decoded bytes */
+} KytyGpuUe5Group;
+typedef struct KytyGpuUe5Query {
+	uint32_t struct_size;
+	uint32_t abi;               /* 1 = oodlelz14 */
+	uint64_t decoder;           /* guest vaddr */
+	uint32_t max_raw_bytes;     /* a group above this is skipped and counted (default 64 MiB) */
+	uint32_t threads;           /* decode contexts (1..8; 0 = host default 2) */
+	int  (*group)(void* arg, const KytyGpuUe5Group* g);     /* nonzero = stop (cancel) */
+	void (*progress)(void* arg, uint32_t done, uint32_t total);
+	void* arg;
+} KytyGpuUe5Query;
+typedef struct KytyGpuUe5Result {
+	uint32_t containers, libraries, groups_total, groups_decoded, groups_failed, groups_skipped;
+	uint64_t compressed_bytes, raw_bytes, ms;
+} KytyGpuUe5Result;
+/* clang-format on */
+
 typedef struct KytyGpuHostCallbacks {
 	uint32_t struct_size; /* sizeof(KytyGpuHostCallbacks) on the host */
 	uint32_t abi_version; /* KYTY_GPU_ABI_VERSION of the host */
@@ -215,12 +249,18 @@ typedef struct KytyGpuHostCallbacks {
 	 * Both may be null on a 1.6 host (struct_size tells). */
 	int (*fault_load)(void* user, uint64_t* address, uint32_t* size);
 	int (*fault_load_apply)(void* user, const void* bytes, uint32_t size);
+
+        /* clang-format off */
+	/* ---- ABI 1.8 (nativeps5) ---- see KytyGpuUe5Query above. May be null (struct_size tells). */
+	int (*extract_ue5_shader_groups)(void* user, const KytyGpuUe5Query* q, KytyGpuUe5Result* out);
+        /* clang-format on */
 } KytyGpuHostCallbacks;
 
 /* The callback table of a 1.3 host, the oldest the Windows library accepts. */
 #define KYTY_GPU_HOST_CALLBACKS_SIZE_1_3 offsetof(KytyGpuHostCallbacks, fetch_pad_output)
 #define KYTY_GPU_HOST_CALLBACKS_SIZE_1_5 offsetof(KytyGpuHostCallbacks, host_info)
 #define KYTY_GPU_HOST_CALLBACKS_SIZE_1_6 offsetof(KytyGpuHostCallbacks, fault_load)
+#define KYTY_GPU_HOST_CALLBACKS_SIZE_1_7 offsetof(KytyGpuHostCallbacks, extract_ue5_shader_groups)
 
 /* AnyPS5-on-Windows lazy start (unused by a 1.6 host, which always calls init first). */
 #define KYTY_GPU_HOST_MODULE_DEFAULT "libAstroHybridHost.prx"
@@ -291,9 +331,19 @@ typedef struct KytyGpuApi {
 
 	/* The guest changed the protection of part of a registered range (flags as in register_memory). */
 	int (*protect_memory)(uint64_t base, uint64_t size, uint32_t flags);
+
+        /* clang-format off */
+	/* ---- ABI 1.8 (nativeps5) ---- May be null (struct_size tells).
+	 * Called once by the host on its launch thread after the guest image, static TLS and preloaded modules are up and before
+	 * the guest entry runs; only when the host set extract_ue5_shader_groups. May block for the whole launch phase (the host's
+	 * main thread keeps running its window loop meanwhile). extract_ue5_shader_groups may be called from inside it, and from
+	 * other host threads. */
+	int (*guest_ready)(void);
+        /* clang-format on */
 } KytyGpuApi;
 
 #define KYTY_GPU_API_SIZE_1_5 offsetof(KytyGpuApi, pointer_mode)
+#define KYTY_GPU_API_SIZE_1_7 offsetof(KytyGpuApi, guest_ready)
 
 /* The library's only C entry point; the host asks for the version it was built with. Returns null for
  * an unsupported version. */

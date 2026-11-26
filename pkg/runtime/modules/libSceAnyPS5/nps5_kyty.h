@@ -35,5 +35,8 @@ GuestContext *nps5_kyty_ctx(void);
 // exit helpers of the host side). A failure with NPS5_GPU=kyty set is fatal (no silent fallback to another renderer).
 bool nps5_kyty_startup(GuestContext *ctx, void *gpu_image);
 bool nps5_kyty_active(void);
+// Launch thread, after the guest image, static TLS and preloaded modules and before the guest entry (ABI 1.8 guest_ready).
+// No-op when kyty is off or the library predates 1.8.
+void nps5_kyty_guest_ready(GuestContext *ctx);
 
 #endif

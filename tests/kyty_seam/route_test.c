@@ -425,20 +425,33 @@ int main(int argc, char **argv) {
       test_marshalling(hostp);
       test_memory();
       test_callbacks();
+    } else if (strcmp(mode, "ready") == 0 || strcmp(mode, "noready") == 0 || strcmp(mode, "ready17") == 0) {
+        // ABI 1.8 guest_ready: once, on the launch thread, with the host's extract callback usable inside it. A library
+        // without the field (1.7 size) or with it null is left alone.
+        extern int g_ue5_stub_calls;
+        CHECK(g_stub->guest_ready_calls == 0 && g_ue5_stub_calls == 0);
+        nps5_kyty_guest_ready(&g_ctx);
+        nps5_kyty_guest_ready(&g_ctx); // the second call does nothing
+        if (strcmp(mode, "ready") == 0) {
+            CHECK(g_stub->guest_ready_calls == 1 && g_stub->extract_rc == 0 && g_stub->extract_groups == 1 &&
+                  g_ue5_stub_calls == 1);
+        } else {
+            CHECK(g_stub->guest_ready_calls == 0 && g_ue5_stub_calls == 0);
+        }
     } else if (strcmp(mode, "missing") == 0) {
-      const uint64_t r16[6] = {16, 0, 0, 0, 0, 0};
-      CHECK(call(shim_of("sceAgcCbNopGetSize"), r16, NULL, 0) == 64); // the others work
-      fprintf(stderr, "calling the missing export\n");
-      call(shim_of("sceAgcDcbDrawIndexAuto"), REGS, NULL, 0); // must abort
-      fprintf(stderr, "FAIL: the missing export returned\n");
-      return 1;
+        const uint64_t r16[6] = {16, 0, 0, 0, 0, 0};
+        CHECK(call(shim_of("sceAgcCbNopGetSize"), r16, NULL, 0) == 64); // the others work
+        fprintf(stderr, "calling the missing export\n");
+        call(shim_of("sceAgcDcbDrawIndexAuto"), REGS, NULL, 0); // must abort
+        fprintf(stderr, "FAIL: the missing export returned\n");
+        return 1;
     } else if (strcmp(mode, "noentry") == 0) {
-      const uint64_t r16[6] = {16, 0, 0, 0, 0, 0};
-      CHECK(count_stub(STUB_NID_ENTRY) == 0);
-      CHECK(call(shim_of("sceAgcCbNopGetSize"), r16, NULL, 0) == 64); // found by dlsym of the NID
+        const uint64_t r16[6] = {16, 0, 0, 0, 0, 0};
+        CHECK(count_stub(STUB_NID_ENTRY) == 0);
+        CHECK(call(shim_of("sceAgcCbNopGetSize"), r16, NULL, 0) == 64); // found by dlsym of the NID
     } else {
-      fprintf(stderr, "unknown mode %s\n", mode);
-      return 2;
+        fprintf(stderr, "unknown mode %s\n", mode);
+        return 2;
     }
   }
   printf("ROUTE OK %s %ld\n", mode, g_checks);
