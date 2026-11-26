@@ -113,7 +113,9 @@ static void *gdec_open(void *user, uint32_t index) {
 
 static int gdec_grow(GuestDec *d, uint64_t *addr, uint64_t *cap, uint64_t need) {
     if (*cap >= need) return 0;
-    const uint64_t nc = (need + 0xffff) & ~0xffffULL;
+    uint64_t nc = (need + 0xffff) & ~0xffffULL;
+    // Geometric: a stream of slowly growing groups costs O(log) allocations, not one per group (bounded at 256 MiB).
+    if (*cap && *cap * 2 > nc && *cap * 2 <= (256ull << 20)) nc = *cap * 2;
     const uint64_t na = g_ops->vm_alloc(d->proc, (size_t)nc + 4096);
     if (na == NPS5_VM_FAIL) return -1;
     if (*addr) g_ops->vm_free(d->proc, *addr, (size_t)*cap + 4096);
@@ -143,7 +145,9 @@ static void gdec_close(void *thread) {
 }
 
 int nps5_ue5_extract_groups(const KytyGpuUe5Query *q, KytyGpuUe5Result *out) {
-    if (!q || !out || !g_process || q->abi != UE5_ABI_OODLELZ14 || !q->decoder || q->struct_size < sizeof *q) return -1;
+    if (!q || !out || !g_process || q->abi != UE5_ABI_OODLELZ14 || !q->decoder ||
+        q->struct_size < KYTY_GPU_UE5_QUERY_SIZE_BASE)
+        return -1;
     if (!g_ops->decoder_ok(q->decoder)) {
         fprintf(stderr, "[ue5code] decoder 0x%llx is not translated guest code: shader code source off\n",
                 (unsigned long long)q->decoder);

@@ -159,6 +159,9 @@ typedef struct KytyGpuUe5Group {
 	const uint32_t* frequencies; /* shader_count entries: low 4 bits of the library shader entry (stage) */
 	const uint8_t*  bytes;       /* raw_bytes decoded bytes */
 } KytyGpuUe5Group;
+typedef struct KytyGpuUe5Range { /* groups first..last of a library, inclusive */
+	uint32_t library, first, last;
+} KytyGpuUe5Range;
 typedef struct KytyGpuUe5Query {
 	uint32_t struct_size;
 	uint32_t abi;               /* 1 = oodlelz14 */
@@ -168,7 +171,16 @@ typedef struct KytyGpuUe5Query {
 	int  (*group)(void* arg, const KytyGpuUe5Group* g);     /* nonzero = stop (cancel) */
 	void (*progress)(void* arg, uint32_t done, uint32_t total);
 	void* arg;
+	/* Groups to leave alone (a resume): sorted by library, then first, not overlapping; the host
+	 * neither reads nor decodes them, delivers nothing for them and counts none of them in progress
+	 * (progress total = the groups it will visit; groups_total stays the library's whole count).
+	 * Read only when struct_size >= sizeof(KytyGpuUe5Query) (KYTY_GPU_UE5_QUERY_SIZE_BASE is the
+	 * query without it); skip_count may be 0. */
+	const KytyGpuUe5Range* skip;
+	uint32_t skip_count;
+	uint32_t reserved; /* 0 */
 } KytyGpuUe5Query;
+#define KYTY_GPU_UE5_QUERY_SIZE_BASE offsetof(KytyGpuUe5Query, skip)
 typedef struct KytyGpuUe5Result {
 	uint32_t containers, libraries, groups_total, groups_decoded, groups_failed, groups_skipped;
 	uint64_t compressed_bytes, raw_bytes, ms;
@@ -361,7 +373,9 @@ static_assert(offsetof(KytyGpuPacket, dw_num) == 8, "KytyGpuPacket layout");
 static_assert(offsetof(KytyGpuPacket, flags) == 12, "KytyGpuPacket layout");
 static_assert(sizeof(KytyGpuHostInfo) == 40, "KytyGpuHostInfo layout");
 static_assert(sizeof(KytyGpuUe5Group) == 32, "KytyGpuUe5Group layout");
-static_assert(sizeof(KytyGpuUe5Query) == 48, "KytyGpuUe5Query layout");
+static_assert(sizeof(KytyGpuUe5Range) == 12, "KytyGpuUe5Range layout");
+static_assert(sizeof(KytyGpuUe5Query) == 64, "KytyGpuUe5Query layout");
+static_assert(offsetof(KytyGpuUe5Query, skip) == 48, "KytyGpuUe5Query layout");
 static_assert(sizeof(KytyGpuUe5Result) == 48, "KytyGpuUe5Result layout");
 static_assert(offsetof(KytyGpuHostCallbacks, extract_ue5_shader_groups) ==
                   offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void *),
@@ -375,7 +389,9 @@ _Static_assert(offsetof(KytyGpuPacket, dw_num) == 8, "KytyGpuPacket layout");
 _Static_assert(offsetof(KytyGpuPacket, flags) == 12, "KytyGpuPacket layout");
 _Static_assert(sizeof(KytyGpuHostInfo) == 40, "KytyGpuHostInfo layout");
 _Static_assert(sizeof(KytyGpuUe5Group) == 32, "KytyGpuUe5Group layout");
-_Static_assert(sizeof(KytyGpuUe5Query) == 48, "KytyGpuUe5Query layout");
+_Static_assert(sizeof(KytyGpuUe5Range) == 12, "KytyGpuUe5Range layout");
+_Static_assert(sizeof(KytyGpuUe5Query) == 64, "KytyGpuUe5Query layout");
+_Static_assert(offsetof(KytyGpuUe5Query, skip) == 48, "KytyGpuUe5Query layout");
 _Static_assert(sizeof(KytyGpuUe5Result) == 48, "KytyGpuUe5Result layout");
 _Static_assert(offsetof(KytyGpuHostCallbacks, extract_ue5_shader_groups) ==
                    offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void *),

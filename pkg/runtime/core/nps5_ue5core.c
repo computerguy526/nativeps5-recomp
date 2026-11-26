@@ -19,6 +19,7 @@
 
 #include "nps5_ue5core.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -40,8 +41,11 @@ static const Nps5Ue5Variant g_builtin_variants[] = {
 };
 
 #define MAX_VARIANTS 8
+#define BUILTIN_VARIANTS (sizeof g_builtin_variants / sizeof *g_builtin_variants)
+_Static_assert(BUILTIN_VARIANTS <= MAX_VARIANTS,
+               "the built-in version table has more rows than g_row_ok holds: raise MAX_VARIANTS");
 static const Nps5Ue5Variant *g_variants = g_builtin_variants;
-static unsigned g_nvariants = sizeof g_builtin_variants / sizeof *g_builtin_variants;
+static unsigned g_nvariants = BUILTIN_VARIANTS;
 static unsigned char g_row_ok[MAX_VARIANTS];
 static pthread_once_t g_row_once = PTHREAD_ONCE_INIT;
 
@@ -83,7 +87,7 @@ void nps5_ue5_set_variants_for_test(const Nps5Ue5Variant *rows, unsigned n) {
     pthread_once(&g_row_once, rows_once);
     if (!rows) {
         g_variants = g_builtin_variants;
-        g_nvariants = sizeof g_builtin_variants / sizeof *g_builtin_variants;
+        g_nvariants = BUILTIN_VARIANTS;
     } else {
         g_variants = rows;
         g_nvariants = n > MAX_VARIANTS ? MAX_VARIANTS : n;
@@ -166,6 +170,8 @@ typedef struct Env {
     _Atomic int cancel;
     pthread_mutex_t prog_mu;
     uint32_t total;
+    KytyGpuUe5Range *skip; // the query's skip list, sorted and merged (a copy); NULL = none
+    size_t nskip;
 } Env;
 
 enum { RF_VERSION, RF_ENCRYPTED, RF_HEADER, RF_ABI };
@@ -194,6 +200,7 @@ static int read_full(const Nps5Ue5Io *io, void *file, void *buf, size_t n, uint6
     uint8_t *b = buf;
     while (n) {
         ssize_t r = io->pread(io->user, file, b, n, off);
+        if (r < 0 && errno == EINTR) continue; // a signal is not a failed read
         if (r <= 0) return -1;
         b += r;
         off += (uint64_t)r;
@@ -603,6 +610,55 @@ static void *worker_main(void *arg) {
     return NULL;
 }
 
+// ---- the query's skip list (ABI 1.8, appended): groups a resumed pass already saw ----
+
+static int skip_cmp(const void *a, const void *b) {
+    const KytyGpuUe5Range *x = a, *y = b;
+    if (x->library != y->library) return x->library < y->library ? -1 : 1;
+    if (x->first != y->first) return x->first < y->first ? -1 : 1;
+    return 0;
+}
+
+#define MAX_SKIP_RANGES (1u << 20)
+
+// Copies, sorts and merges the ranges of `q` (only when its struct_size says the fields exist), so a caller's unsorted or
+// overlapping list is still honoured. Returns 0 (e->skip stays NULL when there is nothing to skip) or -1 on out of memory.
+static int skip_load(Env *e, const KytyGpuUe5Query *q) {
+    if (q->struct_size < sizeof(KytyGpuUe5Query) || !q->skip || !q->skip_count) return 0;
+    const size_t n = q->skip_count > MAX_SKIP_RANGES ? MAX_SKIP_RANGES : q->skip_count;
+    KytyGpuUe5Range *r = malloc(n * sizeof *r);
+    if (!r) return -1;
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++)
+        if (q->skip[i].first <= q->skip[i].last) r[m++] = q->skip[i];
+    qsort(r, m, sizeof *r, skip_cmp);
+    size_t w = 0;
+    for (size_t i = 0; i < m; i++) {
+        if (w && r[w - 1].library == r[i].library && (r[i].first <= r[w - 1].last || r[i].first - r[w - 1].last == 1)) {
+            if (r[i].last > r[w - 1].last) r[w - 1].last = r[i].last;
+        } else
+            r[w++] = r[i];
+    }
+    e->skip = r;
+    e->nskip = w;
+    return 0;
+}
+
+static int skip_has(const Env *e, uint32_t library, uint32_t group) {
+    size_t lo = 0, hi = e->nskip; // the last range whose (library, first) <= (library, group)
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        const KytyGpuUe5Range *r = &e->skip[mid];
+        if (r->library < library || (r->library == library && r->first <= group))
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (!lo) return 0;
+    const KytyGpuUe5Range *r = &e->skip[lo - 1];
+    return r->library == library && group >= r->first && group <= r->last;
+}
+
 int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyGpuUe5Query *q, KytyGpuUe5Result *out) {
     if (!io || !dec || !q || !out || !q->group || !io->list || !io->open || !io->pread || !io->close) return -1;
     memset(out, 0, sizeof *out);
@@ -615,6 +671,11 @@ int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyG
     e->max_raw = q->max_raw_bytes ? q->max_raw_bytes : DEFAULT_MAX_RAW;
     pthread_mutex_init(&e->prog_mu, NULL);
     int rc = 0;
+    if (skip_load(e, q) != 0) {
+        pthread_mutex_destroy(&e->prog_mu);
+        free(e);
+        return -1;
+    }
     io->list(io->user, collect_cb, e);
     {
         const unsigned n = e->refused[0] + e->refused[1] + e->refused[2] + e->refused[3];
@@ -624,11 +685,14 @@ int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyG
     }
     out->containers = (uint32_t)e->ncont;
     out->libraries = (uint32_t)e->nlibs;
+    uint32_t all_groups = 0;
     for (size_t li = 0; li < e->nlibs; li++) {
         const Lib *l = &e->libs[li];
         for (uint32_t gi = 0; gi < l->ngroups; gi++) {
             const struct Slot *s = tab_get(l->c, l->gids + (uint64_t)l->var->elem[2] * gi);
             if (!s) continue;
+            all_groups++;
+            if (skip_has(e, l->index, gi)) continue; // a resumed pass saw it: not read, not decoded, not counted
             if (vec_grow((void **)&e->jobs, &e->capjobs, e->njobs + 1, sizeof *e->jobs) != 0) {
                 rc = -1;
                 goto done;
@@ -637,7 +701,7 @@ int nps5_ue5_extract(const Nps5Ue5Io *io, const Nps5Ue5Decoder *dec, const KytyG
         }
     }
     e->total = (uint32_t)e->njobs;
-    out->groups_total = e->total;
+    out->groups_total = all_groups;
     if (!e->nlibs) {
         rc = -1;
         goto done;
@@ -691,6 +755,7 @@ done:
     free(e->libs);
     free(e->cont);
     free(e->jobs);
+    free(e->skip);
     pthread_mutex_destroy(&e->prog_mu);
     free(e);
     return rc;
