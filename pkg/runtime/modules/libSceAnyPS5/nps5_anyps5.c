@@ -391,7 +391,11 @@ static struct {
   const char *levels, *file, *scene;
   double base_lo, base_hi, file_lo, file_hi;
   uint64_t last_file_ns;
+  double hk_fps;   // NPS5_FRAMERATE_HOTKEY floor, 0 = hotkey off
+  int hk_applied;  // hotkey state the clamp was last computed for
 } g_fr;
+// Hotkey state (0 configured / 1 floor / 2 off), written by the window thread, read by the flip thread.
+static _Atomic int g_fr_hk;
 
 // Freeze sources (see nps5_framerate_logic.h). Weak refs: the video shim and the VFS counters live in other modules.
 extern int nps5_avplayer_playing_count(void) __attribute__((weak_import));
@@ -429,6 +433,7 @@ static void nps5_framerate_init(void) {
   }
   if (g_fr.levels && !*g_fr.levels) g_fr.levels = NULL;
   g_fr.file = getenv("NPS5_FRAMERATE_FILE");
+  g_fr.hk_fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
   if (g_fr.file && !*g_fr.file) g_fr.file = NULL;
   if (g_fr.levels || g_fr.file)
     fprintf(stderr, "[framerate] clamp per level %s, live file %s\n", g_fr.levels ? g_fr.levels : "-", g_fr.file ? g_fr.file : "-");
@@ -454,8 +459,10 @@ static void nps5_framerate_write(uint8_t *b, double want) {
 // Per-level floor + live file: recompute the clamp when the scene or the file changes (one pointer compare per flip,
 // the file is read at most twice a second). No-op unless NPS5_FRAMERATE_MIN_LEVELS or NPS5_FRAMERATE_FILE is set.
 static void nps5_framerate_clamp_update(uint8_t *b, uint64_t now) {
-  if (!g_fr.levels && !g_fr.file) return;
+  if (!g_fr.levels && !g_fr.file && g_fr.hk_fps <= 0) return;
   int changed = 0;
+  const int hk = g_fr.hk_fps > 0 ? atomic_load(&g_fr_hk) : 0;
+  if (hk != g_fr.hk_applied) { g_fr.hk_applied = hk; changed = 1; }
   const char *sc = nps5_vfs_current_scene ? nps5_vfs_current_scene() : "";
   if (sc != g_fr.scene) { g_fr.scene = sc; changed = 1; }
   if (g_fr.file && now - g_fr.last_file_ns >= 500000000ull) {
@@ -471,7 +478,7 @@ static void nps5_framerate_clamp_update(uint8_t *b, uint64_t now) {
   }
   if (!changed) return;
   double lo, hi;
-  nps5_fr_effective(g_fr.levels, sc, g_fr.base_lo, g_fr.base_hi, g_fr.file_lo, g_fr.file_hi, &lo, &hi);
+  nps5_fr_effective_hk(g_fr.levels, sc, g_fr.base_lo, g_fr.base_hi, g_fr.file_lo, g_fr.file_hi, hk, g_fr.hk_fps, &lo, &hi);
   if (lo == g_fr.l.lo && hi == g_fr.l.hi) return;
   const double olo = g_fr.l.lo, ohi = g_fr.l.hi;
   double want = 0;
@@ -479,9 +486,19 @@ static void nps5_framerate_clamp_update(uint8_t *b, uint64_t now) {
   if (rw) nps5_framerate_write(b, want);
   g_fr.lo = g_fr.l.lo; g_fr.hi = g_fr.l.hi;
   fprintf(stderr, "[framerate] clamp %.0f..%.0f -> %.0f..%.0f fps (%s; scene %s)%s\n", olo, ohi, g_fr.l.lo, g_fr.l.hi,
-          g_fr.file_lo > 0 ? "live file" : "level table", sc && *sc ? sc : "(none)", rw ? ", block rewritten" : "");
+          hk ? "hotkey" : g_fr.file_lo > 0 ? "live file" : "level table", sc && *sc ? sc : "(none)", rw ? ", block rewritten" : "");
 }
 
+// Window thread (Cmd+Shift+F, ps4_metal_screen.m): cycle the live floor. Ignored unless NPS5_FRAMERATE_HOTKEY is set.
+void nps5_framerate_hotkey(void) {
+  const double fps = nps5_fr_hotkey_cfg(getenv("NPS5_FRAMERATE_HOTKEY"));
+  if (fps <= 0) return;
+  int old = atomic_load(&g_fr_hk), nw;
+  do nw = nps5_fr_hotkey_next(old); while (!atomic_compare_exchange_weak(&g_fr_hk, &old, nw));
+  static const char *const nm[] = {"configured", "floor", "off"};
+  if (nw == 1) fprintf(stderr, "[framerate] hotkey: floor %.0f fps (slow motion below it)\n", fps);
+  else fprintf(stderr, "[framerate] hotkey: %s\n", nw == 2 ? "off (base clamp, no level floor / live file)" : nm[nw]);
+}
 static void nps5_framerate_tick(GuestContext *ctx) {
   if (g_fr.state < 0) return;
   if (g_fr.state == 0) { nps5_framerate_init(); if (g_fr.state < 0) return; }

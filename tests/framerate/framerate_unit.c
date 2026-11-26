@@ -121,6 +121,40 @@ static void test_level_clamp(void) {
   CHECK(f.cur == 60, "pin 60 holds at 25 fps (cur %.1f)", f.cur);
   CHECK(nps5_fr_set_clamp(&f, 90, 60, &w) == 0 && f.lo == 60, "lo above hi is limited");
 }
+
+// apefloor hotkey: cycle + interaction with the level table and the live file. Synthetic scene names only.
+static void test_hotkey(void) {
+  CHECK(nps5_fr_hotkey_cfg(NULL) == 0 && nps5_fr_hotkey_cfg("") == 0 && nps5_fr_hotkey_cfg("0") == 0, "hotkey off by default");
+  CHECK(nps5_fr_hotkey_cfg("1") == 30 && nps5_fr_hotkey_cfg("25") == 25 && nps5_fr_hotkey_cfg("240") == 240, "hotkey cfg");
+  CHECK(nps5_fr_hotkey_cfg("19") == 0 && nps5_fr_hotkey_cfg("241") == 0 && nps5_fr_hotkey_cfg("x") == 0 && nps5_fr_hotkey_cfg("30x") == 0 &&
+            nps5_fr_hotkey_cfg("-30") == 0, "hotkey cfg junk");
+  int s = 0, seq[7]; for (int i = 0; i < 7; i++) { s = nps5_fr_hotkey_next(s); seq[i] = s; }
+  CHECK(seq[0] == 1 && seq[1] == 2 && seq[2] == 0 && seq[3] == 1 && seq[5] == 0 && seq[6] == 1, "cycle default -> floor -> off -> default");
+  CHECK(nps5_fr_hotkey_next(-1) == 0 && nps5_fr_hotkey_next(9) == 0, "bad state resets");
+  const char *tab = "lvl_a=45"; double lo, hi;
+  for (int st = 0; st < 3; st++) {
+    nps5_fr_effective_hk(NULL, "x", 20, 60, -1, -1, st, 30, &lo, &hi);
+    CHECK(lo == (st == 1 ? 30 : 20) && hi == 60, "plain clamp state %d (lo %.0f)", st, lo);
+  }
+  // state 0 = exactly the old behaviour (table, file)
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 60, -1, -1, 0, 30, &lo, &hi); CHECK(lo == 45 && hi == 60, "state 0 keeps the level table");
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 60, 25, 25, 0, 30, &lo, &hi); CHECK(lo == 25 && hi == 25, "state 0 keeps the live file");
+  // state 1 beats table and file; state 2 ignores both
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 60, 25, 25, 1, 30, &lo, &hi); CHECK(lo == 30 && hi == 60, "floor beats file and table");
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 60, 25, 25, 2, 30, &lo, &hi); CHECK(lo == 20 && hi == 60, "off = base clamp");
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 40, -1, -1, 1, 50, &lo, &hi); CHECK(lo == 40 && hi == 40, "floor limited to the max");
+  nps5_fr_effective_hk(tab, "lvl_a", 20, 60, -1, -1, 1, 0, &lo, &hi); CHECK(lo == 45, "no hotkey fps = ignored");
+  // synthetic session: 15 fps real; floor on -> block raised at once; off -> block falls back after the hysteresis
+  Nps5Fr f; double w = 0;
+  init(&f);
+  run(&f, 300, 1000.0 / 15, 0); CHECK(f.cur == 20, "start at base floor");
+  nps5_fr_effective_hk(NULL, "x", 20, 60, -1, -1, 1, 30, &lo, &hi);
+  CHECK(nps5_fr_set_clamp(&f, lo, hi, &w) == 1 && w == 30 && f.cur == 30, "hotkey floor raises the block at once");
+  run(&f, 300, 1000.0 / 15, 0); CHECK(f.cur == 30, "block stays at 30 (cur %.1f)", f.cur);
+  nps5_fr_effective_hk(NULL, "x", 20, 60, -1, -1, 2, 30, &lo, &hi);
+  CHECK(nps5_fr_set_clamp(&f, lo, hi, &w) == 0, "off does not rewrite at once");
+  run(&f, 600, 1000.0 / 15, 0); CHECK(f.cur == 20, "block follows back to the base floor (cur %.1f)", f.cur);
+}
 int main(void) {
   Nps5Fr f;
   // steady 60 fps: no rewrites
@@ -252,6 +286,7 @@ int main(void) {
           CHECK(f.cur == 60, "old unlimited freeze should hold 60 (cur %.1f)", f.cur);
   }
   test_level_clamp();
+  test_hotkey();
   printf(fails ? "framerate_unit: %d FAILED\n" : "framerate_unit: all passed\n", fails);
   return fails != 0;
 }

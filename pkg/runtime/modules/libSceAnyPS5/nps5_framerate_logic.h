@@ -173,6 +173,25 @@ static inline void nps5_fr_effective(const char *tab, const char *scene, double 
   if (l > h) l = h;
   *lo = l; *hi = h;
 }
+// Keyboard hotkey (NPS5_FRAMERATE_HOTKEY=1 or a floor in fps 20..240; Cmd+Shift+F in the Metal window). Cycles
+//   0 = configured (level table / live file / base clamp), 1 = floor <fps> (default 30), 2 = off (the base clamp only:
+//   no level floor, no live file) -> 0. The hotkey beats the live file and the level table while it is not 0.
+// nps5_fr_hotkey_cfg: env text -> floor fps, 0 = hotkey off (unset, "0", junk, or outside 20..240; "1" means 30).
+static inline double nps5_fr_hotkey_cfg(const char *t) {
+  if (!t || !*t) return 0;
+  char *end = NULL;
+  const double v = strtod(t, &end);
+  if (end == t || *end) return 0;
+  if (v == 1.0) return 30.0;
+  return (v >= 20.0 && v <= 240.0) ? v : 0;
+}
+static inline int nps5_fr_hotkey_next(int s) { return (s < 0 || s >= 2) ? 0 : s + 1; }
+static inline void nps5_fr_effective_hk(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
+                                        double file_hi, int hk, double hk_fps, double *lo, double *hi) {
+  if (hk == 1 && hk_fps > 0) { *hi = base_hi; *lo = hk_fps > base_hi ? base_hi : hk_fps; return; }
+  if (hk == 2) { *lo = base_lo > base_hi ? base_hi : base_lo; *hi = base_hi; return; }
+  nps5_fr_effective(tab, scene, base_lo, base_hi, file_lo, file_hi, lo, hi);
+}
 // Change the clamp at run time (level change or live file). lo is limited to hi. When the block value is outside the
 // new range it must follow at once (entering a floor-30 level must not wait for the hysteresis): returns 1 with *want_out.
 // Inside the range nothing is rewritten; the normal step moves it later (e.g. back down after leaving the level).
