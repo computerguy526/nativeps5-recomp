@@ -5,6 +5,7 @@
 #include "nps5_segfile.h"
 #include "nps5_diag.h"
 #include "ps4_sfo.h"
+#include "nps5_levelfix.h"
 #include <ctype.h>
 #include <limits.h>
 #include <dirent.h>
@@ -474,6 +475,17 @@ static void vfs_mount_overlay(void) {
     fprintf(stderr, "[ps4-vfs] ERROR: overlay: %d file(s) NOT mounted and invisible to the title (see warnings above)\n", g_overlay_dropped);
 }
 
+// Read-time level fix (nps5_levelfix.h): a patched copy of a known level file, mounted read-only over its guest path.
+static int vfs_lf_resolve(void *u, const char *g, char *h, size_t n) { (void)u; return ps4_vfs_resolve(g, h, n); }
+static int vfs_lf_in_root(void *u, const char *h) { (void)u; return vfs_host_in_app_root(h); }
+static int vfs_lf_cache(void *u, char *d, size_t n) { (void)u; return ps4_vfs_userdata_dir("levelfix", d, n); }
+static int vfs_lf_mount(void *u, const char *g, const char *h) { (void)u; return ps4_vfs_mount_ro(g, h); }
+
+static void vfs_mount_levelfix(void) {
+  nps5_lf_env env = { ps4_vfs_title_id(), getenv("NPS5_LEVELFIX"), vfs_lf_resolve, vfs_lf_in_root, vfs_lf_cache, vfs_lf_mount, NULL };
+  nps5_levelfix_run(&env, nps5_lf_table, sizeof(nps5_lf_table) / sizeof(nps5_lf_table[0]));
+}
+
 void ps4_vfs_init(const char *app_root) {
   pthread_mutex_lock(&g_vfs_mutex);
   if (g_app_root) {
@@ -510,6 +522,7 @@ void ps4_vfs_init(const char *app_root) {
   pthread_mutex_unlock(&g_title_mutex);
   vfs_mount_userdata();
   vfs_mount_overlay();
+  vfs_mount_levelfix();
 
   // Initialize universal PAK provider
   ps4_pak_init(g_app_root);
