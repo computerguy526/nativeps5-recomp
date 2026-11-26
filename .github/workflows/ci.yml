@@ -48,7 +48,7 @@ jobs:
         run: |
           # shellcheck disable=SC2046
           go test $(go list ./... | grep -vE '/pkg/(lifter|runtime|emitter)$')
-          go test ./pkg/runtime -run 'TestHostAccessHooks|TestFontGlyphAPI' -count=1
+          go test ./pkg/runtime -run 'TestHostAccessHooks|TestFontGlyphAPI|TestKytyRouteTable' -count=1
           go test ./pkg/lifter -run 'PatchValue' -count=1
           go test ./pkg/emitter -run 'Patch|Shipped|AstroStubs' -count=1
 

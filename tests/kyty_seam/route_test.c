@@ -145,7 +145,7 @@ static const uint64_t REGS[6] = {G0 + 0x100000, 0x22, 0x33, G0 + 0x4000, 0x55, 0
 static void test_default(void) {
   CHECK(!nps5_kyty_startup(&g_ctx, g_gpu) && !nps5_kyty_active());
   CHECK(t_nhooks == 0 && t_nresolvers == 0 && t_naccess == 0 && !nps5_kyty_watch_ready());
-  CHECK(nps5_kyty_route_count == 84);
+  CHECK(nps5_kyty_route_count == 121);
   for (unsigned i = 0; i < nps5_kyty_route_count; i++) {
     const Nps5KytyRoute *r = &nps5_kyty_routes[i];
     CHECK(*r->slot != NULL && *r->slot == anyps5_symbol(r)); // the pointer is the AnyPS5 function, bound at load
@@ -167,7 +167,7 @@ static void test_default(void) {
 static void test_all_routes_reach_kyty(bool host_pointers) {
   CHECK(nps5_kyty_active() && t_nhooks == 1 && t_nresolvers == 1 && t_naccess == 1 && nps5_kyty_watch_ready());
   CHECK(g_stub && g_stub->host && g_stub->calls[0].kind == STUB_INIT);
-  CHECK(count_stub(STUB_NID_ENTRY) == 84 && count_stub(STUB_START) == 1 && g_stub->in_main_thread == 1);
+  CHECK(count_stub(STUB_NID_ENTRY) == 121 && count_stub(STUB_START) == 1 && g_stub->in_main_thread == 1);
   const KytyGpuHostInfo *info = g_stub->host->host_info(g_stub->host->user);
   CHECK(info->struct_size == sizeof *info && info->guest_bias == g_bias && info->host_page_size == 16384 && info->tracker_page_size == 4096 &&
         (info->flags & KYTY_GPU_HOST_HOSTED_MEMORY) && (info->flags & KYTY_GPU_HOST_MAIN_QUEUE) && info->guest_hi == G0 + ARENA);

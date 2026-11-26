@@ -171,7 +171,7 @@ func TestKytySeam(t *testing.T) {
 	bin := filepath.Join(dir, "route_test")
 	args := append([]string{"-g", "-O1", "-w", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...)
 	args = append(args, "../../tests/kyty_seam/route_test.c", "modules/libSceAnyPS5/nps5_anyps5_thunks.c", "modules/libSceAnyPS5/nps5_kyty.c",
-		"modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", fakeDirect, "-o", bin)
+		"modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "../../tests/kyty_seam/ue5_stub.c", fakeDirect, "-o", bin)
 	build(args...)
 	// The seam's own sources compile without warnings.
 	build(append(append([]string{"-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...), "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c")...)
@@ -254,7 +254,7 @@ func TestKytySeamVM(t *testing.T) {
 	bin := filepath.Join(dir, "vm_seam_test")
 	args := append([]string{"-g", "-O1", "-w", "-DNPS5_HAVE_ANYPS5_AGC=1"}, inc...)
 	args = append(args, "../../tests/kyty_seam/vm_seam_test.c", "../../tests/memory_vm_test/stubs.c", "core/nps5_vm.c", "core/nps5_mem.c",
-		"kernel/memory/ps4_direct_mem.c", "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "-Wl,-undefined,dynamic_lookup", "-o", bin)
+		"kernel/memory/ps4_direct_mem.c", "modules/libSceAnyPS5/nps5_kyty.c", "modules/libSceAnyPS5/nps5_kyty_watch.c", "modules/libSceAnyPS5/nps5_kyty_emu.c", "../../tests/kyty_seam/ue5_stub.c", "-Wl,-undefined,dynamic_lookup", "-o", bin)
 	if out, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
@@ -278,7 +278,7 @@ func TestKytyRouteTable(t *testing.T) {
 	for _, r := range routes {
 		libs[r.Lib]++
 	}
-	if len(routes) != 84 || libs["libSceAgc.prx"] != 66 || libs["libSceAgcDriver.prx"] != 7 || libs["libSceVideoOut.prx"] != 11 {
+	if len(routes) != 121 || libs["libSceAgc.prx"] != 86 || libs["libSceAgcDriver.prx"] != 10 || libs["libSceVideoOut.prx"] != 25 {
 		t.Fatalf("routes: %d %v", len(routes), libs)
 	}
 	descs, err := thunkgen.AnyPS5Descs()
@@ -301,14 +301,14 @@ func TestKytyRouteTable(t *testing.T) {
 			}
 		}
 	}
-	if routed != 84 || direct != 73 {
-		t.Fatalf("routed %d (direct %d), want 84 (73)", routed, direct)
+	if routed != 121 || direct != 96 {
+		t.Fatalf("routed %d (direct %d), want 121 (96)", routed, direct)
 	}
 	src, err := os.ReadFile("modules/libSceAnyPS5/nps5_anyps5_thunks.c")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "(void *)kyty_raw_"); n != 84 {
+	if n := strings.Count(string(src), "(void *)kyty_raw_"); n != 121 {
 		t.Fatalf("generated table has %d routes: run go run ./pkg/thunkgen/gen", n)
 	}
 }
