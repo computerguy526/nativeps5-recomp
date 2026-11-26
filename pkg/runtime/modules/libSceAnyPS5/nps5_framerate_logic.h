@@ -186,6 +186,14 @@ static inline double nps5_fr_hotkey_cfg(const char *t) {
   return (v >= 20.0 && v <= 240.0) ? v : 0;
 }
 static inline int nps5_fr_hotkey_next(int s) { return (s < 0 || s >= 2) ? 0 : s + 1; }
+// Two key handlers (the Metal window's and Kyty's SDL window) may both see one key press: a call within
+// NPS5_FR_HOTKEY_DEBOUNCE_NS of the last accepted one is dropped. *last_ns is updated when the call is accepted.
+#define NPS5_FR_HOTKEY_DEBOUNCE_NS 250000000ull
+static inline int nps5_fr_hotkey_accept(unsigned long long *last_ns, unsigned long long now_ns) {
+  if (*last_ns && now_ns >= *last_ns && now_ns - *last_ns < NPS5_FR_HOTKEY_DEBOUNCE_NS) return 0;
+  *last_ns = now_ns ? now_ns : 1;
+  return 1;
+}
 static inline void nps5_fr_effective_hk(const char *tab, const char *scene, double base_lo, double base_hi, double file_lo,
                                         double file_hi, int hk, double hk_fps, double *lo, double *hi) {
   if (hk == 1 && hk_fps > 0) { *hi = base_hi; *lo = hk_fps > base_hi ? base_hi : hk_fps; return; }

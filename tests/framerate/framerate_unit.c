@@ -128,6 +128,12 @@ static void test_hotkey(void) {
   CHECK(nps5_fr_hotkey_cfg("1") == 30 && nps5_fr_hotkey_cfg("25") == 25 && nps5_fr_hotkey_cfg("240") == 240, "hotkey cfg");
   CHECK(nps5_fr_hotkey_cfg("19") == 0 && nps5_fr_hotkey_cfg("241") == 0 && nps5_fr_hotkey_cfg("x") == 0 && nps5_fr_hotkey_cfg("30x") == 0 &&
             nps5_fr_hotkey_cfg("-30") == 0, "hotkey cfg junk");
+  { unsigned long long last = 0;
+    CHECK(nps5_fr_hotkey_accept(&last, 1000000000ull) == 1, "first press accepted");
+    CHECK(nps5_fr_hotkey_accept(&last, 1100000000ull) == 0, "second handler 100 ms later dropped");
+    CHECK(nps5_fr_hotkey_accept(&last, 1240000000ull) == 0, "still inside the window (measured from the accepted press, 240 ms)");
+    CHECK(nps5_fr_hotkey_accept(&last, 1300000000ull) == 1, "a press 300 ms later accepted");
+    CHECK(nps5_fr_hotkey_accept(&last, 1200000000ull) == 1, "clock going backwards is accepted, not stuck"); }
   int s = 0, seq[7]; for (int i = 0; i < 7; i++) { s = nps5_fr_hotkey_next(s); seq[i] = s; }
   CHECK(seq[0] == 1 && seq[1] == 2 && seq[2] == 0 && seq[3] == 1 && seq[5] == 0 && seq[6] == 1, "cycle default -> floor -> off -> default");
   CHECK(nps5_fr_hotkey_next(-1) == 0 && nps5_fr_hotkey_next(9) == 0, "bad state resets");
