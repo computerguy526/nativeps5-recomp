@@ -173,9 +173,10 @@ static inline void nps5_fr_effective(const char *tab, const char *scene, double 
   if (l > h) l = h;
   *lo = l; *hi = h;
 }
-// Keyboard hotkey (NPS5_FRAMERATE_HOTKEY=1 or a floor in fps 20..240; Cmd+Shift+F in the Metal window). Cycles
-//   0 = configured (level table / live file / base clamp), 1 = floor <fps> (default 30), 2 = off (the base clamp only:
-//   no level floor, no live file) -> 0. The hotkey beats the live file and the level table while it is not 0.
+// Keyboard hotkey (NPS5_FRAMERATE_HOTKEY=1 or a floor in fps 20..240; Cmd+Shift+F). States: 0 = configured (level
+//   table / live file / base clamp; the start state only), 1 = floor <fps> (default 30), 2 = off (the base clamp only:
+//   no level floor, no live file). A press toggles 1 <-> 2 (first press 0 -> 1), so every press visibly changes the clamp.
+//   The hotkey beats the live file and the level table while it is not 0.
 // nps5_fr_hotkey_cfg: env text -> floor fps, 0 = hotkey off (unset, "0", junk, or outside 20..240; "1" means 30).
 static inline double nps5_fr_hotkey_cfg(const char *t) {
   if (!t || !*t) return 0;
@@ -185,7 +186,7 @@ static inline double nps5_fr_hotkey_cfg(const char *t) {
   if (v == 1.0) return 30.0;
   return (v >= 20.0 && v <= 240.0) ? v : 0;
 }
-static inline int nps5_fr_hotkey_next(int s) { return (s < 0 || s >= 2) ? 0 : s + 1; }
+static inline int nps5_fr_hotkey_next(int s) { return s == 1 ? 2 : 1; }
 // Two key handlers (the Metal window's and Kyty's SDL window) may both see one key press: a call within
 // NPS5_FR_HOTKEY_DEBOUNCE_NS of the last accepted one is dropped. *last_ns is updated when the call is accepted.
 #define NPS5_FR_HOTKEY_DEBOUNCE_NS 250000000ull

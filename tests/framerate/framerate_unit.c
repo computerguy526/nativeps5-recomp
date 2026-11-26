@@ -135,8 +135,8 @@ static void test_hotkey(void) {
     CHECK(nps5_fr_hotkey_accept(&last, 1300000000ull) == 1, "a press 300 ms later accepted");
     CHECK(nps5_fr_hotkey_accept(&last, 1200000000ull) == 1, "clock going backwards is accepted, not stuck"); }
   int s = 0, seq[7]; for (int i = 0; i < 7; i++) { s = nps5_fr_hotkey_next(s); seq[i] = s; }
-  CHECK(seq[0] == 1 && seq[1] == 2 && seq[2] == 0 && seq[3] == 1 && seq[5] == 0 && seq[6] == 1, "cycle default -> floor -> off -> default");
-  CHECK(nps5_fr_hotkey_next(-1) == 0 && nps5_fr_hotkey_next(9) == 0, "bad state resets");
+  CHECK(seq[0] == 1 && seq[1] == 2 && seq[2] == 1 && seq[3] == 2 && seq[5] == 2 && seq[6] == 1, "toggle: default -> floor -> off -> floor -> off");
+  CHECK(nps5_fr_hotkey_next(-1) == 1 && nps5_fr_hotkey_next(9) == 1, "bad state -> floor");
   const char *tab = "lvl_a=45"; double lo, hi;
   for (int st = 0; st < 3; st++) {
     nps5_fr_effective_hk(NULL, "x", 20, 60, -1, -1, st, 30, &lo, &hi);
