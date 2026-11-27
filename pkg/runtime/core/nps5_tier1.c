@@ -205,9 +205,11 @@ static void miss_log(const MissRec *m) {
     pthread_mutex_unlock(&g_log_mu);
   }
   NPS5_LOG(NPS5_S_TIER1, m->kind && *m->kind ? NPS5_L_ERROR : NPS5_L_INFO,
-           "miss rip=0x%llx %s+0x%llx %s: %s%s%s (%.1f ms)", (unsigned long long)m->rip, m->module ? m->module : "?",
-           (unsigned long long)m->offset, m->reason, m->outcome, m->kind && *m->kind ? " " : "", m->kind ? m->kind : "",
-           m->compile_ms);
+           "miss rip=0x%llx %s+0x%llx %s: %s%s%s (%.1f ms)%s%s", (unsigned long long)m->rip,
+           m->module ? m->module : "?", (unsigned long long)m->offset, m->reason, m->outcome,
+           m->kind && *m->kind ? " " : "", m->kind ? m->kind : "", m->compile_ms,
+           m->kind && *m->kind && m->detail && *m->detail ? ": " : "",
+           m->kind && *m->kind && m->detail ? m->detail : "");
 }
 
 // ---- dispatch table publication ---------------------------------------------------------------

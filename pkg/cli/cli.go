@@ -632,9 +632,12 @@ func Execute(args []string) (err error) {
 
 	entries := disasm.SeedEntryPoints(loaded, cfg.AllSymbols)
 	if cfg.SeedsFrom != "" {
-		seeds, err := readTier1Seeds(cfg.SeedsFrom)
+		seeds, skipped, err := seedsForElf(cfg.SeedsFrom, cfg.ElfPath)
 		if err != nil {
 			return err
+		}
+		if skipped != "" {
+			fmt.Fprintf(os.Stderr, "             Warning: tier-1 seeds from %s ignored: %s\n", cfg.SeedsFrom, skipped)
 		}
 		added := 0
 		for _, a := range seeds {

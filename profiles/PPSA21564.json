@@ -7,7 +7,9 @@
             "-patches",
             "profiles/patches/PPSA21564.json",
             "-hle-replace",
-            "profiles/funcrepl/PPSA21564-physsub.json"
+            "profiles/funcrepl/PPSA21564-physsub.json",
+            "-seeds-from",
+            "profiles/seeds/PPSA21564.seeds"
         ]
     },
     "env": {

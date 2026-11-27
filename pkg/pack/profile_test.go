@@ -193,3 +193,41 @@ func TestSarosProfileTranslateArgs(t *testing.T) {
 		}
 	}
 }
+
+// TestAstroProfileSeeds: the ASTRO (PPSA21564) profile hands the translator its tier-1 seed list, the file it names exists
+// in the repository (the path is relative to the checkout, like the patch list), and no other title's profile has one.
+func TestAstroProfileSeeds(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NPS5_PROFILES", "")
+	seedsArg := func(id string) string {
+		p, _, err := LoadProfile("", id, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, err := p.Args(func(string) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, a := range args {
+			if a == "-seeds-from" && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	got := seedsArg("PPSA21564")
+	if got != "profiles/seeds/PPSA21564.seeds" {
+		t.Fatalf("PPSA21564 -seeds-from = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, got)); err != nil {
+		t.Errorf("the seed list the ASTRO profile names is missing: %v", err)
+	}
+	for _, id := range []string{"PPSA07631", "PPSA28997", "syobon"} {
+		if s := seedsArg(id); s != "" {
+			t.Errorf("%s must not carry tier-1 seeds, has %q", id, s)
+		}
+	}
+}

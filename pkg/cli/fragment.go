@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,8 +167,17 @@ type fragResult struct {
 	msCompile            int64
 }
 
+// missingBuildMessage is what the player reads when a lazily translated function is needed and the
+// build folder holding the lifter manifest is gone (moved, renamed or cleaned up).
+func missingBuildMessage(manifest string) string {
+	return fmt.Sprintf("the build folder is missing (%s not found): the game needs it to translate code it reaches for the first time; rebuild with nps5 build", manifest)
+}
+
 func readTier1Manifest(path string) (*tier1Info, error) {
 	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ferr(fragBadManifest, "%s", missingBuildMessage(path))
+	}
 	if err != nil {
 		return nil, ferr(fragBadManifest, "%v", err)
 	}

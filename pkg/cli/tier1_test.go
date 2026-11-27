@@ -254,3 +254,156 @@ func TestStampCarriesLayout(t *testing.T) {
 		t.Error("-cold-outline is not in the stamp")
 	}
 }
+
+func writeSeeds(t *testing.T, name string, lines ...string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestReadTier1SeedsFile(t *testing.T) {
+	p := writeSeeds(t, "t.seeds", "# header", "", "elf ABCD1234ef", "0x4092c0  # trailing", "4092a0", "0X409300", "0x4092c0")
+	got, guards, err := readTier1SeedSet(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint64{0x4092a0, 0x4092c0, 0x409300}
+	if len(got) != len(want) {
+		t.Fatalf("seeds %x, want %x", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("seeds %x, want %x", got, want)
+		}
+	}
+	if len(guards) != 1 || guards[0] != "abcd1234ef" {
+		t.Errorf("guards %v", guards)
+	}
+	// readTier1Seeds (the translation stamp) sees the same addresses, joined with a miss log
+	log := writeLog(t, t.TempDir(), `{"rip":"0x500000","outcome":"compiled"}`)
+	both, err := readTier1Seeds(p + "," + log)
+	if err != nil || len(both) != 4 {
+		t.Fatalf("joined: %x %v", both, err)
+	}
+}
+
+func TestReadTier1SeedsFileErrors(t *testing.T) {
+	for name, line := range map[string]string{
+		"bad address":     "0xzz",
+		"zero":            "0x0",
+		"two words":       "0x10 0x20",
+		"short guard":     "elf ab",
+		"non-hex guard":   "elf nothexnothex",
+		"guard no value":  "elf",
+		"junk after elf":  "elf 11223344 55",
+		"negative number": "-5",
+	} {
+		p := writeSeeds(t, "e.seeds", "0x10", line)
+		if _, _, err := readTier1SeedSet(p); err == nil || !strings.Contains(err.Error(), ":2:") {
+			t.Errorf("%s: want an error naming line 2, got %v", name, err)
+		}
+	}
+	// an empty list is fine and adds nothing
+	if got, _, err := readTier1SeedSet(writeSeeds(t, "empty.seeds", "# nothing")); err != nil || len(got) != 0 {
+		t.Errorf("empty list: %x %v", got, err)
+	}
+}
+
+// A `.seeds` file that names an input applies to that input only; any other input gets no seeds and a reason.
+func TestSeedsForElfGuard(t *testing.T) {
+	elf := filepath.Join(t.TempDir(), "eboot.bin")
+	if err := os.WriteFile(elf, []byte("synthetic input"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := sha256File(elf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := writeSeeds(t, "m.seeds", "elf "+sum[:16], "0x1000", "0x2000")
+	got, why, err := seedsForElf(match, elf)
+	if err != nil || why != "" || len(got) != 2 {
+		t.Fatalf("matching input: %x %q %v", got, why, err)
+	}
+	other := writeSeeds(t, "o.seeds", "elf 0000000000000000", "0x1000")
+	got, why, err = seedsForElf(other, elf)
+	if err != nil || len(got) != 0 || !strings.Contains(why, "this input is "+sum[:8]) {
+		t.Fatalf("other input: %x %q %v", got, why, err)
+	}
+	// no guard line: the addresses apply to every input (a miss log, or a hand list without `elf`)
+	free := writeSeeds(t, "f.seeds", "0x1000")
+	if got, why, err = seedsForElf(free, elf); err != nil || why != "" || len(got) != 1 {
+		t.Fatalf("no guard: %x %q %v", got, why, err)
+	}
+	if _, _, err = seedsForElf(match, filepath.Join(t.TempDir(), "gone.bin")); err == nil {
+		t.Error("guarded list with a missing input: want an error")
+	}
+}
+
+// The seed list the repository ships for ASTRO: three tier-1 entry points and the input they belong to, and the
+// translation stamp changes when the list does (a translation made without seeds is not reused).
+func TestShippedAstroSeeds(t *testing.T) {
+	p := filepath.Join("..", "..", "profiles", "seeds", "PPSA21564.seeds")
+	got, guards, err := readTier1SeedSet(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint64{0xadb4e5, 0xadb4f0, 0xadb570}
+	if len(got) != len(want) {
+		t.Fatalf("ASTRO seeds %x, want %x", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ASTRO seeds %x, want %x", got, want)
+		}
+	}
+	if len(guards) != 1 || len(guards[0]) != 16 {
+		t.Errorf("ASTRO seeds must name their input: %v", guards)
+	}
+}
+
+func TestTranslationStampSeeds(t *testing.T) {
+	d := t.TempDir()
+	elf := filepath.Join(d, "eboot.bin")
+	if err := os.WriteFile(elf, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := writeSeeds(t, "a.seeds", "0x1000")
+	b := writeSeeds(t, "b.seeds", "0x1000", "0x2000")
+	stamp := func(seeds string) string {
+		s, err := translationStamp(&Config{ElfPath: elf, AddrMode: "base", SeedsFrom: seeds})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if stamp("") == stamp(a) || stamp(a) == stamp(b) || stamp(a) != stamp(a) {
+		t.Error("the stamp must follow the seed list (and only it)")
+	}
+}
+
+// A missing build folder says so, in words a player can act on, in result.txt (the crash report and the miss log carry it).
+func TestFragmentMissingBuildFolderMessage(t *testing.T) {
+	out := t.TempDir()
+	manifest := filepath.Join(out, "gone", "lifter_manifest.json")
+	err := fragmentCommand([]string{"--manifest", manifest, "--entry", "0x1000", "--out", out})
+	if err == nil {
+		t.Fatal("missing manifest accepted")
+	}
+	b, _ := os.ReadFile(filepath.Join(out, "result.txt"))
+	for _, want := range []string{"kind=bad_manifest", "the build folder is missing", manifest, "rebuild with nps5 build"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("result.txt lacks %q: %q", want, b)
+		}
+	}
+	// a manifest that exists but is not a manifest keeps its own, different message
+	bad := filepath.Join(out, "bad.json")
+	if err := os.WriteFile(bad, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readTier1Manifest(bad); err == nil || strings.Contains(err.Error(), "build folder is missing") {
+		t.Errorf("manifest without tier1 section: %v", err)
+	}
+}

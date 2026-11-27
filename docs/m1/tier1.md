@@ -90,6 +90,16 @@ points (those outside executable code are reported and ignored). Addresses are f
 is valid for builds with the same addr mode and input (a different layout puts the seeds outside code or on a
 non-boundary; the translator warns for the former).
 
+A `.seeds` file is the hand-written form a title profile ships: one hex guest address per line, `#` starts a comment, and an
+optional `elf <sha256 prefix>` line (8 to 64 hex digits) names the input the addresses belong to; another input gets no
+seeds and a warning, so a different build of the game is never seeded with addresses of this one. `profiles/seeds/PPSA21564.seeds`
+lists the three world-map fragments of Astro Bot (the only tier-1 misses of every ASTRO run on record), and the ASTRO profile
+passes it with `-seeds-from`, so they are translated with the rest and the first open of the world map needs no live translation
+and no build folder. The seed list is part of the translation stamp.
+
+A missing `lifter_manifest.json` (the build folder was moved, renamed or cleaned) fails the miss with `bad_manifest` and the text
+"the build folder is missing (...): rebuild with nps5 build"; the console line of a failed miss carries the detail.
+
 Failures never continue silently. The runtime records `nps5_diag_set_tier1_failure` and returns 0; the caller aborts,
 and `crash.txt` has `reason: tier-1 miss fallback failed ...`, `tier1_kind`, `tier1_guest_rip`, `tier1_module`,
 `tier1_module_offset`, `tier1_miss_reason`, `tier1_detail`, plus the usual guest registers/stack. Kinds:

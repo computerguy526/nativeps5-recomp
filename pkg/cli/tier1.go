@@ -263,13 +263,34 @@ func writeIfChanged(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// readTier1Seeds returns the guest entries that tier 1 compiled during earlier runs. src is a
-// tier1_misses.jsonl file, a run bundle directory holding one, or a runs directory (every
-// bundle below it is read); several sources may be joined with commas. A seed counts when its
-// miss was served (compiled, cache hit or waited for): failed misses are not code.
+// readTier1Seeds returns the guest entries that tier 1 compiled during earlier runs, or that a
+// profile lists. src is a tier1_misses.jsonl file, a run bundle directory holding one, a runs
+// directory (every bundle below it is read) or a `.seeds` file (seedsFileExt); several sources
+// may be joined with commas. A miss-log seed counts when its miss was served (compiled, cache
+// hit or waited for): failed misses are not code. The `elf` guards of `.seeds` files are not
+// applied here (see readTier1SeedSet).
 func readTier1Seeds(src string) ([]uint64, error) {
+	seeds, _, err := readTier1SeedSet(src)
+	return seeds, err
+}
+
+// seedsFileExt marks the hand-written seed list a title profile ships: one guest address per line,
+// `#` starts a comment, and an optional `elf <sha256 prefix>` line names the input the addresses
+// belong to. Misses of another input never become entry points.
+const seedsFileExt = ".seeds"
+
+// readTier1SeedSet is readTier1Seeds plus the `elf` guards (lower-case hex prefixes of the input's
+// SHA-256) found in `.seeds` files.
+func readTier1SeedSet(src string) (seeds []uint64, guards []string, err error) {
 	seen := map[uint64]bool{}
-	var out []uint64
+	add := func(as []uint64) {
+		for _, a := range as {
+			if !seen[a] {
+				seen[a] = true
+				seeds = append(seeds, a)
+			}
+		}
+	}
 	for _, s := range strings.Split(src, ",") {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -278,9 +299,18 @@ func readTier1Seeds(src string) ([]uint64, error) {
 		var files []string
 		fi, err := os.Stat(s)
 		if err != nil {
-			return nil, fmt.Errorf("-seeds-from: %w", err)
+			return nil, nil, fmt.Errorf("-seeds-from: %w", err)
 		}
 		if !fi.IsDir() {
+			if strings.HasSuffix(s, seedsFileExt) {
+				as, gs, err := parseSeedsFile(s)
+				if err != nil {
+					return nil, nil, err
+				}
+				add(as)
+				guards = append(guards, gs...)
+				continue
+			}
 			files = []string{s}
 		} else {
 			if _, err := os.Stat(filepath.Join(s, "tier1_misses.jsonl")); err == nil {
@@ -291,20 +321,67 @@ func readTier1Seeds(src string) ([]uint64, error) {
 			}
 		}
 		for _, f := range files {
-			seeds, err := parseMissLog(f)
+			as, err := parseMissLog(f)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			for _, a := range seeds {
-				if !seen[a] {
-					seen[a] = true
-					out = append(out, a)
-				}
-			}
+			add(as)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out, nil
+	sort.Slice(seeds, func(i, j int) bool { return seeds[i] < seeds[j] })
+	return seeds, guards, nil
+}
+
+// parseSeedsFile reads a `.seeds` file (seedsFileExt): addresses in hex (0x optional, never 0) and
+// at most the `elf` guards; anything else on a line is an error that names the line.
+func parseSeedsFile(path string) (seeds []uint64, guards []string, err error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("-seeds-from: %w", err)
+	}
+	for n, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		f := strings.Fields(line)
+		switch {
+		case len(f) == 0:
+		case len(f) == 2 && f[0] == "elf":
+			g := strings.ToLower(f[1])
+			if _, err := hex.DecodeString(g + strings.Repeat("0", len(g)%2)); err != nil || len(g) < 8 || len(g) > 64 {
+				return nil, nil, fmt.Errorf("-seeds-from: %s:%d: bad elf guard %q (want 8 to 64 hex digits)", path, n+1, f[1])
+			}
+			guards = append(guards, g)
+		case len(f) == 1:
+			a, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimPrefix(f[0], "0x"), "0X"), 16, 64)
+			if err != nil || a == 0 {
+				return nil, nil, fmt.Errorf("-seeds-from: %s:%d: bad address %q", path, n+1, f[0])
+			}
+			seeds = append(seeds, a)
+		default:
+			return nil, nil, fmt.Errorf("-seeds-from: %s:%d: want one address or `elf <sha256 prefix>`, got %q", path, n+1, strings.TrimSpace(line))
+		}
+	}
+	return seeds, guards, nil
+}
+
+// seedsForElf is the seeds of src that apply to the input at elfPath: when a `.seeds` file names
+// an input (`elf` line) that this one is not, its addresses are dropped and skipped says why.
+func seedsForElf(src, elfPath string) (seeds []uint64, skipped string, err error) {
+	all, guards, err := readTier1SeedSet(src)
+	if err != nil || len(guards) == 0 {
+		return all, "", err
+	}
+	sum, err := sha256File(elfPath)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, g := range guards {
+		if !strings.HasPrefix(sum, g) {
+			return nil, fmt.Sprintf("seeds name input %s..., this input is %s...", g[:8], sum[:8]), nil
+		}
+	}
+	return all, "", nil
 }
 
 // MissRecord is one line of tier1_misses.jsonl (written by pkg/runtime/core/nps5_tier1.c).

@@ -1,0 +1,10 @@
+# Tier-1 entry points for Astro Bot (PPSA21564): code that static discovery does not reach but the game runs
+# when the world map opens. Without them the first open of the map translated them while the game ran (a
+# stall of seconds) and needed the build folder; with them they are translated with everything else.
+# Found by the tier-1 miss logs of every ASTRO run on record; these are the only three there are.
+# Addresses are final guest addresses (addr mode base); the `elf` line is the start of the SHA-256 of the
+# input they belong to: another build of the game ignores this file (the translator says so).
+elf 70d673f7c43edb18
+0xadb4e5
+0xadb4f0
+0xadb570
